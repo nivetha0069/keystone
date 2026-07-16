@@ -41,3 +41,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# claude code local settings
+.claude/settings.local.json
