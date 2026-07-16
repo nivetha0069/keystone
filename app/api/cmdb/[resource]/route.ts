@@ -1,0 +1,68 @@
+const READ_RESOURCES = new Set(["cis", "timeline", "relationships", "health"]);
+
+function authorizationHeader() {
+  if (process.env.CMDB_API_TOKEN) return `Bearer ${process.env.CMDB_API_TOKEN}`;
+  if (process.env.CMDB_API_USERNAME && process.env.CMDB_API_PASSWORD) {
+    return `Basic ${btoa(`${process.env.CMDB_API_USERNAME}:${process.env.CMDB_API_PASSWORD}`)}`;
+  }
+  return undefined;
+}
+
+function upstreamUrl(resource: string) {
+  const base = process.env.CMDB_API_BASE_URL?.replace(/\/$/, "");
+  if (!base) return null;
+  return `${base}/${resource}`;
+}
+
+export async function GET(_request: Request, context: { params: Promise<{ resource: string }> }) {
+  const { resource } = await context.params;
+  if (!READ_RESOURCES.has(resource)) return Response.json({ error: "Unknown CMDB resource" }, { status: 404 });
+  const url = upstreamUrl(resource);
+  if (!url) return Response.json({ error: "CMDB_API_BASE_URL is not configured" }, { status: 503 });
+
+  const authorization = authorizationHeader();
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "application/json", ...(authorization ? { authorization } : {}) },
+      cache: "no-store",
+    });
+    const body = await response.text();
+    return new Response(body, {
+      status: response.status,
+      headers: { "content-type": response.headers.get("content-type") || "application/json" },
+    });
+  } catch (error) {
+    return Response.json({ error: "CMDB API is unreachable", detail: error instanceof Error ? error.message : "Unknown error" }, { status: 502 });
+  }
+}
+
+export async function POST(request: Request, context: { params: Promise<{ resource: string }> }) {
+  const { resource } = await context.params;
+  if (resource !== "remediate") return Response.json({ error: "Writes are not allowed on this route" }, { status: 405 });
+  const configuredUrl = process.env.CMDB_REMEDIATE_URL;
+  const url = configuredUrl || upstreamUrl("remediate");
+  if (!url) return Response.json({ error: "Remediation is not configured" }, { status: 503 });
+
+  const incoming = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const body = JSON.stringify({
+    fixId: incoming.fixId,
+    tool: incoming.tool,
+    route: "IRE",
+    mode: "proposal",
+  });
+  const authorization = authorizationHeader();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json", ...(authorization ? { authorization } : {}) },
+      body,
+    });
+    const responseBody = await response.text();
+    return new Response(responseBody, {
+      status: response.status,
+      headers: { "content-type": response.headers.get("content-type") || "application/json" },
+    });
+  } catch (error) {
+    return Response.json({ error: "IRE remediation endpoint is unreachable", detail: error instanceof Error ? error.message : "Unknown error" }, { status: 502 });
+  }
+}
