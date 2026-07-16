@@ -17,9 +17,10 @@ import {
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
+import { ImportGatewayView } from "./import-view";
 
 type ApiState = "connecting" | "live" | "demo";
-type Section = "comprehend" | "live" | "hr" | "prioritize" | "remediate";
+type Section = "import" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 
 const steps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB", "Event log"];
 
@@ -125,7 +126,7 @@ function Confidence({ value }: { value: number }) {
 }
 
 export function CmdbDashboard() {
-  const [section, setSection] = useState<Section>("comprehend");
+  const [section, setSection] = useState<Section>("import");
   const [apiState, setApiState] = useState<ApiState>("connecting");
   const [cis, setCis] = useState(mockCis);
   const [timeline, setTimeline] = useState(mockTimeline);
@@ -188,6 +189,7 @@ export function CmdbDashboard() {
   }
 
   const nav: { id: Section; label: string; detail: string; icon: IconName }[] = [
+    { id: "import", label: "Import", detail: "Bring data in", icon: "upload" },
     { id: "comprehend", label: "Comprehend", detail: "See the run", icon: "grid" },
     { id: "live", label: "Live Ops", detail: "Watch agents work", icon: "bolt" },
     { id: "hr", label: "Agent HR", detail: "Manage the workforce", icon: "users" },
@@ -210,10 +212,11 @@ export function CmdbDashboard() {
 
     <main className="main-content">
       <header className="topbar">
-        <div><span className="eyebrow">MODERNIZATION RUN</span><strong>CMDB-BATCH-019</strong></div>
+        <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : "CMDB-BATCH-019"}</strong></div>
         <div className="top-actions"><span className="instance"><span className="live-dot" /> dev48291.service-now.com</span><button className="ghost-button"><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
 
+      {section === "import" && <ImportGatewayView onOpenRun={() => setSection("comprehend")} />}
       {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} />}
       {section === "live" && <LiveOpsView />}
       {section === "hr" && <AgentHrView />}

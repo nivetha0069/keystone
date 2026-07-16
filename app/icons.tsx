@@ -1,7 +1,7 @@
 export type IconName =
   | "grid" | "pulse" | "tool" | "shield" | "play" | "pause" | "search" | "arrow" | "check"
   | "database" | "spark" | "clock" | "graph" | "refresh" | "x" | "filter" | "chevron"
-  | "bolt" | "users" | "award" | "alert" | "target" | "book" | "heart";
+  | "bolt" | "users" | "award" | "alert" | "target" | "book" | "heart" | "upload" | "link" | "file";
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -29,6 +29,9 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     target: <><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></>,
     book: <><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v17.5H7.5A2.5 2.5 0 0 0 5 22V4.5Z"/><path d="M19 16.5H7.5A2.5 2.5 0 0 0 5 19"/></>,
     heart: <path d="M12 20.3S4.8 15.8 2.9 11.4C1.7 8.5 3.6 5.3 6.8 5.3c2 0 3.5 1.2 5.2 3.3 1.7-2.1 3.2-3.3 5.2-3.3 3.2 0 5.1 3.2 3.9 6.1-1.9 4.4-9.1 8.9-9.1 8.9Z"/>,
+    upload: <><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 14v5h14v-5"/></>,
+    link: <><path d="M10 13a4 4 0 0 0 5.7.1l2.4-2.4a4 4 0 0 0-5.7-5.7L11 6.4"/><path d="M14 11a4 4 0 0 0-5.7-.1l-2.4 2.4a4 4 0 0 0 5.7 5.7l1.4-1.4"/></>,
+    file: <><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

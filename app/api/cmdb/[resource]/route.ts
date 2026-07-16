@@ -14,6 +14,10 @@ function upstreamUrl(resource: string) {
   return `${base}/${resource}`;
 }
 
+function importUrl() {
+  return process.env.CMDB_IMPORT_URL || upstreamUrl("import");
+}
+
 export async function GET(_request: Request, context: { params: Promise<{ resource: string }> }) {
   const { resource } = await context.params;
   if (!READ_RESOURCES.has(resource)) return Response.json({ error: "Unknown CMDB resource" }, { status: 404 });
@@ -38,6 +42,52 @@ export async function GET(_request: Request, context: { params: Promise<{ resour
 
 export async function POST(request: Request, context: { params: Promise<{ resource: string }> }) {
   const { resource } = await context.params;
+  if (resource === "import") {
+    const url = importUrl();
+    if (!url) return Response.json({ error: "Import staging is not configured" }, { status: 503 });
+
+    const length = Number(request.headers.get("content-length") || 0);
+    if (length > 11 * 1024 * 1024) return Response.json({ error: "Import payload exceeds the 10 MB gateway limit" }, { status: 413 });
+
+    const authorization = authorizationHeader();
+    const contentType = request.headers.get("content-type") || "";
+    try {
+      let body: BodyInit;
+      let headers: HeadersInit = { accept: "application/json", ...(authorization ? { authorization } : {}) };
+
+      if (contentType.includes("multipart/form-data")) {
+        const incoming = await request.formData();
+        incoming.set("target", "staging");
+        incoming.set("mode", "quarantine");
+        incoming.set("directCmdbWrite", "false");
+        body = incoming;
+      } else {
+        const incoming = await request.json().catch(() => ({})) as Record<string, unknown>;
+        body = JSON.stringify({
+          sourceType: incoming.sourceType,
+          sourceName: incoming.sourceName,
+          runName: incoming.runName,
+          sourceUrl: incoming.sourceUrl,
+          format: incoming.format,
+          payload: incoming.payload,
+          target: "staging",
+          mode: "quarantine",
+          directCmdbWrite: false,
+        });
+        headers = { ...headers, "content-type": "application/json" };
+      }
+
+      const response = await fetch(url, { method: "POST", headers, body });
+      const responseBody = await response.text();
+      return new Response(responseBody, {
+        status: response.status,
+        headers: { "content-type": response.headers.get("content-type") || "application/json" },
+      });
+    } catch (error) {
+      return Response.json({ error: "Import staging endpoint is unreachable", detail: error instanceof Error ? error.message : "Unknown error" }, { status: 502 });
+    }
+  }
+
   if (resource !== "remediate") return Response.json({ error: "Writes are not allowed on this route" }, { status: 405 });
   const configuredUrl = process.env.CMDB_REMEDIATE_URL;
   const url = configuredUrl || upstreamUrl("remediate");

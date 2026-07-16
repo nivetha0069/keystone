@@ -31,9 +31,12 @@ CMDB_API_TOKEN=
 CMDB_API_USERNAME=
 CMDB_API_PASSWORD=
 CMDB_REMEDIATE_URL=
+CMDB_IMPORT_URL=
 ```
 
 Use either a bearer token or basic authentication. These credentials are only read by Next.js server routes and are never sent to the browser.
+
+`CMDB_IMPORT_URL` must point to a ServiceNow scripted REST endpoint that lands uploads and URL-connector requests in a custom staging/import table. The gateway always adds `target=staging`, `mode=quarantine`, and `directCmdbWrite=false`.
 
 ## Deploy to Vercel
 
