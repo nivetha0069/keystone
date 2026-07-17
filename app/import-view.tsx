@@ -156,6 +156,12 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
       return;
     }
     const extension = selected.name.split(".").pop()?.toLowerCase();
+    if (extension === "xlsx" || extension === "xls") {
+      setFile(null);
+      setPreviewRows([]);
+      setParseError("Convert to CSV first — Excel binary files are not supported yet.");
+      return;
+    }
     if (extension === "csv" || extension === "json" || extension === "txt") {
       const parsed = previewFromText(await selected.text(), extension);
       setPreviewRows(parsed.rows);
@@ -198,7 +204,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
     }
     if (mode === "file" && !file) {
       setStatus("error");
-      setStatusMessage("Choose a CSV, JSON, XLSX or XLS file first.");
+      setStatusMessage("Choose a CSV, JSON or TXT file first.");
       return;
     }
     if (mode === "url" && !sourceUrl.trim()) {
@@ -217,12 +223,19 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
     try {
       let response: Response;
       if (mode === "file" && file) {
-        const body = new FormData();
-        body.set("file", file);
-        body.set("sourceName", sourceName.trim());
-        body.set("runName", runName.trim());
-        body.set("format", file.name.split(".").pop()?.toLowerCase() || "file");
-        response = await fetch("/api/cmdb/import", { method: "POST", body });
+        const extension = file.name.split(".").pop()?.toLowerCase() || "file";
+        const text = await file.text();
+        response = await fetch("/api/cmdb/import", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sourceType: "file",
+            sourceName: sourceName.trim(),
+            runName: runName.trim(),
+            format: extension,
+            payload: text,
+          }),
+        });
       } else {
         response = await fetch("/api/cmdb/import", {
           method: "POST",
