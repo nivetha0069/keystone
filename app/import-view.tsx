@@ -6,6 +6,7 @@ import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } fr
 
 type ImportMode = "file" | "url" | "paste";
 type ImportStatus = "idle" | "staging" | "staged" | "demo" | "error";
+export type ImportedRun = { id: string; label: string };
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const PREVIEW_LIMIT = 6;
@@ -51,7 +52,33 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
+function importedRunFromResponse(result: Record<string, unknown>, fallbackLabel: string): ImportedRun {
+  const resultEnvelope = firstObject(result.result);
+  const dataEnvelope = firstObject(result.data, resultEnvelope.data);
+  const run = firstObject(result.migration_run, result.run, resultEnvelope.migration_run, resultEnvelope.run, dataEnvelope.migration_run, dataEnvelope.run);
+  const id = stringValue(
+    result.runId ?? result.run_id ?? result.migration_run_id ?? result.batchId ?? result.batch_id ?? result.sys_id ??
+    resultEnvelope.runId ?? resultEnvelope.run_id ?? resultEnvelope.migration_run_id ?? resultEnvelope.batchId ??
+    resultEnvelope.batch_id ?? resultEnvelope.sys_id ?? dataEnvelope.runId ?? dataEnvelope.run_id ??
+    dataEnvelope.migration_run_id ?? dataEnvelope.batchId ?? dataEnvelope.batch_id ?? dataEnvelope.sys_id ??
+    run.sys_id ?? run.id,
+  );
+  const label = stringValue(run.number ?? run.name ?? result.runName ?? result.number ?? resultEnvelope.number ?? dataEnvelope.number) || fallbackLabel;
+  return { id, label };
+}
+
+function firstObject(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function stringValue(value: unknown) {
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
+export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<ImportMode>("file");
   const [sourceName, setSourceName] = useState("External company dataset");
@@ -64,6 +91,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<ImportStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
+  const [stagedRun, setStagedRun] = useState<ImportedRun | undefined>();
 
   const previewColumns = useMemo(() => {
     const columns = new Set<string>();
@@ -77,6 +105,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
     setParseError("");
     setStatus("idle");
     setStatusMessage("");
+    setStagedRun(undefined);
   }
 
   async function inspectFile(selected: File) {
@@ -190,7 +219,9 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
 
       const result = await response.json().catch(() => ({})) as Record<string, unknown>;
       if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "The staging endpoint rejected this batch.");
-      const batchId = String(result.batchId ?? result.batch_id ?? result.sys_id ?? runName);
+      const importedRun = importedRunFromResponse(result, runName);
+      const batchId = importedRun.label || importedRun.id || runName;
+      setStagedRun(importedRun);
       setStatus("staged");
       setStatusMessage(`Batch ${batchId} landed in staging. AI classification can now begin.`);
     } catch (error) {
@@ -335,7 +366,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: () => void }) {
           <button className="primary-button full" disabled={!canStage || status === "staging"} onClick={() => void stageImport()}>
             <Icon name={status === "staging" ? "refresh" : "database"} size={16} /> {status === "staging" ? "Staging batch…" : "Land in staging"}
           </button>
-          {(status === "staged" || status === "demo") && <button className="ghost-button full open-run" onClick={onOpenRun}>Open run playback <Icon name="arrow" size={15} /></button>}
+          {(status === "staged" || status === "demo") && <button className="ghost-button full open-run" onClick={() => onOpenRun(stagedRun)}>Open run playback <Icon name="arrow" size={15} /></button>}
           <small>Next: AI classifies rows and assigns confidence. Only later does IRE receive approved records.</small>
         </div>
       </aside>

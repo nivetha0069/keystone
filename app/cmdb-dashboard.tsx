@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ConfigurationItem,
   HealthData,
@@ -14,26 +14,64 @@ import {
   mockTimeline,
 } from "./cmdb-data";
 
-import { normalizeCis, normalizeHealth, normalizeRelationships, normalizeTimeline } from "./lib/cmdb/bridge-normalizers";
+import {
+  normalizeComprehendCis,
+  normalizeComprehendHealth,
+  normalizeComprehendRelationships,
+  normalizeComprehendTimeline,
+} from "./lib/cmdb/comprehend-adapter";
 
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
-import { ImportGatewayView } from "./import-view";
+import { ImportGatewayView, type ImportedRun } from "./import-view";
 
-type ApiState = "connecting" | "live" | "demo";
+type ApiState = "connecting" | "live" | "partial" | "demo";
+type ResourceName = "cis" | "timeline" | "relationships" | "health";
+type ResourceStatus = "connecting" | "live" | "error";
+type ResourceState = Record<ResourceName, ResourceStatus>;
 type Section = "import" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 
 const steps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB", "Event log"];
+const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health"];
+const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting" };
+const emptyHealth: HealthData = {
+  ...mockHealth,
+  score: 0,
+  grade: "—",
+  ciCount: 0,
+  duplicatesMerged: 0,
+  reviewCount: 0,
+  relationshipCount: 0,
+  completeness: 0,
+  correctness: 0,
+  compliance: 0,
+  duplicateRate: 0,
+  staleRecords: 0,
+  fixes: [],
+};
 
-async function readEndpoint(resource: string) {
-  const response = await fetch(`/api/cmdb/${resource}`, { cache: "no-store" });
+async function readEndpoint(resource: ResourceName, runId = "") {
+  const query = runId ? `?run=${encodeURIComponent(runId)}` : "";
+  const response = await fetch(`/api/cmdb/${resource}${query}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`${resource}: ${response.status}`);
   return response.json();
 }
 
+function currentRunFromLocation() {
+  return typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("run")?.trim() || "";
+}
+
 function OperationPill({ value }: { value: Operation }) {
-  return <span className={`operation operation-${value.toLowerCase()}`}>{value.replaceAll("_", " ")}</span>;
+  const labels: Record<Operation, string> = {
+    INSERT: "CLEARED · NEW",
+    UPDATE: "CLEARED · MATCH",
+    NO_CHANGE: "NO CHANGE",
+    INSERT_AS_INCOMPLETE: "INCOMPLETE",
+    REVIEW: "HELD",
+    ERROR: "ERROR",
+  };
+  return <span className={`operation operation-${value.toLowerCase()}`}>{labels[value]}</span>;
 }
 
 function Confidence({ value }: { value: number }) {
@@ -45,6 +83,7 @@ function Confidence({ value }: { value: number }) {
 export function CmdbDashboard() {
   const [section, setSection] = useState<Section>("import");
   const [apiState, setApiState] = useState<ApiState>("connecting");
+  const [resourceState, setResourceState] = useState<ResourceState>(connectingResources);
   const [cis, setCis] = useState(mockCis);
   const [timeline, setTimeline] = useState(mockTimeline);
   const [relationships, setRelationships] = useState(mockRelationships);
@@ -58,23 +97,70 @@ export function CmdbDashboard() {
   const [queuedFix, setQueuedFix] = useState<HealthFix | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [instanceHost, setInstanceHost] = useState<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState(currentRunFromLocation);
+  const [activeRunLabel, setActiveRunLabel] = useState(() => activeRunId ? `RUN-${activeRunId.slice(0, 8).toUpperCase()}` : "");
+  const [runDraft, setRunDraft] = useState(activeRunId);
 
-  async function loadData() {
+  const loadData = useCallback(async (runId: string) => {
     setApiState("connecting");
-    const results = await Promise.allSettled([readEndpoint("cis"), readEndpoint("timeline"), readEndpoint("relationships"), readEndpoint("health")]);
+    setResourceState(connectingResources);
+    if (runId) {
+      setCis([]);
+      setTimeline([]);
+      setRelationships([]);
+      setHealth(emptyHealth);
+    }
+
+    const results = await Promise.allSettled(resourceNames.map(resource => readEndpoint(resource, runId)));
+    const nextResourceState = { ...connectingResources };
+    let nextCis = runId ? [] : mockCis;
+    let nextTimeline = runId ? [] : mockTimeline;
+    let nextRelationships = runId ? [] : mockRelationships;
+    let nextHealth = runId ? emptyHealth : mockHealth;
     let liveCount = 0;
-    if (results[0].status === "fulfilled") { const rows = normalizeCis(results[0].value); if (rows.length) { setCis(rows); liveCount++; } }
-    if (results[1].status === "fulfilled") { const rows = normalizeTimeline(results[1].value); if (rows.length) { setTimeline(rows); liveCount++; } }
-    if (results[2].status === "fulfilled") { const rows = normalizeRelationships(results[2].value); if (rows.length) { setRelationships(rows); liveCount++; } }
-    if (results[3].status === "fulfilled") { setHealth(normalizeHealth(results[3].value)); liveCount++; }
-    setApiState(liveCount === 4 ? "live" : "demo");
+    if (results[0].status === "fulfilled") {
+      nextCis = normalizeComprehendCis(results[0].value);
+      nextResourceState.cis = "live";
+      liveCount++;
+    } else {
+      nextResourceState.cis = "error";
+    }
+    if (results[1].status === "fulfilled") {
+      nextTimeline = normalizeComprehendTimeline(results[1].value);
+      nextResourceState.timeline = "live";
+      liveCount++;
+    } else {
+      nextResourceState.timeline = "error";
+    }
+    if (results[2].status === "fulfilled") {
+      nextRelationships = normalizeComprehendRelationships(results[2].value);
+      nextResourceState.relationships = "live";
+      liveCount++;
+    } else {
+      nextResourceState.relationships = "error";
+    }
+    if (results[3].status === "fulfilled") {
+      nextHealth = normalizeComprehendHealth(results[3].value);
+      nextResourceState.health = "live";
+      liveCount++;
+    } else {
+      nextResourceState.health = "error";
+    }
+    setCis(nextCis);
+    setTimeline(nextTimeline);
+    setRelationships(nextRelationships);
+    setHealth(nextHealth);
+    setActiveStep(0);
+    setPlaying(false);
+    setResourceState(nextResourceState);
+    setApiState(liveCount === 4 ? "live" : liveCount > 0 ? "partial" : "demo");
     setLastSync(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
-  }
+  }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadData(); }, 0);
+    const timer = window.setTimeout(() => { void loadData(activeRunId); }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [activeRunId, loadData]);
   useEffect(() => {
     fetch("/api/cmdb/instance", { cache: "no-store" })
       .then(response => (response.ok ? response.json() : null))
@@ -85,20 +171,50 @@ export function CmdbDashboard() {
   useEffect(() => {
     if (!playing) return;
     const timer = window.setInterval(() => setActiveStep(current => {
-      if (current >= 6) { setPlaying(false); return 6; }
+      const lastEvent = Math.max(0, timeline.length - 1);
+      if (current >= lastEvent) { setPlaying(false); return lastEvent; }
       return current + 1;
     }), 900);
     return () => window.clearInterval(timer);
-  }, [playing]);
+  }, [playing, timeline.length]);
 
   const filteredCis = useMemo(() => cis.filter(ci => {
     const matches = `${ci.name} ${ci.className} ${ci.source} ${ci.ip}`.toLowerCase().includes(search.toLowerCase());
     return matches && (filter === "all" || ci.status !== "live");
   }), [cis, search, filter]);
 
+  function openRun(run?: ImportedRun) {
+    const runId = run ? run.id.trim() : activeRunId;
+    const label = run?.label?.trim() || (runId ? `RUN-${runId.slice(0, 8).toUpperCase()}` : "");
+    const changed = runId !== activeRunId;
+    setActiveRunId(runId);
+    setActiveRunLabel(label);
+    setRunDraft(runId);
+    setActiveStep(0);
+    setSection("comprehend");
+    const url = new URL(window.location.href);
+    if (runId) url.searchParams.set("run", runId);
+    else url.searchParams.delete("run");
+    window.history.replaceState({}, "", url);
+    if (!changed) void loadData(runId);
+  }
+
+  function loadRunFromDraft() {
+    openRun({ id: runDraft.trim(), label: runDraft.trim() ? `RUN-${runDraft.trim().slice(0, 8).toUpperCase()}` : "" });
+  }
+
   function startPlayback() {
-    if (activeStep === 6) setActiveStep(0);
+    if (!timeline.length) return;
+    if (activeStep >= timeline.length - 1) setActiveStep(0);
     setPlaying(value => !value);
+  }
+
+  function openEventLedger() {
+    setSelectedCi(null);
+    setSection("comprehend");
+    window.setTimeout(() => {
+      document.getElementById("event-ledger")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   async function submitRemediation(fix: HealthFix) {
@@ -131,24 +247,24 @@ export function CmdbDashboard() {
       </nav>
       <div className="sidebar-rule" />
       <div className="governance-card"><span className="shield"><Icon name="shield" size={17} /></span><div><small>GOVERNANCE LOCK</small><strong>IRE is the only write path</strong><p>Every CMDB mutation is reconciled, attributed, and logged.</p></div></div>
-      <div className="sidebar-bottom"><div className={`api-dot ${apiState}`} /><div><strong>{apiState === "live" ? "Live API" : apiState === "connecting" ? "Connecting" : "Demo snapshot"}</strong><small>Last sync {lastSync}</small></div><button onClick={() => void loadData()} aria-label="Refresh data"><Icon name="refresh" size={16} /></button></div>
+      <div className="sidebar-bottom"><div className={`api-dot ${apiState}`} /><div><strong>{apiState === "live" ? "Live API" : apiState === "partial" ? "Partial API" : apiState === "connecting" ? "Connecting" : "Demo snapshot"}</strong><small>Last sync {lastSync}</small></div><button onClick={() => void loadData(activeRunId)} aria-label="Refresh data"><Icon name="refresh" size={16} /></button></div>
     </aside>
 
     <main className="main-content">
       <header className="topbar">
-        <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : "CMDB-BATCH-019"}</strong></div>
-        <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><button className="ghost-button"><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
+        <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : activeRunLabel || "ALL MIGRATION RUNS"}</strong></div>
+        <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
 
-      {section === "import" && <ImportGatewayView onOpenRun={() => setSection("comprehend")} />}
-      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} />}
+      {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
+      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} />}
       {section === "live" && <LiveOpsView />}
       {section === "hr" && <AgentHrView />}
-      {section === "prioritize" && <PrioritizeView health={health} onFix={(fix) => { setQueuedFix(fix); setSection("remediate"); }} />}
-      {section === "remediate" && <RemediateView health={health} queuedFix={queuedFix} actionMessage={actionMessage} onSubmit={submitRemediation} />}
+      {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
+      {section === "remediate" && <RemediateView health={health} queuedFix={queuedFix} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} />}
     </main>
 
-    {selectedCi && <ProvenancePanel ci={selectedCi} onClose={() => setSelectedCi(null)} />}
+    {selectedCi && <ProvenancePanel ci={selectedCi} onClose={() => setSelectedCi(null)} onOpenLedger={openEventLedger} />}
   </div>;
 }
 
@@ -156,44 +272,70 @@ function ComprehendView(props: {
   health: HealthData; timeline: TimelineEvent[]; relationships: Relationship[]; cis: ConfigurationItem[]; allCis: ConfigurationItem[];
   selectedCi: ConfigurationItem | null; setSelectedCi: (ci: ConfigurationItem) => void; search: string; setSearch: (value: string) => void;
   filter: "all" | "review"; setFilter: (value: "all" | "review") => void; playing: boolean; activeStep: number;
-  startPlayback: () => void; setActiveStep: (value: number) => void; apiState: ApiState;
+  startPlayback: () => void; setActiveStep: (value: number) => void; apiState: ApiState; resourceState: ResourceState;
+  activeRunId: string; runDraft: string; setRunDraft: (value: string) => void; loadRun: () => void; clearRun: () => void;
 }) {
-  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState } = props;
+  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState, resourceState, activeRunId, runDraft, setRunDraft, loadRun, clearRun } = props;
+  const cisLive = resourceState.cis === "live";
+  const timelineLive = resourceState.timeline === "live";
+  const cleared = cisLive
+    ? allCis.filter(ci => ci.status === "live").length
+    : Math.max(0, health.ciCount - health.reviewCount);
+  const review = allCis.filter(ci => ci.status !== "live").length;
+  const reviewRate = allCis.length ? ((review / allCis.length) * 100).toFixed(1) : "0.0";
+  const activeEvent = timeline[Math.min(activeStep, Math.max(0, timeline.length - 1))];
+  const activePhase = activeEvent?.step ?? 1;
+  const totalEvents = timeline.length;
+  const runStatus = apiState === "connecting" ? "Loading ServiceNow run" : apiState === "live" ? "Live backend connected" : apiState === "partial" ? "Partial backend data" : "Demo snapshot";
   return <div className="page">
-    <section className="page-heading"><div><span className="eyebrow accent">COMPREHEND</span><h1>What happened to your data?</h1><p>Follow every record from raw intake to governed CMDB outcome.</p></div><div className="run-state"><span className="run-pulse" /><div><small>RUN STATUS</small><strong>Reconciliation complete</strong></div><span className="run-time">06m 09s</span></div></section>
+    <section className="page-heading"><div><span className="eyebrow accent">COMPREHEND</span><h1>What happened to your data?</h1><p>Follow every staged record from quarantine through deterministic analysis and the confidence gate.</p></div><div className="run-state"><span className={`run-pulse ${apiState === "partial" || apiState === "demo" ? "paused" : ""}`} /><div><small>RUN STATUS</small><strong>{runStatus}</strong></div><span className="run-time">{activeRunId ? activeRunId.slice(0, 8) : "ALL RUNS"}</span></div></section>
 
-    <section className="kpi-grid">
-      <Kpi label="CIs published" value={health.ciCount.toLocaleString()} delta="+118 inserted" tone="lime" icon="database" />
-      <Kpi label="Duplicates merged" value={health.duplicatesMerged.toLocaleString()} delta="17.3% avoided" tone="green" icon="graph" />
-      <Kpi label="Need review" value={health.reviewCount.toLocaleString()} delta="1.4% of intake" tone="amber" icon="clock" />
-      <Kpi label="Relationships" value={health.relationshipCount.toLocaleString()} delta="58 inferred" tone="coral" icon="spark" />
+    <section className="run-context panel">
+      <div className="run-context-copy"><span className="section-index">00</span><div><h2>Backend run context</h2><p>All four Comprehend resources use the same ServiceNow migration-run sys_id.</p></div></div>
+      <label className="run-id-field"><span>RUN SYS_ID</span><input value={runDraft} onChange={event => setRunDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") loadRun(); }} placeholder="Paste migration_run sys_id" /></label>
+      <div className="run-context-actions"><button className="primary-button" onClick={loadRun}><Icon name="refresh" size={15} /> Load run</button>{activeRunId && <button className="ghost-button" onClick={clearRun}>All runs</button>}</div>
+      <div className="resource-statuses">
+        {resourceNames.map(resource => <span key={resource} className={`resource-status status-${resourceState[resource]}`}><i />{resource}</span>)}
+      </div>
     </section>
 
-    <section className="panel playback-panel">
-      <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Run playback</h2><p>Replay how one record moved through every governed decision.</p></div></div><div className="playback-controls"><span>{playing ? "PLAYING" : `STEP ${activeStep + 1} / 7`}</span><button className="play-button" onClick={startPlayback}><Icon name={playing ? "pause" : "play"} size={16} />{playing ? "Pause" : activeStep === 6 ? "Replay" : "Play run"}</button></div></div>
+    <section className="kpi-grid">
+      <Kpi label="Staged CIs" value={(cisLive ? allCis.length : health.ciCount).toLocaleString()} delta={`${totalEvents} ledger events loaded`} tone="lime" icon="database" />
+      <Kpi label="Gate cleared" value={cleared.toLocaleString()} delta="Eligible for future IRE simulation" tone="green" icon="shield" />
+      <Kpi label="Held for review" value={(cisLive ? review : health.reviewCount).toLocaleString()} delta={`${reviewRate}% of loaded records`} tone="amber" icon="clock" />
+      <Kpi label="Staged relationships" value={(resourceState.relationships === "live" ? relationships.length : health.relationshipCount).toLocaleString()} delta={`${relationships.length} proposed edges`} tone="coral" icon="spark" />
+    </section>
+
+    <section className="panel playback-panel" id="event-ledger">
+      <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Event Ledger playback</h2><p>Replay the ordered ServiceNow audit trail without collapsing agent actions.</p></div></div><div className="playback-controls"><span>{playing ? "PLAYING" : totalEvents ? `EVENT ${activeStep + 1} / ${totalEvents}` : "NO EVENTS"}</span><button className="play-button" disabled={!totalEvents} onClick={startPlayback}><Icon name={playing ? "pause" : "play"} size={16} />{playing ? "Pause" : activeStep >= totalEvents - 1 && totalEvents ? "Replay" : "Play run"}</button></div></div>
       <div className="stepper">
-        {steps.map((step, index) => <button key={step} className={`${index < activeStep ? "done" : ""} ${index === activeStep ? "current" : ""}`} onClick={() => setActiveStep(index)}>
-          <span className="step-node">{index < activeStep ? <Icon name="check" size={13} /> : index + 1}</span><span className="step-label">{step}</span>{index < 6 && <span className="step-line"><i /></span>}
-        </button>)}
+        {steps.map((step, index) => {
+          const eventIndex = timeline.findIndex(event => event.step === index + 1);
+          const unavailable = timelineLive && eventIndex < 0;
+          const completed = eventIndex >= 0 && index < activePhase - 1;
+          return <button key={step} disabled={unavailable} title={unavailable ? `${step} has not occurred in this run` : step} className={`${completed ? "done" : ""} ${index === activePhase - 1 ? "current" : ""} ${unavailable ? "pending" : ""}`} onClick={() => { if (eventIndex >= 0) setActiveStep(eventIndex); }}>
+            <span className="step-node">{completed ? <Icon name="check" size={13} /> : index + 1}</span><span className="step-label">{step}</span>{index < 6 && <span className="step-line"><i /></span>}
+          </button>;
+        })}
       </div>
       <div className="event-detail">
-        <div className="event-number">{String(activeStep + 1).padStart(2, "0")}</div><div className="event-copy"><span>{timeline[activeStep]?.time || "—"} · {timeline[activeStep]?.source || "Migration Pipeline"}</span><h3>{timeline[activeStep]?.name || steps[activeStep]}</h3><p>{timeline[activeStep]?.reasoning || "Event detail is loading."}</p></div>
-        <div className="event-meta"><div><small>CLASS</small><strong>{timeline[activeStep]?.className || "—"}</strong></div><div><small>CONFIDENCE</small><strong className="lime-text">{timeline[activeStep]?.confidence ? `${Math.round(timeline[activeStep].confidence * 100)}%` : "N/A"}</strong></div><div><small>IRE OUTCOME</small><OperationPill value={timeline[activeStep]?.operation || "NO_CHANGE"} /></div></div>
+        <div className="event-number">{String(activeEvent?.seq ?? activeStep + 1).padStart(2, "0")}</div><div className="event-copy"><span>{activeEvent?.time || "—"} · {activeEvent?.source || "Comprehend"}</span><h3>{activeEvent?.name || "No ledger event recorded"}</h3><p>{activeEvent?.reasoning || "ServiceNow returned no Event Ledger entries for this run."}</p></div>
+        <div className="event-meta"><div><small>ACTOR</small><strong>{activeEvent?.source || "—"}</strong></div><div><small>PHASE</small><strong className="lime-text">{steps[(activeEvent?.step ?? 1) - 1]}</strong></div><div><small>STATUS</small><strong>{activeEvent?.status?.replaceAll("_", " ").toUpperCase() || "PENDING"}</strong></div></div>
       </div>
     </section>
 
     <section className="visual-grid">
-      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to class to outcome</p></div></div><span className="panel-stat">{apiState === "live" ? `${allCis.length.toLocaleString()} RECORDS` : "1,248 RECORDS"}</span></div><SankeyVisual cis={allCis} live={apiState === "live"} /></div>
-      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>CIs appear as evidence lands</p></div></div><span className="panel-stat"><i className="live-dot" /> LIVE</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
+      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{cisLive ? `${allCis.length.toLocaleString()} LIVE RECORDS` : "DEMO FLOW"}</span></div><SankeyVisual cis={allCis} live={cisLive} /></div>
+      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className="live-dot" /> {resourceState.relationships === "live" ? "LIVE" : "DEMO"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
     </section>
 
     <section className="panel table-panel">
-      <div className="panel-heading"><div><span className="section-index">04</span><div><h2>Configuration items</h2><p>Click any CI to inspect its complete provenance.</p></div></div><div className="table-actions"><label className="search-box"><Icon name="search" size={16} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search CIs" /></label><button className={filter === "review" ? "filter-button active" : "filter-button"} onClick={() => setFilter(filter === "all" ? "review" : "all")}><Icon name="filter" size={15} /> Review queue</button></div></div>
-      <div className="table-wrap"><table><thead><tr><th>Configuration item</th><th>Class</th><th>Source</th><th>IRE operation</th><th>Confidence</th><th>Health</th><th /></tr></thead><tbody>
-        {cis.map(ci => <tr key={ci.id} onClick={() => setSelectedCi(ci)}><td><div className="ci-cell"><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={15} /></span><div><strong>{ci.name}</strong><small>{ci.id} · {ci.ip}</small></div></div></td><td>{ci.className}</td><td><span className="source-name">{ci.source}</span></td><td><OperationPill value={ci.operation} /></td><td><Confidence value={ci.confidence} /></td><td><div className="health-cell"><span>{ci.health}</span><i><b style={{ width: `${ci.health}%` }} /></i></div></td><td><button className="row-arrow" aria-label={`Inspect ${ci.name}`}><Icon name="arrow" size={16} /></button></td></tr>)}
+      <div className="panel-heading"><div><span className="section-index">04</span><div><h2>Staged CI records</h2><p>Click any quarantined record to inspect its Comprehend provenance.</p></div></div><div className="table-actions"><label className="search-box"><Icon name="search" size={16} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search CIs" /></label><button className={filter === "review" ? "filter-button active" : "filter-button"} onClick={() => setFilter(filter === "all" ? "review" : "all")}><Icon name="filter" size={15} /> Review queue</button></div></div>
+      <div className="table-wrap"><table><thead><tr><th>Staged record</th><th>Proposed class</th><th>Source</th><th>Comprehend outcome</th><th>Confidence</th><th>Health</th><th /></tr></thead><tbody>
+        {cis.map(ci => <tr key={ci.id} onClick={() => setSelectedCi(ci)}><td><div className="ci-cell"><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={15} /></span><div><strong>{ci.name}</strong><small>{ci.id} · {ci.ip}</small></div></div></td><td>{ci.className}</td><td><span className="source-name">{ci.source}</span></td><td><OperationPill value={ci.operation} /></td><td><Confidence value={ci.confidence} /></td><td><div className="health-cell"><span>{ci.health}</span><i><b style={{ width: `${ci.health}%` }} /></i></div></td><td><button className="row-arrow" aria-label={`Inspect ${ci.name}`} onClick={() => setSelectedCi(ci)}><Icon name="arrow" size={16} /></button></td></tr>)}
         {!cis.length && <tr><td colSpan={7} className="empty-state">No configuration items match this view.</td></tr>}
       </tbody></table></div>
-      <div className="table-footer"><span>{cis.length} shown · {apiState === "live" ? "Live API" : "Demo snapshot"}</span><span>All mutations routed through <strong>IRE</strong></span></div>
+      <div className="table-footer"><span>{cis.length} shown · {cisLive ? "Live ServiceNow staged data" : "Demo snapshot"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
     </section>
   </div>;
 }
@@ -203,9 +345,10 @@ function Kpi({ label, value, delta, tone, icon }: { label: string; value: string
 }
 
 const sankeyOutcomeMeta = [
-  { label: "Published", ops: ["INSERT", "UPDATE"] as Operation[], node: "lime-node", bg: "lime-bg", color: "var(--lime)" },
-  { label: "Merged", ops: ["NO_CHANGE"] as Operation[], node: "green-node", bg: "green-bg", color: "var(--green)" },
-  { label: "Review", ops: ["REVIEW", "INSERT_AS_INCOMPLETE"] as Operation[], node: "amber-node", bg: "amber-bg", color: "var(--amber)" },
+  { label: "Cleared new", ops: ["INSERT"] as Operation[], node: "lime-node", bg: "lime-bg", color: "var(--lime)" },
+  { label: "Cleared match", ops: ["UPDATE", "NO_CHANGE"] as Operation[], node: "green-node", bg: "green-bg", color: "var(--green)" },
+  { label: "Held", ops: ["REVIEW"] as Operation[], node: "amber-node", bg: "amber-bg", color: "var(--amber)" },
+  { label: "Incomplete", ops: ["INSERT_AS_INCOMPLETE"] as Operation[], node: "amber-node", bg: "amber-bg", color: "var(--amber)" },
   { label: "Error", ops: ["ERROR"] as Operation[], node: "coral-node", bg: "coral-bg", color: "var(--coral)" },
 ];
 const sankeySourceColors = ["#55b98a", "#799bbd", "#b17fa4", "#d78a6c"];
@@ -266,7 +409,7 @@ function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
   const stage1 = sankeyRibbons(sourceNodes, classNodes, cis.map(ci => [sourceLabel(ci), classLabel(ci)]), total, 88, 292, src => sankeySourceColors[sourceNodes.indexOf(src) % sankeySourceColors.length]);
   const stage2 = sankeyRibbons(classNodes, outcomeNodes, cis.map(ci => [classLabel(ci), outcomeLabel(ci)]), total, 310, 506, (_src, dst) => sankeyMetaFor(dst.label).color);
 
-  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>AI CLASS</span><span>IRE OUTCOME</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Records flowing from source systems to AI classes and IRE outcomes">
+  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
     {stage1.map((ribbon, i) => <path key={`s1-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     {stage2.map((ribbon, i) => <path key={`s2-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     <g className="sankey-nodes source">{sourceNodes.map(node => <g key={node.label}><rect x="70" y={node.y} width="18" height={node.h} /><text x="64" y={node.y + 12} textAnchor="end">{trimSankeyLabel(node.label)}</text></g>)}</g>
@@ -277,6 +420,7 @@ function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
 
 function SankeyVisual({ cis, live }: { cis: ConfigurationItem[]; live: boolean }) {
   if (live && cis.length) return <LiveSankey cis={cis} />;
+  if (live) return <div className="sankey-empty"><Icon name="graph" size={24} /><strong>No CI records for this run</strong><p>The Sankey is synchronized; ServiceNow returned an empty CI collection.</p></div>;
   const paths = [
     ["M88 48 C180 48 202 44 292 55", 18, "var(--coral)"], ["M88 57 C180 62 210 92 292 98", 13, "var(--amber)"],
     ["M88 124 C175 122 207 77 292 70", 15, "#55b98a"], ["M88 134 C180 142 215 142 292 141", 10, "#799bbd"],
@@ -285,12 +429,12 @@ function SankeyVisual({ cis, live }: { cis: ConfigurationItem[]; live: boolean }
     ["M310 98 C390 93 426 64 506 62", 15, "var(--lime)"], ["M310 112 C400 116 428 117 506 118", 12, "#50b58a"],
     ["M310 141 C398 141 430 167 506 168", 10, "var(--amber)"], ["M310 176 C398 180 424 211 506 213", 8, "var(--coral)"],
   ] as const;
-  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>AI CLASS</span><span>IRE OUTCOME</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Records flowing from source systems to AI classes and IRE outcomes">
+  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
     {paths.map((path, i) => <path key={i} d={path[0]} stroke={path[2]} strokeWidth={path[1]} opacity=".42" fill="none" />)}
     <g className="sankey-nodes source"><rect x="70" y="38" width="18" height="30"/><rect x="70" y="114" width="18" height="30"/><rect x="70" y="190" width="18" height="28"/><text x="64" y="50" textAnchor="end">Baxter</text><text x="64" y="126" textAnchor="end">Legacy</text><text x="64" y="202" textAnchor="end">Other</text></g>
     <g className="sankey-nodes classes"><rect x="292" y="40" width="18" height="42"/><rect x="292" y="91" width="18" height="34"/><rect x="292" y="135" width="18" height="22"/><rect x="292" y="169" width="18" height="18"/><text x="286" y="55" textAnchor="end">Linux</text><text x="286" y="103" textAnchor="end">Windows</text><text x="286" y="147" textAnchor="end">Database</text><text x="286" y="181" textAnchor="end">Other</text></g>
-    <g className="sankey-nodes outcomes"><rect x="506" y="35" width="18" height="42" className="lime-node"/><rect x="506" y="96" width="18" height="30" className="green-node"/><rect x="506" y="158" width="18" height="22" className="amber-node"/><rect x="506" y="205" width="18" height="18" className="coral-node"/><text x="530" y="50">Published</text><text x="530" y="108">Merged</text><text x="530" y="170">Review</text><text x="530" y="217">Error</text></g>
-  </svg><div className="sankey-legend"><span><i className="lime-bg" /> Published 842</span><span><i className="green-bg" /> Merged 216</span><span><i className="amber-bg" /> Review 17</span><span><i className="coral-bg" /> Error 4</span></div></div>;
+    <g className="sankey-nodes outcomes"><rect x="506" y="35" width="18" height="42" className="lime-node"/><rect x="506" y="96" width="18" height="30" className="green-node"/><rect x="506" y="158" width="18" height="22" className="amber-node"/><rect x="506" y="205" width="18" height="18" className="coral-node"/><text x="530" y="50">Cleared</text><text x="530" y="108">Matched</text><text x="530" y="170">Held</text><text x="530" y="217">Error</text></g>
+  </svg><div className="sankey-legend"><span><i className="lime-bg" /> Cleared 842</span><span><i className="green-bg" /> Matched 216</span><span><i className="amber-bg" /> Held 17</span><span><i className="coral-bg" /> Error 4</span></div></div>;
 }
 
 function RelationshipGraph({ cis, relationships }: { cis: ConfigurationItem[]; relationships: Relationship[] }) {
@@ -302,16 +446,18 @@ function RelationshipGraph({ cis, relationships }: { cis: ConfigurationItem[]; r
     return acc;
   }, {});
   if (graphCis[0]) positions[graphCis[0].name] = { x: 250, y: 145, ci: graphCis[0] };
+  const graphPositions = Object.values(positions);
+  const positionFor = (endpoint: string) => positions[endpoint] ?? graphPositions.find(position => position.ci.id === endpoint || position.ci.name === endpoint);
   return <div className="relationship-graph"><svg viewBox="0 0 500 300" role="img" aria-label="CI relationship graph">
     <defs><filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-    {relationships.map(rel => { const from = positions[rel.source]; const to = positions[rel.target]; return from && to ? <line key={rel.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#747970" strokeDasharray="3 5" opacity={rel.confidence} /> : null; })}
-    {Object.values(positions).map(({ x, y, ci }, index) => <g key={ci.id} className={`graph-node ${index === 0 ? "central" : ""}`} transform={`translate(${x} ${y})`}><circle r={index === 0 ? 27 : 18} className="node-halo"/><circle r={index === 0 ? 16 : 10} className={ci.status === "live" ? "node-live" : "node-review"} filter={index === 0 ? "url(#glow)" : undefined}/><text y={index === 0 ? 39 : 31}>{ci.name}</text><text y={index === 0 ? 51 : 43} className="node-class">{ci.className}</text></g>)}
-  </svg><div className="graph-caption"><span><i className="node-key live" /> Published CI</span><span><i className="node-key review" /> Needs review</span><span>{relationships.length} visible relationships</span></div></div>;
+    {relationships.map(rel => { const from = positionFor(rel.source); const to = positionFor(rel.target); return from && to ? <line key={rel.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#747970" strokeDasharray="3 5" opacity={rel.confidence} /> : null; })}
+    {graphPositions.map(({ x, y, ci }, index) => <g key={ci.id} className={`graph-node ${index === 0 ? "central" : ""}`} transform={`translate(${x} ${y})`}><circle r={index === 0 ? 27 : 18} className="node-halo"/><circle r={index === 0 ? 16 : 10} className={ci.status === "live" ? "node-live" : "node-review"} filter={index === 0 ? "url(#glow)" : undefined}/><text y={index === 0 ? 39 : 31}>{ci.name}</text><text y={index === 0 ? 51 : 43} className="node-class">{ci.className}</text></g>)}
+  </svg><div className="graph-caption"><span><i className="node-key live" /> Gate cleared</span><span><i className="node-key review" /> Held for review</span><span>{relationships.length} proposed relationships</span></div></div>;
 }
 
-function PrioritizeView({ health, onFix }: { health: HealthData; onFix: (fix: HealthFix) => void }) {
+function PrioritizeView({ health, recalculating, onRecalculate, onFix }: { health: HealthData; recalculating: boolean; onRecalculate: () => void; onFix: (fix: HealthFix) => void }) {
   return <div className="page">
-    <section className="page-heading"><div><span className="eyebrow accent">PRIORITIZE</span><h1>Fix what moves health fastest.</h1><p>Issues are ranked by data impact, risk, and remediation effort.</p></div><button className="primary-button"><Icon name="refresh" size={16} /> Recalculate health</button></section>
+    <section className="page-heading"><div><span className="eyebrow accent">PRIORITIZE</span><h1>Fix what moves health fastest.</h1><p>Issues are ranked by data impact, risk, and remediation effort.</p></div><button className="primary-button" disabled={recalculating} onClick={onRecalculate}><Icon name="refresh" size={16} /> {recalculating ? "Recalculating…" : "Recalculate health"}</button></section>
     <section className="health-hero panel">
       <div className="score-ring" style={{ "--score": `${health.score * 3.6}deg` } as React.CSSProperties}><div><span>{health.grade}</span><strong>{health.score}</strong><small>CMDB HEALTH</small></div></div>
       <div className="health-copy"><span className="eyebrow">ESTATE ASSESSMENT</span><h2>Your CMDB is healthy, with four concentrated gaps.</h2><p>Resolve the top two recommendations to move the estate from <strong>{health.score}</strong> to a projected <strong>{Math.min(100, health.score + 10)}</strong>.</p><div className="score-scale"><i /><i /><i /><i className="active" /><i /><span style={{ left: `${health.score}%` }}>{health.score}</span></div></div>
@@ -325,17 +471,17 @@ function PrioritizeView({ health, onFix }: { health: HealthData; onFix: (fix: He
 
 function Metric({ label, value }: { label: string; value: number }) { return <div className="metric"><div><span>{label}</span><strong>{value}%</strong></div><i><b style={{ width: `${value}%` }} /></i></div>; }
 
-function RemediateView({ health, queuedFix, actionMessage, onSubmit }: { health: HealthData; queuedFix: HealthFix | null; actionMessage: string; onSubmit: (fix: HealthFix) => void }) {
+function RemediateView({ health, queuedFix, actionMessage, onSelect, onSubmit }: { health: HealthData; queuedFix: HealthFix | null; actionMessage: string; onSelect: (fix: HealthFix) => void; onSubmit: (fix: HealthFix) => void }) {
   const selected = queuedFix || health.fixes[0];
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">REMEDIATE</span><h1>Close the loop, through IRE.</h1><p>Agent tools assemble evidence and propose corrections. IRE remains the sole write path.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
     <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 · ANALYZE</small><strong>Agent gathers evidence</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="tool" /></span><div><small>2 · PROPOSE</small><strong>Change set is reviewed</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 · RECONCILE</small><strong>IRE validates identity</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 · PUBLISH</small><strong>CMDB + ledger update</strong></div></div></section>
     <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">01</span><div><h2>Agent tools</h2><p>Purpose-built analysis. Governed execution.</p></div></div><div className="tool-grid">
-      {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSubmit(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
+      {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
     </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">CHANGE PROPOSAL</span><span className="draft-pill">DRAFT</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div><div className="evidence-box"><div><Icon name="spark" size={16} /><strong>Agent evidence</strong></div><ul><li>Identifier signals compared across all source systems</li><li>Current CMDB values retained as a reversible baseline</li><li>Every proposed merge receives a confidence score and reason</li></ul></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected)}><Icon name="shield" size={16} /> Send proposal to IRE</button><small className="no-direct-write">No browser action can write directly to a CMDB table.</small></aside></section>
   </div>;
 }
 
-function ProvenancePanel({ ci, onClose }: { ci: ConfigurationItem; onClose: () => void }) {
-  return <div className="drawer-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}><aside className="provenance-drawer"><div className="drawer-top"><div><span className="eyebrow accent">PROVENANCE</span><h2>{ci.name}</h2><p>{ci.id} · {ci.className}</p></div><button onClick={onClose} aria-label="Close provenance"><Icon name="x" /></button></div><div className="drawer-score"><div><small>CONFIDENCE</small><strong>{Math.round(ci.confidence * 100)}%</strong></div><div><small>HEALTH</small><strong>{ci.health}</strong></div><div><small>IRE OUTCOME</small><OperationPill value={ci.operation} /></div></div><div className="provenance-path"><span className="path-line" />{ci.provenance.map((item, index) => <div className="provenance-item" key={`${item.label}-${index}`}><span className={index === ci.provenance.length - 1 ? "path-node current" : "path-node"}>{index + 1}</span><div><small>{item.label}</small><strong>{item.value}</strong>{item.detail && <p>{item.detail}</p>}</div></div>)}</div><div className="drawer-governance"><Icon name="shield" /><div><strong>Governed by IRE</strong><p>No direct CMDB write occurred anywhere in this record’s journey.</p></div></div><button className="ghost-button full"><Icon name="clock" size={16} /> Open full ledger trail</button></aside></div>;
+function ProvenancePanel({ ci, onClose, onOpenLedger }: { ci: ConfigurationItem; onClose: () => void; onOpenLedger: () => void }) {
+  return <div className="drawer-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose(); }}><aside className="provenance-drawer"><div className="drawer-top"><div><span className="eyebrow accent">COMPREHEND PROVENANCE</span><h2>{ci.name}</h2><p>{ci.id} · {ci.className}</p></div><button onClick={onClose} aria-label="Close provenance"><Icon name="x" /></button></div><div className="drawer-score"><div><small>CONFIDENCE</small><strong>{Math.round(ci.confidence * 100)}%</strong></div><div><small>HEALTH</small><strong>{ci.health}</strong></div><div><small>GATE OUTCOME</small><OperationPill value={ci.operation} /></div></div><div className="provenance-path"><span className="path-line" />{ci.provenance.map((item, index) => <div className="provenance-item" key={`${item.label}-${index}`}><span className={index === ci.provenance.length - 1 ? "path-node current" : "path-node"}>{index + 1}</span><div><small>{item.label}</small><strong>{item.value}</strong>{item.detail && <p>{item.detail}</p>}</div></div>)}</div><div className="drawer-governance"><Icon name="shield" /><div><strong>IRE remains the only future write path</strong><p>Comprehend analyzed this staged record without writing to the CMDB.</p></div></div><button className="ghost-button full" onClick={onOpenLedger}><Icon name="clock" size={16} /> Open full ledger trail</button></aside></div>;
 }
