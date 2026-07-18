@@ -457,12 +457,13 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .donut-wrap { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 14px; }
 .donut-wrap svg { width: 130px; height: 130px; }
 .donut-seg { fill: none; stroke-width: 12; transition: stroke-dasharray .4s ease; }
-.donut-seg.lime { stroke: var(--lime); } .donut-seg.green { stroke: var(--green); } .donut-seg.amber { stroke: var(--amber); } .donut-seg.coral { stroke: var(--coral); }
+.donut-seg.lime { stroke: var(--lime); } .donut-seg.green { stroke: var(--green); } .donut-seg.muted { stroke: var(--muted); } .donut-seg.amber { stroke: var(--amber); } .donut-seg.coral { stroke: var(--coral); }
 .donut-number { fill: var(--ink); font: 400 17px var(--display); text-anchor: middle; }
 .donut-caption { fill: var(--faint); font: 6.5px var(--mono); letter-spacing: .12em; text-anchor: middle; }
 .donut-legend { display: flex; flex-direction: column; gap: 9px; color: var(--muted); font: 9.5px var(--mono); }
 .donut-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .donut-legend i { width: 6px; height: 6px; flex: none; }
+.muted-bg { background: var(--muted); }
 .live-empty-state { min-height: 290px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: rgba(199, 243, 77, .6); text-align: center; }
 .live-empty-state strong { color: var(--muted); font-size: 12px; font-weight: 500; }
 .live-empty-state p { max-width: 480px; margin: 0; color: var(--faint); font-size: 9.5px; }

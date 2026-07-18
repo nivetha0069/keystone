@@ -19,8 +19,8 @@ export type LiveOpsViewProps = {
   onRefresh: () => void;
 };
 
-type OutcomeKey = "cleared" | "held" | "errors" | "informational";
-type OutcomeCounts = Record<OutcomeKey, number>;
+type EventCategory = "actions" | "observations" | "lifecycle" | "gateResults" | "errors";
+type EventCategoryCounts = Record<EventCategory, number>;
 
 /*
  * Alex-authored simulator lines are preserved verbatim here and intentionally
@@ -53,50 +53,41 @@ function displayTime(value: string) {
   });
 }
 
-function eventEvidence(event: TimelineEvent) {
-  return `${event.name} ${event.reasoning}`.toLowerCase();
-}
-
-function isHeld(event: TimelineEvent) {
-  const evidence = eventEvidence(event);
-  return event.status === "review"
-    || event.operation === "REVIEW"
-    || event.operation === "INSERT_AS_INCOMPLETE"
-    || evidence.includes("held")
-    || evidence.includes("conflict")
-    || evidence.includes("rejected");
-}
-
 function isError(event: TimelineEvent) {
-  return event.status === "error" || event.operation === "ERROR";
+  const detail = event.reasoning.trim();
+  return event.status === "error"
+    || event.operation === "ERROR"
+    || /^(error|failure|exception)\s*:/i.test(detail);
 }
 
-function isCleared(event: TimelineEvent) {
-  const evidence = eventEvidence(event);
-  return event.operation === "INSERT"
-    || event.operation === "UPDATE"
-    || evidence.includes("cleared");
-}
-
-function outcomeFor(event: TimelineEvent): OutcomeKey {
+function eventCategory(event: TimelineEvent): EventCategory {
   if (isError(event)) return "errors";
-  if (isHeld(event)) return "held";
-  if (isCleared(event)) return "cleared";
-  return "informational";
+  if (gateResultFromEvent(event)) return "gateResults";
+  if (/\bAction:\s*[a-z0-9_]+/i.test(event.reasoning)) return "actions";
+  if (/\bObservation:/i.test(event.reasoning)) return "observations";
+  return "lifecycle";
 }
 
 function eventLabel(event: TimelineEvent) {
-  if (isError(event)) return "ERROR";
-  if (isHeld(event)) return "HELD";
-  if (isCleared(event)) return "CLEARED";
-  return event.operation === "NO_CHANGE" ? "INFO" : event.operation.replaceAll("_", " ");
+  const labels: Record<EventCategory, string> = {
+    actions: "ACTION",
+    observations: "OBSERVATION",
+    lifecycle: "LIFECYCLE",
+    gateResults: "GATE RESULT",
+    errors: "ERROR",
+  };
+  return labels[eventCategory(event)];
 }
 
 function eventTone(event: TimelineEvent) {
-  if (isError(event)) return "coral";
-  if (isHeld(event)) return "amber";
-  if (isCleared(event)) return "lime";
-  return event.status === "active" ? "green" : "muted";
+  const tones: Record<EventCategory, string> = {
+    actions: "lime",
+    observations: "green",
+    lifecycle: "muted",
+    gateResults: "amber",
+    errors: "coral",
+  };
+  return tones[eventCategory(event)];
 }
 
 function throughputBuckets(events: TimelineEvent[], bucketCount = 12) {
@@ -126,7 +117,7 @@ function confidenceBuckets(events: TimelineEvent[]) {
   return { buckets, count: values.length };
 }
 
-function decisionsPerMinute(events: TimelineEvent[]) {
+function entriesPerMinute(events: TimelineEvent[]) {
   const timed = events
     .map(event => timestamp(event.time))
     .filter((value): value is number => value !== undefined)
@@ -137,14 +128,34 @@ function decisionsPerMinute(events: TimelineEvent[]) {
   return (timed.length - 1) / elapsedMinutes;
 }
 
-function gateDecisionCounts(events: TimelineEvent[]) {
-  return events.reduce((counts, event) => {
-    if (event.source.trim().toLowerCase() !== "sentry") return counts;
-    const evidence = eventEvidence(event);
-    if (evidence.includes("held") || evidence.includes("conflict") || evidence.includes("rejected")) counts.held += 1;
-    if (evidence.includes("cleared")) counts.cleared += 1;
-    return counts;
-  }, { held: 0, cleared: 0 });
+function namedCount(detail: string, label: "held" | "cleared") {
+  const patterns = [
+    new RegExp(`\\b(\\d+)\\s+(?:records?\\s+)?${label}\\b`, "i"),
+    new RegExp(`\\b${label}\\s*[:=]\\s*(\\d+)\\b`, "i"),
+    new RegExp(`\\b${label}\\s+(\\d+)\\b`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const match = detail.match(pattern);
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+function gateResultFromEvent(event: TimelineEvent) {
+  const detail = event.reasoning;
+  if (!/\bconfidence gate\b/i.test(detail) || !/\bObservation:/i.test(detail)) return null;
+  const held = namedCount(detail, "held");
+  const cleared = namedCount(detail, "cleared");
+  if (held === undefined || cleared === undefined || held + cleared <= 0) return null;
+  return { held, cleared };
+}
+
+function gateResultForRun(events: TimelineEvent[]) {
+  for (const event of [...events].sort((a, b) => b.seq - a.seq)) {
+    const result = gateResultFromEvent(event);
+    if (result) return result;
+  }
+  return null;
 }
 
 function ThroughputChart({ buckets }: { buckets: number[] }) {
@@ -173,19 +184,20 @@ function Histogram({ buckets }: { buckets: number[] }) {
   </div>;
 }
 
-function OutcomeDonut({ outcomes }: { outcomes: OutcomeCounts }) {
+function EventCategoryDonut({ categories }: { categories: EventCategoryCounts }) {
   const segments = [
-    { value: outcomes.cleared, label: "Cleared", cls: "lime" },
-    { value: outcomes.informational, label: "Informational", cls: "green" },
-    { value: outcomes.held, label: "Held / review", cls: "amber" },
-    { value: outcomes.errors, label: "Errors", cls: "coral" },
+    { value: categories.actions, label: "Actions", cls: "lime" },
+    { value: categories.observations, label: "Observations", cls: "green" },
+    { value: categories.lifecycle, label: "Lifecycle", cls: "muted" },
+    { value: categories.gateResults, label: "Gate results", cls: "amber" },
+    { value: categories.errors, label: "Errors", cls: "coral" },
   ];
   const total = segments.reduce((sum, segment) => sum + segment.value, 0);
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   return <div className="donut-wrap">
-    <svg viewBox="0 0 110 110" role="img" aria-label="Recorded Event Ledger entries grouped by outcome">
+    <svg viewBox="0 0 110 110" role="img" aria-label="Recorded Event Ledger entries grouped by semantic event type">
       {segments.map(segment => {
         const fraction = total ? segment.value / total : 0;
         const element = <circle key={segment.label} cx="55" cy="55" r={radius} className={`donut-seg ${segment.cls}`}
@@ -214,25 +226,35 @@ export function LiveOpsView({
   onRefresh,
 }: LiveOpsViewProps) {
   const newestFirst = useMemo(() => [...timeline].sort((a, b) => b.seq - a.seq), [timeline]);
-  const rate = useMemo(() => decisionsPerMinute(timeline), [timeline]);
+  const rate = useMemo(() => entriesPerMinute(timeline), [timeline]);
   const throughput = useMemo(() => throughputBuckets(timeline), [timeline]);
   const confidence = useMemo(() => confidenceBuckets(timeline), [timeline]);
-  const gate = useMemo(() => gateDecisionCounts(timeline), [timeline]);
-  const outcomes = useMemo(() => timeline.reduce<OutcomeCounts>((counts, event) => {
-    counts[outcomeFor(event)] += 1;
+  const gate = useMemo(() => gateResultForRun(timeline), [timeline]);
+  const categories = useMemo(() => timeline.reduce<EventCategoryCounts>((counts, event) => {
+    counts[eventCategory(event)] += 1;
     return counts;
-  }, { cleared: 0, held: 0, errors: 0, informational: 0 }), [timeline]);
+  }, { actions: 0, observations: 0, lifecycle: 0, gateResults: 0, errors: 0 }), [timeline]);
   const latestByActor = useMemo(() => {
     const latest = new Map<string, TimelineEvent>();
     for (const event of newestFirst) {
       const actor = event.source.trim() || "Unknown actor";
       if (!latest.has(actor)) latest.set(actor, event);
     }
-    return Array.from(latest.entries());
+    const preferredOrder = ["Comprehend", "Router", "Atlas", "Scout", "Weaver", "Sentry", "Ledger"];
+    return Array.from(latest.entries()).sort(([left], [right]) => {
+      const leftIndex = preferredOrder.indexOf(left);
+      const rightIndex = preferredOrder.indexOf(right);
+      if (leftIndex >= 0 || rightIndex >= 0) {
+        if (leftIndex < 0) return 1;
+        if (rightIndex < 0) return -1;
+        return leftIndex - rightIndex;
+      }
+      return left.localeCompare(right);
+    });
   }, [newestFirst]);
 
-  const gateTotal = gate.held + gate.cleared;
-  const gateRate = gateTotal ? `${((gate.held / gateTotal) * 100).toFixed(1)}%` : "—";
+  const gateTotal = gate ? gate.held + gate.cleared : 0;
+  const gateRate = gate && gateTotal ? `${((gate.held / gateTotal) * 100).toFixed(0)}%` : "—";
   const rateLabel = rate === null ? "—" : rate < 10 ? rate.toFixed(1) : Math.round(rate).toLocaleString();
   const emptyMessage = !activeRunId
     ? "Select a migration run to view live agent activity."
@@ -282,9 +304,9 @@ export function LiveOpsView({
     </section>
 
     <section className="kpi-grid">
-      <div className="kpi-card lime"><div className="kpi-top"><span>Decisions this run</span><span className="kpi-icon"><Icon name="bolt" size={17} /></span></div><strong>{activeRunId ? timeline.length.toLocaleString() : "—"}</strong><div className="kpi-foot"><span>real ledger entries</span><i /></div></div>
-      <div className="kpi-card green"><div className="kpi-top"><span>Decisions / min</span><span className="kpi-icon"><Icon name="pulse" size={17} /></span></div><strong>{activeRunId ? rateLabel : "—"}</strong><div className="kpi-foot"><span>from recorded timestamps</span><i /></div></div>
-      <div className="kpi-card amber"><div className="kpi-top"><span>Gate hold rate</span><span className="kpi-icon"><Icon name="shield" size={17} /></span></div><strong>{activeRunId ? gateRate : "—"}</strong><div className="kpi-foot"><span>{activeRunId && gateTotal ? `${gate.held} held · ${gate.cleared} cleared` : "no recorded gate decisions"}</span><i /></div></div>
+      <div className="kpi-card lime"><div className="kpi-top"><span>Ledger events this run</span><span className="kpi-icon"><Icon name="bolt" size={17} /></span></div><strong>{activeRunId ? timeline.length.toLocaleString() : "—"}</strong><div className="kpi-foot"><span>real ledger entries</span><i /></div></div>
+      <div className="kpi-card green"><div className="kpi-top"><span>Ledger entries / min</span><span className="kpi-icon"><Icon name="pulse" size={17} /></span></div><strong>{activeRunId ? rateLabel : "—"}</strong><div className="kpi-foot"><span>from this run&apos;s recorded timestamp range</span><i /></div></div>
+      <div className="kpi-card amber"><div className="kpi-top"><span>Gate hold rate</span><span className="kpi-icon"><Icon name="shield" size={17} /></span></div><strong>{activeRunId ? gateRate : "—"}</strong><div className="kpi-foot"><span>{activeRunId && gate ? `${gate.held} held · ${gate.cleared} cleared` : "no recorded gate result"}</span><i /></div></div>
       <div className="kpi-card coral"><div className="kpi-top"><span>Ledger refreshes</span><span className="kpi-icon"><Icon name="clock" size={17} /></span></div><strong>{refreshCount}</strong><div className="kpi-foot"><span>since this run opened</span><i /></div></div>
     </section>
 
@@ -332,7 +354,7 @@ export function LiveOpsView({
 
       <section className="charts-row">
         <div className="panel chart-panel">
-          <div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Throughput</h2><p>Recorded entries across chronological intervals</p></div></div><span className="panel-stat">{throughput ? `${throughput.timedCount} TIMED` : "NO RANGE"}</span></div>
+          <div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Ledger activity</h2><p>Recorded entries across the run timeline</p></div></div><span className="panel-stat">{throughput ? `${throughput.timedCount} TIMED` : "NO RANGE"}</span></div>
           <div className="chart-body">{throughput ? <ThroughputChart buckets={throughput.buckets} /> : <div className="chart-empty"><Icon name="clock" size={18} /><span>Insufficient timestamp range for throughput</span></div>}</div>
         </div>
         <div className="panel chart-panel">
@@ -340,8 +362,8 @@ export function LiveOpsView({
           <div className="chart-body">{confidence.count ? <Histogram buckets={confidence.buckets} /> : <div className="chart-empty"><Icon name="target" size={18} /><span>No confidence data is available in the Event Ledger</span></div>}</div>
         </div>
         <div className="panel chart-panel">
-          <div className="panel-heading compact"><div><span className="section-index">05</span><div><h2>Ledger event outcomes</h2><p>Status and operation across real events</p></div></div><span className="panel-stat">{timeline.length} TOTAL</span></div>
-          <div className="chart-body"><OutcomeDonut outcomes={outcomes} /></div>
+          <div className="panel-heading compact"><div><span className="section-index">05</span><div><h2>Ledger event types</h2><p>Semantic categories across real entries</p></div></div><span className="panel-stat">{timeline.length} TOTAL</span></div>
+          <div className="chart-body"><EventCategoryDonut categories={categories} /></div>
         </div>
       </section>
     </>}
