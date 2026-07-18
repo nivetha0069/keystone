@@ -115,12 +115,20 @@ export function normalizeComprehendTimeline(payload: unknown): TimelineEvent[] {
   return arrayFromPayload(payload, ["timeline", "events", "records", "items"])
     .map((item, index) => {
       const row = record(item);
-      const actor = text(row.actor ?? row.source, "Comprehend");
       const eventType = text(row.event_type ?? row.name ?? row.event_name, "analyzed").toLowerCase();
       const detail = detailText(row.detail ?? row.reasoning ?? row.message);
+      const actor = text(
+        referenceLabel(row.actor) ??
+        referenceLabel(row.agent) ??
+        referenceLabel(row.agent_name) ??
+        referenceLabel(row.source) ??
+        referenceLabel(row.record_name) ??
+        inferActorFromLedgerDetail(detail),
+        "Comprehend",
+      );
       const step = eventPhase(eventType, actor, detail);
-      const confidence = normalizeConfidence(row.confidence ?? confidenceFromDetail(detail));
-      const status = timelineStatus(eventType, detail);
+      const confidence = normalizeConfidence(row.confidence ?? row.mapping_confidence);
+      const status = timelineStatus(row.status, eventType, detail);
 
       return {
         id: text(row.id ?? row.sys_id, `EV-${index + 1}`),
@@ -129,7 +137,7 @@ export function normalizeComprehendTimeline(payload: unknown): TimelineEvent[] {
         name: eventTitle(actor, eventType, detail),
         recordName: text(referenceLabel(row.staged_ci) ?? row.record_name ?? row.ci_name, "Migration run"),
         className: text(row.proposed_class ?? row.ci_class ?? row.class, "Run event"),
-        operation: eventOperation(actor, detail, status),
+        operation: timelineOperation(row.operation ?? row.ire_operation, status),
         source: actor,
         confidence,
         time: text(row.sys_created_on ?? row.created_at ?? row.time, "Just now"),
@@ -225,19 +233,47 @@ function eventTitle(actor: string, eventType: string, detail: string) {
   return `${actor} · ${humanize(eventType)}`;
 }
 
-function eventOperation(actor: string, detail: string, status: TimelineEvent["status"]): Operation {
-  const normalized = `${actor} ${detail}`.toLowerCase();
+function timelineOperation(value: unknown, status: TimelineEvent["status"]): Operation {
+  const explicit = text(value, "").toUpperCase().replaceAll(" ", "_");
+  if (["INSERT", "UPDATE", "NO_CHANGE", "INSERT_AS_INCOMPLETE", "REVIEW", "ERROR"].includes(explicit)) {
+    return explicit as Operation;
+  }
   if (status === "error") return "ERROR";
-  if (normalized.includes("held") || normalized.includes("conflict") || normalized.includes("rejected")) return "REVIEW";
   return "NO_CHANGE";
 }
 
-function timelineStatus(eventType: string, detail: string): TimelineEvent["status"] {
+function timelineStatus(explicitStatus: unknown, eventType: string, detail: string): TimelineEvent["status"] {
+  const explicit = text(explicitStatus, "").toLowerCase();
+  if (["complete", "active", "review", "error"].includes(explicit)) return explicit as TimelineEvent["status"];
   const normalized = `${eventType} ${detail}`.toLowerCase();
   if (normalized.includes("error") || normalized.includes("failed") || normalized.includes("exception")) return "error";
-  if (normalized.includes("held") || normalized.includes("awaiting_approval") || eventType === "approved") return "review";
+  if (eventType === "approved") return "review";
   if (normalized.includes("started") && !normalized.includes("completed")) return "active";
   return "complete";
+}
+
+function inferActorFromLedgerDetail(detail: string) {
+  const normalized = detail.toLowerCase();
+  const action = normalized.match(/\baction:\s*([a-z0-9_]+)/)?.[1];
+  const actionActors: Record<string, string> = {
+    get_run_stats: "Router",
+    scan_classes: "Atlas",
+    scan_attributes: "Atlas",
+    scan_duplicates: "Scout",
+    scan_orphans: "Weaver",
+    apply_confidence_gate: "Sentry",
+    write_summary: "Ledger",
+  };
+  if (action && actionActors[action]) return actionActors[action];
+  if (normalized.includes("analysis session started") || normalized.includes("analysis completed")) return "Comprehend";
+  if (normalized.includes("planner requested completion") || normalized.includes("planner completion")) return "Ledger";
+  if (normalized.includes("confidence gate applied")) return "Sentry";
+  if (normalized.includes("class scan") || normalized.includes("attribute scan")) return "Atlas";
+  if (normalized.includes("duplicate scan")) return "Scout";
+  if (normalized.includes("orphan scan")) return "Weaver";
+  if (normalized.includes("executive summary")) return "Ledger";
+  if (normalized.includes("staged cis") || normalized.includes("run stats")) return "Router";
+  return undefined;
 }
 
 function normalizeFix(row: Record<string, unknown>, index: number): HealthFix {
@@ -290,11 +326,6 @@ function healthScore(value: unknown, confidence: number, status: ConfigurationIt
   if (status === "review") return Math.min(49, Math.round(confidence * 100));
   if (status === "incomplete") return Math.min(59, Math.round(confidence * 100));
   return Math.max(50, Math.round(confidence * 100));
-}
-
-function confidenceFromDetail(detail: string) {
-  const match = detail.match(/\b(\d{1,3})\s*%/);
-  return match ? Number(match[1]) : undefined;
 }
 
 function normalizeConfidence(value: unknown, fallback = 0) {
