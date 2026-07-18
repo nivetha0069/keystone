@@ -360,14 +360,14 @@ function normalizeConfidence(value: unknown, fallback = 0) {
   return Math.max(0, Math.min(1, parsed > 1 ? parsed / 100 : parsed));
 }
 
-function referenceLabel(value: unknown): string | undefined {
+export function referenceLabel(value: unknown): string | undefined {
   if (typeof value === "string") return value.trim() || undefined;
   const ref = record(value);
   const label = ref.display_value ?? ref.name ?? ref.number ?? ref.source_identifier ?? ref.sys_id;
   return label === undefined || label === null ? undefined : String(label).trim() || undefined;
 }
 
-function referenceId(value: unknown): string | undefined {
+export function referenceId(value: unknown): string | undefined {
   if (typeof value === "string") return value.trim() || undefined;
   const ref = record(value);
   const id = ref.value ?? ref.sys_id ?? ref.id;
@@ -447,7 +447,7 @@ function jsonRecord(value: unknown): Record<string, unknown> {
   }
 }
 
-function arrayFromPayload(payload: unknown, preferredKeys: string[]): unknown[] {
+export function arrayFromPayload(payload: unknown, preferredKeys: string[]): unknown[] {
   if (Array.isArray(payload)) return payload;
   const value = record(payload);
   for (const key of [...preferredKeys, "result", "data", "items", "records"]) {
@@ -460,21 +460,23 @@ function arrayFromPayload(payload: unknown, preferredKeys: string[]): unknown[] 
   return [];
 }
 
-function objectFromPayload(payload: unknown, preferredKeys: string[]): Record<string, unknown> {
+export function objectFromPayload(payload: unknown, preferredKeys: string[]): Record<string, unknown> {
   const value = record(payload);
+  // Drill through repeated envelope wrappers (the bridge double-wraps as result.result),
+  // matching arrayFromPayload. Keep the key on recursion so nested same-key wrappers unwrap.
   for (const key of preferredKeys) {
     if (value[key] && typeof value[key] === "object" && !Array.isArray(value[key])) {
-      return objectFromPayload(value[key], preferredKeys.filter(candidate => candidate !== key));
+      return objectFromPayload(value[key], preferredKeys);
     }
   }
   return value;
 }
 
-function record(value: unknown): Record<string, unknown> {
+export function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function text(value: unknown, fallback = "") {
+export function text(value: unknown, fallback = "") {
   return value === undefined || value === null || value === "" ? fallback : String(value);
 }
 
