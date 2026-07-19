@@ -69,6 +69,8 @@ export function normalizeComprehendCis(payload: unknown): ConfigurationItem[] {
 
     return {
       id: text(row.sys_id ?? row.id ?? row.number, `DCI-${index + 1}`),
+      stagedCiId: text(row.sys_id ?? row.staged_ci_id ?? row.id, ""),
+      migrationRunId: referenceId(row.migration_run) ?? text(row.migration_run_id, ""),
       name,
       className,
       ip: text(row.ip ?? row.ip_address ?? values.ip ?? values.ip_address, "Not supplied"),

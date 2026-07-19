@@ -137,6 +137,13 @@ export type IreActionResponse = {
   error?: IreActionError;
 };
 
+export type IreLifecycleSnapshot = {
+  simulation?: Pick<IreActionResponse, "success" | "state" | "status" | "simulation_correlation_id" | "correlation_id">;
+  approval?: Pick<IreActionResponse, "success" | "state" | "status">;
+  execution?: Pick<IreActionResponse, "success" | "state" | "execution_correlation_id" | "correlation_id" | "error">;
+  verification?: Pick<IreActionResponse, "success" | "state" | "status" | "error">;
+};
+
 export const IRE_ACTIONS = ["simulate", "approve", "execute", "verify"] as const;
 
 export function isIreAction(value: string): value is IreAction {
@@ -230,6 +237,44 @@ export function normalizeIreActionResponse(action: IreAction, payload: unknown):
     playback_event_ids: stringArray(row.playback_event_ids ?? row.playbackEventIds),
     error: errorObject(row.error),
   };
+}
+
+export function deriveIreLifecycleState(snapshot: IreLifecycleSnapshot): IreLifecycleState {
+  if (snapshot.verification) {
+    if (snapshot.verification.success && (snapshot.verification.state === "verified" || snapshot.verification.status === "verified")) return "verified";
+    return "verification_failed";
+  }
+
+  if (snapshot.execution) {
+    if (snapshot.execution.success) return "executed_pending_verification";
+    if (snapshot.execution.error?.code === "STALE_SIMULATION") return "execution_rejected_stale_simulation";
+    return snapshot.execution.state ?? "execution_rejected_stale_simulation";
+  }
+
+  if (snapshot.approval?.success && snapshot.approval.status === "approved") return "approved_for_execution";
+  if (snapshot.approval?.success && snapshot.approval.status === "rejected") return "simulated_pending_approval";
+
+  if (snapshot.simulation) {
+    if (!snapshot.simulation.success) return "simulation_failed";
+    return snapshot.simulation.state ?? "simulated_pending_approval";
+  }
+
+  return "not_simulated";
+}
+
+export function ireLifecycleLabel(state: IreLifecycleState): string {
+  const labels: Record<IreLifecycleState, string> = {
+    not_simulated: "Not simulated",
+    simulation_failed: "Simulation failed",
+    simulated_pending_approval: "Pending approval",
+    approved_for_execution: "Approved for execution",
+    execution_rejected_stale_simulation: "Execution rejected",
+    executing: "Executing",
+    executed_pending_verification: "Pending verification",
+    verified: "Verified",
+    verification_failed: "Verification failed",
+  };
+  return labels[state];
 }
 
 function parsePayload(payload: string | undefined): Record<string, unknown> {
