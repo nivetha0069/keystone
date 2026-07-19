@@ -2,6 +2,8 @@ export type Operation = "INSERT" | "UPDATE" | "NO_CHANGE" | "INSERT_AS_INCOMPLET
 
 export type ConfigurationItem = {
   id: string;
+  stagedCiId?: string;
+  migrationRunId?: string;
   name: string;
   className: string;
   ip: string;

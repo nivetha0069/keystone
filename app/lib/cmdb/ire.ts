@@ -2,6 +2,19 @@
 
 export type IreMode = "simulate" | "execute";
 
+export type IreAction = "simulate" | "approve" | "execute" | "verify";
+
+export type IreLifecycleState =
+  | "not_simulated"
+  | "simulation_failed"
+  | "simulated_pending_approval"
+  | "approved_for_execution"
+  | "execution_rejected_stale_simulation"
+  | "executing"
+  | "executed_pending_verification"
+  | "verified"
+  | "verification_failed";
+
 export type IrePreviewItem = {
   className: string;
   internal_id: string;
@@ -37,6 +50,49 @@ export type IreValidationResult = {
   issues: IreValidationIssue[];
 };
 
+export type IreActionRequestBase = {
+  migration_run_id: ServiceNowSysId;
+  staged_ci_id: ServiceNowSysId;
+  correlation_id: string;
+  idempotency_key: string;
+};
+
+export type IreSimulateRequest = IreActionRequestBase;
+
+export type IreApprovalRequest = IreActionRequestBase & {
+  decision: "approved" | "rejected" | "deferred";
+  rationale: string;
+  simulation_correlation_id?: string;
+};
+
+export type IreExecuteRequest = IreActionRequestBase & {
+  simulation_correlation_id: string;
+};
+
+export type IreVerifyRequest = IreActionRequestBase & {
+  execution_correlation_id: string;
+};
+
+export type IreActionRequest = IreSimulateRequest | IreApprovalRequest | IreExecuteRequest | IreVerifyRequest;
+
+export type IreActionError = {
+  code:
+    | "NOT_CONFIGURED"
+    | "INVALID_REQUEST"
+    | "UNAUTHORIZED"
+    | "FORBIDDEN"
+    | "NOT_FOUND"
+    | "SIMULATION_REQUIRED"
+    | "APPROVAL_REQUIRED"
+    | "STALE_SIMULATION"
+    | "DUPLICATE_EXECUTION"
+    | "IRE_FAILED"
+    | "VERIFY_MISMATCH"
+    | "UPSTREAM_UNREACHABLE";
+  message: string;
+  details?: unknown;
+};
+
 export type IreServiceBoundary = {
   simulate(stagedCiId: ServiceNowSysId): Promise<IreSimulationResult>;
   execute(stagedCiId: ServiceNowSysId): Promise<IreExecutionResult>;
@@ -57,6 +113,40 @@ export type IreExecutionResult = {
   status: "inserted" | "updated" | "unchanged" | "partially_verified" | "failed";
   verification_summary?: string;
 };
+
+export type IreActionResponse = {
+  success: boolean;
+  action: IreAction;
+  state: IreLifecycleState;
+  migration_run_id?: ServiceNowSysId;
+  staged_ci_id?: ServiceNowSysId;
+  correlation_id?: string;
+  idempotency_key?: string;
+  simulation_correlation_id?: string;
+  execution_correlation_id?: string;
+  simulation_fingerprint?: string;
+  finding?: ServiceNowReference;
+  review_decision?: ServiceNowReference;
+  matched_ci?: ServiceNowReference;
+  target_ci?: ServiceNowReference;
+  status?: IreSimulationResult["status"] | IreExecutionResult["status"] | "approved" | "rejected" | "deferred" | "verified";
+  operation?: "insert" | "update" | "unchanged" | "conflict" | "incomplete" | "failed";
+  evidence?: string[];
+  verification_summary?: string;
+  playback_event_ids?: ServiceNowSysId[];
+  error?: IreActionError;
+};
+
+export const IRE_ACTIONS = ["simulate", "approve", "execute", "verify"] as const;
+
+export function isIreAction(value: string): value is IreAction {
+  return (IRE_ACTIONS as readonly string[]).includes(value);
+}
+
+export function createIreCorrelationId(prefix: IreAction, seed = Date.now()): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+  return `ks-${prefix}-${seed}-${random}`;
+}
 
 export function buildIrePayloadPreview(record: StagedCiRecord): IrePayloadPreview {
   const parsedPayload = parsePayload(record.payload);
@@ -114,6 +204,34 @@ export function validateIrePayloadPreview(preview: IreOperationPreview): IreVali
   return { valid: issues.length === 0, issues };
 }
 
+export function normalizeIreActionResponse(action: IreAction, payload: unknown): IreActionResponse {
+  const row = unwrapObject(payload);
+  const success = bool(row.success, !row.error);
+
+  return {
+    success,
+    action: actionFrom(row.action, action),
+    state: lifecycleState(row.state, action, success),
+    migration_run_id: stringValue(row.migration_run_id ?? row.migrationRunId),
+    staged_ci_id: stringValue(row.staged_ci_id ?? row.stagedCiId),
+    correlation_id: stringValue(row.correlation_id ?? row.correlationId),
+    idempotency_key: stringValue(row.idempotency_key ?? row.idempotencyKey),
+    simulation_correlation_id: stringValue(row.simulation_correlation_id ?? row.simulationCorrelationId),
+    execution_correlation_id: stringValue(row.execution_correlation_id ?? row.executionCorrelationId),
+    simulation_fingerprint: stringValue(row.simulation_fingerprint ?? row.simulationFingerprint),
+    finding: reference(row.finding),
+    review_decision: reference(row.review_decision ?? row.reviewDecision),
+    matched_ci: reference(row.matched_ci ?? row.matchedCi),
+    target_ci: reference(row.target_ci ?? row.targetCi),
+    status: stringValue(row.status) as IreActionResponse["status"],
+    operation: stringValue(row.operation) as IreActionResponse["operation"],
+    evidence: stringArray(row.evidence),
+    verification_summary: stringValue(row.verification_summary ?? row.verificationSummary),
+    playback_event_ids: stringArray(row.playback_event_ids ?? row.playbackEventIds),
+    error: errorObject(row.error),
+  };
+}
+
 function parsePayload(payload: string | undefined): Record<string, unknown> {
   if (!payload) return {};
   try {
@@ -141,4 +259,75 @@ function normalizedValues(payload: Record<string, unknown>): Record<string, stri
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function unwrapObject(payload: unknown): Record<string, unknown> {
+  const root = objectRecord(payload) || {};
+  const result = objectRecord(root.result);
+  const data = objectRecord(root.data);
+  return result || data || root;
+}
+
+function bool(value: unknown, fallback: boolean) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function stringValue(value: unknown) {
+  return value === undefined || value === null || value === "" ? undefined : String(value);
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap(item => stringValue(item) ?? []);
+}
+
+function actionFrom(value: unknown, fallback: IreAction): IreAction {
+  const candidate = stringValue(value);
+  return candidate && isIreAction(candidate) ? candidate : fallback;
+}
+
+function lifecycleState(value: unknown, action: IreAction, success: boolean): IreLifecycleState {
+  const candidate = stringValue(value);
+  const states: IreLifecycleState[] = [
+    "not_simulated",
+    "simulation_failed",
+    "simulated_pending_approval",
+    "approved_for_execution",
+    "execution_rejected_stale_simulation",
+    "executing",
+    "executed_pending_verification",
+    "verified",
+    "verification_failed",
+  ];
+  if (candidate && states.includes(candidate as IreLifecycleState)) return candidate as IreLifecycleState;
+  if (!success && action === "simulate") return "simulation_failed";
+  if (!success && action === "verify") return "verification_failed";
+  if (!success && action === "execute") return "execution_rejected_stale_simulation";
+  if (action === "simulate") return "simulated_pending_approval";
+  if (action === "approve") return "approved_for_execution";
+  if (action === "execute") return "executed_pending_verification";
+  return "verified";
+}
+
+function reference(value: unknown): ServiceNowReference | undefined {
+  if (typeof value === "string" && value) return { sys_id: value };
+  const row = objectRecord(value);
+  if (!row) return undefined;
+  const sysId = stringValue(row.sys_id ?? row.value);
+  if (!sysId) return undefined;
+  return {
+    sys_id: sysId,
+    display_value: stringValue(row.display_value ?? row.displayValue ?? row.name),
+    table: stringValue(row.table),
+  };
+}
+
+function errorObject(value: unknown): IreActionError | undefined {
+  const row = objectRecord(value);
+  if (!row) return undefined;
+  return {
+    code: (stringValue(row.code) || "IRE_FAILED") as IreActionError["code"],
+    message: stringValue(row.message) || "The IRE action failed.",
+    details: row.details,
+  };
 }

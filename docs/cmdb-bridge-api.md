@@ -18,8 +18,14 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/health` | `/health` | GET | Aggregates staged records, staged relationships, and findings. |
 | `/api/cmdb/import` | `/import` | POST | Creates a migration run and quarantined staged records. |
 | `/api/cmdb/remediate` | `/remediate` | POST | Records a proposal/review decision only. It does not write to CMDB. |
+| `/api/cmdb/ire/simulate` | `/ire/simulate` | POST | Requests non-mutating single-record IRE simulation. |
+| `/api/cmdb/ire/approve` | `/ire/approve` | POST | Approves, rejects, or defers the single actionable remediation finding. |
+| `/api/cmdb/ire/execute` | `/ire/execute` | POST | Requests approved single-record IRE execution by identifier only. |
+| `/api/cmdb/ire/verify` | `/ire/verify` | POST | Verifies the CI returned by a specific execution correlation id. |
 
 All read endpoints accept an optional `run` query parameter containing a `migration_run` sys_id.
+
+The IRE action routes accept only identifiers and correlation metadata from the browser. Execute requests must not include target class, final operation, target CI, CMDB values, or an authoritative IRE payload. ServiceNow must rebuild and revalidate the payload from staged data and approval records before calling IRE.
 
 ## ServiceNow table usage
 
@@ -106,6 +112,35 @@ Current choices:
 - `/health` is deterministic but coarse and currently uses only completeness, correctness, and compliance.
 - The write endpoints hardcode `TEAM = 'THE_DOTWALKERS'`; treat this as simulated isolation for the hackathon slice.
 - There is no pagination metadata yet, while `/cis`, `/relationships`, and `/timeline` use fixed limits.
+
+## Milestone 4 IRE action contract
+
+ServiceNow is authoritative for authentication, role checks, migration-run ownership, staged-record ownership, allowed classes, allowed attributes, approval state, idempotency, payload rebuild, IRE calls, and verification. `team_prefix` is only a partitioning attribute and must not be treated as authentication evidence.
+
+Every IRE action receives:
+
+```json
+{
+  "migration_run_id": "sys_id",
+  "staged_ci_id": "sys_id",
+  "correlation_id": "ks-action-...",
+  "idempotency_key": "action:run:record:..."
+}
+```
+
+Additional fields:
+
+- `/ire/approve`: `decision`, `rationale`, optional `simulation_correlation_id`.
+- `/ire/execute`: `simulation_correlation_id` only.
+- `/ire/verify`: `execution_correlation_id` only.
+
+Simulation must generate a deterministic fingerprint from the authoritative staged record, update/version metadata, migration run, proposed class, normalized allowed attributes, source identity, and intended IRE operation/result classification. Execution must rebuild the payload and reject if the current fingerprint differs from the approved simulation fingerprint.
+
+Approval must use one actionable `finding` for the staged CI remediation proposal. Repeated approval requests update or reuse the related `review_decision`; they must not create duplicate actionable findings for the same simulated remediation.
+
+Verification must read back the target CI for the specific `execution_correlation_id`; it must not verify an older execution event for the same staged CI.
+
+Derived state is reconstructed from `event_ledger`, the single actionable finding, and its review decision. No ServiceNow field or choice changes are required for the Milestone 4 state machine.
 
 ## Milestone 2 boundary
 

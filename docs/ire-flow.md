@@ -44,7 +44,31 @@ Batch execution is deferred until single-record simulation, approval, execution,
 
 Simulation/identification must not modify the CMDB. It is not a fake boolean around execution.
 
-Before finalizing the Script Include, confirm the exact scoped APIs available in the target instance and release. Execution must use `sn_cmdb.IdentificationEngine.createOrUpdateCI(source, JSON.stringify(payload))` or an appropriate enhanced API only when the instance supports it and its options are needed.
+The confirmed scoped server APIs are:
+
+- Simulation: `sn_cmdb.IdentificationEngine.identifyCI(...)` or `identifyCIEnhanced(...)`.
+- Execution: `sn_cmdb.IdentificationEngine.createOrUpdateCI(...)` or `createOrUpdateCIEnhanced(...)`.
+
+Use the non-enhanced APIs by default. Use enhanced APIs only when the target instance supports them and enhanced options are intentionally needed.
+
+The browser must never submit the final operation, target class, target CI, CMDB values, or authoritative IRE payload for execution. Execute requests are identifier-only and ServiceNow must rebuild and revalidate the payload from the staged record and approval records.
+
+## Simulation freshness, idempotency, and concurrency
+
+Each simulation must generate a deterministic fingerprint from:
+
+- staged record sys_id and update/version metadata
+- migration run
+- proposed class
+- normalized allowed attributes
+- source identity
+- intended IRE operation or result classification
+
+Execution must rebuild the same authoritative inputs and reject the request if the fingerprint no longer matches the approved simulation. Record compact fingerprint and correlation metadata in `event_ledger.detail` and/or the single actionable finding/review context.
+
+All simulation, approval, execution, and verification requests must carry a correlation/idempotency identifier. ServiceNow must use those identifiers to make retries safe and to prevent duplicate execution caused by double-clicks or concurrent requests.
+
+Verification must be tied to the specific execution correlation id. It must not verify an older execution for the same staged record.
 
 ## Match concepts
 
@@ -60,9 +84,34 @@ The current schema has only `staged_ci_record.matched_ci`. During early mileston
 
 Approval is represented through `finding` and `review_decision`:
 
-- `finding` explains the issue, recommendation, or AI summary.
+- one actionable `finding` explains the proposed single-record remediation.
 - `review_decision` records approve/reject/defer, reviewer, rationale, and policy approval.
+- repeated approval requests reuse or update the related review decision and must not create duplicate actionable findings.
 - IRE execution must require an explicit human or policy approval for low-confidence or material changes.
+
+## Single-record lifecycle state machine
+
+Authoritative sources:
+
+- simulation result: latest valid ServiceNow simulation event and compact fingerprint for the staged CI
+- approval: the single actionable finding plus its current review decision
+- execution: ServiceNow IRE execution event tied to an execution correlation id
+- verification: ServiceNow read-back result tied to the same execution correlation id
+- playback: ordered `event_ledger` entries
+
+Derived states, without adding fields:
+
+- `not_simulated`
+- `simulation_failed`
+- `simulated_pending_approval`
+- `approved_for_execution`
+- `execution_rejected_stale_simulation`
+- `executing`
+- `executed_pending_verification`
+- `verified`
+- `verification_failed`
+
+`team_prefix` is a partitioning attribute, not authentication evidence. ServiceNow must validate authenticated identity, roles, migration-run ownership, staged-record ownership, allowed classes, and allowed attributes before any simulation, approval, execution, or verification action.
 
 ## Relationship promotion
 
@@ -91,3 +140,26 @@ Use `event_ledger` for compact lifecycle events such as:
 - `verification_failed`
 
 `detail` should contain small playback metadata, not full source rows, complete model responses, or large IRE payloads/results.
+
+## Agent Integration Boundary
+
+Milestone 4 exposes a deterministic remediation tool layer that a future Remediation Agent can orchestrate.
+
+The endpoints must remain usable without an agent.
+
+The future Remediation Agent may:
+
+- request simulation;
+- interpret simulation results;
+- request approval;
+- check approval;
+- initiate approved execution;
+- request verification.
+
+The agent may not:
+
+- construct the authoritative IRE payload;
+- override validation;
+- approve its own high-risk action;
+- bypass the simulation fingerprint;
+- write directly to CMDB tables.

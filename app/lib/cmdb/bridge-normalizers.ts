@@ -20,6 +20,8 @@ export function normalizeCis(payload: unknown): ConfigurationItem[] {
 
     return {
       id: str(row.id ?? row.sys_id ?? row.ci_id, `CI-${index + 1}`),
+      stagedCiId: str(row.stagedCiId ?? row.staged_ci_id ?? row.sys_id ?? row.id, `CI-${index + 1}`),
+      migrationRunId: optionalStr(row.migrationRunId ?? row.migration_run_id ?? referenceValue(row.migration_run)),
       name: str(row.displayName ?? row.display_name ?? row.name ?? row.ci_name ?? row.host_name, `Unnamed CI ${index + 1}`),
       className: str(row.className ?? row.class ?? row.sys_class_name, "Unclassified"),
       ip: str(row.ip ?? row.ip_address),
@@ -130,6 +132,17 @@ function arrayFromPayload(payload: unknown): unknown[] {
 
 function str(value: unknown, fallback = "-") {
   return value === undefined || value === null || value === "" ? fallback : String(value);
+}
+
+function optionalStr(value: unknown) {
+  return value === undefined || value === null || value === "" ? undefined : String(value);
+}
+
+function referenceValue(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  return row.sys_id ?? row.value;
 }
 
 function num(value: unknown, fallback = 0) {
