@@ -307,7 +307,7 @@ export function CmdbDashboard() {
     <main className="main-content">
       <header className="topbar">
         <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : activeRunLabel || "ALL MIGRATION RUNS"}</strong></div>
-        <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
+        <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><a className="ghost-button" href={activeRunId ? `/ai-usage?run=${encodeURIComponent(activeRunId)}` : "/ai-usage"}><Icon name="spark" size={15} /> AI Usage</a><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
