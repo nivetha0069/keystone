@@ -177,18 +177,18 @@ export function buildMaraReasoningSteps(timeline: TimelineEvent[]): MaraReasonin
   return ordered.map(event => {
     const actor = effectiveActor(event);
     const action = actionOf(event);
-    const thought = event.reasoning.match(/\bThought:\s*(.*?)(?:\s*\|\s*Action:|$)/i)?.[1]?.trim();
-    const observation = event.reasoning.match(/\bObservation:\s*(.*)$/i)?.[1]?.trim();
+    const thought = topLevelThought(event.reasoning);
+    const observation = topLevelObservation(event.reasoning);
     const kind: MaraReasoningKind = isErrorEvent(event)
       ? "error"
-      : action
-        ? "decision"
-        : observation
-          ? "observation"
-          : /analysis completed|verified|finished|summary finding written/i.test(event.reasoning)
-            ? "result"
+      : observation
+        ? "observation"
+        : isResultDetail(event.reasoning)
+          ? "result"
+          : action
+            ? "decision"
             : "event";
-    const summary = thought || observation || compactDetail(event.reasoning);
+    const summary = thought || (observation ? observationSummary(observation) : compactDetail(event.reasoning));
     const step: MaraReasoningStep = {
       id: event.id,
       seq: event.seq,
@@ -242,11 +242,18 @@ export function deriveMaraServiceNowSupervisor(timeline: TimelineEvent[]): MaraS
 }
 
 function actionOf(event: TimelineEvent) {
-  return event.reasoning.match(/\bAction:\s*([a-z0-9_]+)/i)?.[1]?.toLowerCase();
+  const detail = event.reasoning.trim();
+  if (!/^(Thought|Handoff|Action):/i.test(detail)) return undefined;
+  return detail.match(/(?:^|\|\s*)Action:\s*([a-z0-9_]+)/i)?.[1]?.toLowerCase();
+}
+
+function plannerActionOf(event: TimelineEvent) {
+  if (!/^Thought:/i.test(event.reasoning.trim())) return undefined;
+  return actionOf(event);
 }
 
 function isObservation(event: TimelineEvent) {
-  return /\bObservation:/i.test(event.reasoning);
+  return Boolean(topLevelObservation(event.reasoning));
 }
 
 function isErrorEvent(event: TimelineEvent) {
@@ -345,7 +352,7 @@ function duplicateActionCheck(timeline: TimelineEvent[]): MaraCheck {
   const title = "Duplicate planner actions";
   const seqsPerAction = new Map<string, number[]>();
   for (const event of timeline) {
-    const action = actionOf(event);
+    const action = plannerActionOf(event);
     if (action) seqsPerAction.set(action, [...(seqsPerAction.get(action) ?? []), event.seq]);
   }
   if (!seqsPerAction.size) return check("duplicates", title, "unverifiable", "No planner actions were recorded in the Event Ledger.");
@@ -448,7 +455,7 @@ function actorRecords(timeline: TimelineEvent[]): MaraActorRecord[] {
       lastDetail: "",
     };
     current.events += 1;
-    if (actionOf(event)) current.actions += 1;
+    if (plannerActionOf(event)) current.actions += 1;
     else if (isObservation(event)) current.observations += 1;
     if (isErrorEvent(event)) current.errors += 1;
     if (event.seq >= current.lastSeq) {
@@ -486,4 +493,87 @@ function effectiveActor(event: TimelineEvent): string {
 function compactDetail(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length > 320 ? `${normalized.slice(0, 317)}...` : normalized;
+}
+
+function topLevelThought(value: string) {
+  return value.trim().match(/^Thought:\s*(.*?)(?:\s*\|\s*Action:|$)/i)?.[1]?.trim();
+}
+
+function topLevelObservation(value: string) {
+  return value.trim().match(/^Observation:\s*([\s\S]*)$/i)?.[1]?.trim();
+}
+
+function isResultDetail(value: string) {
+  return /\b(?:analysis|mara)\s+completed\b|\bverified\b|\bfinished\b|summary finding written/i.test(value);
+}
+
+function observationSummary(value: string): string {
+  const normalized = value.trim();
+  if (!normalized.startsWith("{")) return compactDetail(normalized);
+
+  try {
+    const payload = record(JSON.parse(normalized));
+    const explicit = text(payload.observation ?? payload.summary ?? payload.message).trim();
+    const warning = text(payload.warning).trim();
+    if (explicit) return compactDetail([explicit, warning].filter(Boolean).join(" "));
+
+    const run = record(payload.run);
+    const ciCounts = record(payload.ci_counts ?? payload.ciCounts);
+    const findings = record(payload.findings);
+    const reviews = record(payload.reviews);
+    const ledger = record(payload.ledger);
+    const parts = [
+      text(run.number) && `Run ${text(run.number)} · ${text(run.state, "state unavailable")}`,
+      text(ciCounts.total) && `${text(ciCounts.total)} staged CIs (${text(ciCounts.cleared, "0")} cleared, ${text(ciCounts.held, "0")} held)`,
+      text(findings.total) && `${text(findings.total)} findings`,
+      text(reviews.total_decisions ?? reviews.totalDecisions) && `${text(reviews.total_decisions ?? reviews.totalDecisions)} review decisions`,
+      text(ledger.count) && `${text(ledger.count)} prior ledger events`,
+    ].filter(Boolean);
+    if (parts.length) return compactDetail(parts.join(" · "));
+  } catch {
+    const aggregate = aggregateObservationFromTruncatedJson(normalized);
+    if (aggregate) return aggregate;
+  }
+
+  return compactDetail(normalized);
+}
+
+function aggregateObservationFromTruncatedJson(value: string) {
+  const run = jsonObjectFragment(value, "run");
+  const ciCounts = jsonObjectFragment(value, "ci_counts");
+  const findings = jsonObjectFragment(value, "findings");
+  const reviews = jsonObjectFragment(value, "reviews");
+  const ledger = jsonObjectFragment(value, "ledger");
+  const runNumber = jsonStringValue(run, "number");
+  const runState = jsonStringValue(run, "state");
+  const totalCis = jsonNumberValue(ciCounts, "total");
+  const cleared = jsonNumberValue(ciCounts, "cleared");
+  const held = jsonNumberValue(ciCounts, "held");
+  const totalFindings = jsonNumberValue(findings, "total");
+  const totalDecisions = jsonNumberValue(reviews, "total_decisions");
+  const ledgerCount = jsonNumberValue(ledger, "count");
+  const parts = [
+    runNumber && `Run ${runNumber}${runState ? ` · ${runState}` : ""}`,
+    totalCis && `${totalCis} staged CIs (${cleared ?? "0"} cleared, ${held ?? "0"} held)`,
+    totalFindings && `${totalFindings} findings`,
+    totalDecisions !== undefined && `${totalDecisions} review decisions`,
+    ledgerCount && `${ledgerCount} prior ledger events`,
+  ].filter(Boolean);
+  return parts.length ? compactDetail(parts.join(" · ")) : "";
+}
+
+function jsonObjectFragment(value: string, key: string) {
+  const start = value.search(new RegExp(`"${key}"\\s*:\\s*\\{`, "i"));
+  if (start < 0) return "";
+  const remainder = value.slice(start);
+  const nextObject = remainder.slice(1).search(/,"[a-z0-9_]+":\{/i);
+  return nextObject < 0 ? remainder : remainder.slice(0, nextObject + 1);
+}
+
+function jsonStringValue(value: string, key: string) {
+  return value.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, "i"))?.[1];
+}
+
+function jsonNumberValue(value: string, key: string) {
+  return value.match(new RegExp(`"${key}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`, "i"))?.[1];
 }
