@@ -1,5 +1,12 @@
 # Keystone Agentic CMDB PRD
 
+## Document Control
+
+**Date:** 2026-07-19  
+**Purpose:** Central product requirements document for Keystone's agentic CMDB migration experience.  
+**Companion architecture document:** `docs/keystone-technical-stack.md`  
+**Non-negotiable rule:** ServiceNow remains authoritative for governed CMDB mutation; Keystone must not write directly to `cmdb_ci*` or `cmdb_rel_ci`.
+
 ## 1. Executive Summary
 
 Keystone is an AI-powered CMDB migration operations center for teams moving imperfect source-system data into ServiceNow CMDB safely. It is for CMDB administrators, CMDB architects, migration consultants, data source owners, and governance approvers who need to understand, prepare, simulate, approve, execute, and verify CMDB migration work without relying on record-by-record manual review.
