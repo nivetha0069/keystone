@@ -304,9 +304,13 @@ export function CmdbDashboard() {
         body: JSON.stringify({ migration_run_id: runId }),
       });
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      // ServiceNow wraps the payload in a `result` envelope.
+      const payload = body.result && typeof body.result === "object" && !Array.isArray(body.result)
+        ? body.result as Record<string, unknown>
+        : body;
       // ServiceNow may queue Comprehend during import itself; its 409 with
       // already_running means the pipeline is active, not that the start failed.
-      const alreadyRunning = body.already_running === true || body.alreadyRunning === true;
+      const alreadyRunning = payload.already_running === true || payload.alreadyRunning === true;
       if (!response.ok && !alreadyRunning) {
         throw new Error(typeof body.error === "string" ? body.error : `Comprehend start failed (${response.status}).`);
       }

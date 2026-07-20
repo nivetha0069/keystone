@@ -47,8 +47,21 @@ export async function POST(request: Request) {
       cache: "no-store",
     });
     const body = await response.text();
+    // ServiceNow answers 409 when Comprehend was already queued (it starts the
+    // pipeline during import itself). That is a benign outcome, not a failure,
+    // so normalize it to 200 rather than leaving a spurious console error.
+    let status = response.status;
+    if (status === 409) {
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const payload = parsed.result && typeof parsed.result === "object" && !Array.isArray(parsed.result)
+          ? parsed.result as Record<string, unknown>
+          : parsed;
+        if (payload.already_running === true || payload.alreadyRunning === true) status = 200;
+      } catch {}
+    }
     return new Response(body, {
-      status: response.status,
+      status,
       headers: { "content-type": response.headers.get("content-type") || "application/json" },
     });
   } catch (error) {
