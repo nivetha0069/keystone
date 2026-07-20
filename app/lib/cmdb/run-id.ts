@@ -9,6 +9,9 @@
 
 export type ImportedRun = { id: string; label: string };
 
+// Keys that carry the number of staged CI rows created by an import response.
+const STAGED_COUNT_KEYS = ["staged", "stagedCount", "staged_count", "stagedCiCount", "staged_ci_count"] as const;
+
 // A ServiceNow sys_id is exactly 32 hex characters.
 const SYS_ID_PATTERN = /^[0-9a-f]{32}$/i;
 
@@ -134,4 +137,22 @@ export function importedRunFromResponse(response: PlainObject, fallbackLabel: st
   }
 
   return { id: "", label: fallbackLabel };
+}
+
+/**
+ * Number of staged CI rows named by an import response. An explicit `0` means
+ * the source produced no CIs and Comprehend must not run; callers use that to
+ * warn the user and hold the run in place instead of navigating into it.
+ * Returns `undefined` when the response simply omits the count.
+ */
+export function stagedCountFromResponse(response: unknown): number | undefined {
+  const nodes = collectEnvelopes(response);
+  for (const key of STAGED_COUNT_KEYS) {
+    for (const node of nodes) {
+      const value = node[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+    }
+  }
+  return undefined;
 }

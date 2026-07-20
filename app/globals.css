@@ -116,6 +116,10 @@ button { color: inherit; }
 .run-id-field input:focus { border-color: rgba(199, 243, 77, .45); }
 .run-context-actions { display: flex; align-items: center; gap: 7px; }
 .run-context-actions .primary-button { min-height: 36px; white-space: nowrap; }
+.run-analysis-status { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px; color: var(--muted); background: rgba(255, 255, 255, .02); border: 1px solid var(--line); font: 10px var(--mono); letter-spacing: .04em; }
+.run-analysis-status.status-error { color: var(--coral); border-color: rgba(255, 101, 66, .35); }
+.run-analysis-status.status-starting { color: var(--amber); border-color: rgba(232, 178, 61, .35); }
+.run-analysis-status.status-started { color: var(--green); border-color: rgba(89, 197, 139, .35); }
 .resource-statuses { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 7px; padding-top: 10px; border-top: 1px solid var(--line); }
 .resource-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; color: var(--muted); border: 1px solid var(--line); font: 8px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
 .resource-status i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }

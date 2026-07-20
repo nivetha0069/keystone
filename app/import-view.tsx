@@ -3,10 +3,10 @@
 import { useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
-import { importedRunFromResponse, isSysId, type ImportedRun } from "./lib/cmdb/run-id";
+import { importedRunFromResponse, isSysId, stagedCountFromResponse, type ImportedRun } from "./lib/cmdb/run-id";
 
 type ImportMode = "file" | "url" | "paste";
-type ImportStatus = "idle" | "staging" | "staged" | "demo" | "error";
+type ImportStatus = "idle" | "staging" | "staged" | "empty" | "demo" | "error";
 export type { ImportedRun } from "./lib/cmdb/run-id";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -53,7 +53,7 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun, startAnalysis?: boolean) => void }) {
+export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<ImportMode>("file");
   const [sourceName, setSourceName] = useState("External company dataset");
@@ -209,11 +209,22 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
       }
 
       const batchId = importedRun.label || importedRun.id;
+      const stagedCount = stagedCountFromResponse(result);
+      // ServiceNow /import already queues comprehend.requested and flips the
+      // run to `analyzing`; the frontend never re-triggers Comprehend, it only
+      // opens the run and polls status. An explicit `staged: 0` means no CIs
+      // were created — hold the run in place with a warning instead of pretending
+      // analysis is progressing.
+      if (stagedCount === 0) {
+        setStatus("empty");
+        setStatusMessage(
+          `Batch ${batchId} landed, but no CI rows were staged. Keep run ${importedRun.id.slice(0, 8)} for diagnosis; analysis will not run.`,
+        );
+        return;
+      }
       setStatus("staged");
-      setStatusMessage(`Batch ${batchId} landed in staging. Starting analysis…`);
-      // Opens the run and asks ServiceNow to start Comprehend once. Comprehend
-      // queues Mara and Mara queues Prioritize, so nothing else is triggered here.
-      onOpenRun(importedRun, true);
+      setStatusMessage(`Batch ${batchId} landed in staging. ServiceNow queued Comprehend automatically.`);
+      onOpenRun(importedRun);
     } catch (error) {
       const message = error instanceof Error ? error.message : "The staging endpoint is unavailable.";
       if (message.includes("not configured")) {
@@ -352,11 +363,11 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
             <li><Icon name="check" size={13} /> Bad rows remain quarantined</li>
             <li><Icon name="shield" size={13} /> CMDB inaccessible from gateway</li>
           </ul>
-          {statusMessage && <div className={`gateway-status status-${status}`}><Icon name={status === "error" ? "alert" : status === "staging" ? "refresh" : "check"} size={16} /><span>{statusMessage}</span></div>}
+          {statusMessage && <div className={`gateway-status status-${status}`}><Icon name={status === "error" ? "alert" : status === "empty" ? "alert" : status === "staging" ? "refresh" : "check"} size={16} /><span>{statusMessage}</span></div>}
           <button className="primary-button full" disabled={!canStage || status === "staging"} onClick={() => void stageImport()}>
             <Icon name={status === "staging" ? "refresh" : "database"} size={16} /> {status === "staging" ? "Staging batch…" : "Land in staging"}
           </button>
-          {(status === "staged" || status === "demo") && <button className="ghost-button full open-run" onClick={() => onOpenRun(stagedRun)}>Open run playback <Icon name="arrow" size={15} /></button>}
+          {(status === "staged" || status === "demo" || status === "empty") && <button className="ghost-button full open-run" onClick={() => onOpenRun(stagedRun)}>Open run playback <Icon name="arrow" size={15} /></button>}
           <small>Next: AI classifies rows and assigns confidence. Only later does IRE receive approved records.</small>
         </div>
       </aside>

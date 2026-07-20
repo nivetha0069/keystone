@@ -39,7 +39,7 @@ require.extensions[".ts"] = function loadTypeScript(module, filename) {
   module._compile(output, filename);
 };
 
-const { importedRunFromResponse, isSysId } = require("../app/lib/cmdb/run-id.ts");
+const { importedRunFromResponse, isSysId, stagedCountFromResponse } = require("../app/lib/cmdb/run-id.ts");
 
 const runId = "5d69233b2b420b1060aefba6b891bfeb";
 const stagedCiId = "9569233b2b420b1060aefba6b891bfed";
@@ -109,5 +109,15 @@ assert.equal(isSysId(runId), true);
 assert.equal(isSysId("DMR0001033"), false);
 assert.equal(isSysId(runId.slice(0, 31)), false);
 assert.equal(isSysId(null), false);
+
+// --- Staged count extraction ---
+// The import view uses this to hold the run in place (no auto-navigate, no
+// Comprehend trigger) when the source produced zero CI rows.
+
+assert.equal(stagedCountFromResponse({ result: { runId, staged: 2, relationships: 0, mode: "quarantine" } }), 2, "top-level staged count");
+assert.equal(stagedCountFromResponse({ result: { runId, staged: 0 } }), 0, "zero staged rows is preserved, not treated as missing");
+assert.equal(stagedCountFromResponse({ result: { stagedCount: 5 } }), 5, "camelCase key");
+assert.equal(stagedCountFromResponse({ result: { staged_ci_count: "7" } }), 7, "numeric string coerced");
+assert.equal(stagedCountFromResponse({ result: { runId } }), undefined, "missing key returns undefined, distinct from 0");
 
 console.log("smoke-run-parser: all assertions passed");

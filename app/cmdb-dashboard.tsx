@@ -42,6 +42,7 @@ import {
 } from "./lib/cmdb/work-queue";
 
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
+import { isDraftRunState, isTerminalRunState, TERMINAL_RUN_STATES } from "./lib/cmdb/run-lifecycle";
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
@@ -90,12 +91,7 @@ async function readEndpoint(resource: ResourceName, runId = "") {
 // Sections that reflect backend pipeline progress and therefore poll while a run works.
 const polledSections: Section[] = ["comprehend", "hr", "prioritize", "remediate"];
 
-// Backend states that mean the pipeline has stopped; polling ends here.
-const terminalRunStates = new Set(["awaiting_approval", "complete", "completed", "failed", "error"]);
-
-function isTerminalRunState(state?: string) {
-  return Boolean(state && terminalRunStates.has(state));
-}
+const terminalRunStates = new Set<string>(TERMINAL_RUN_STATES);
 
 async function readRunStatus(runId: string): Promise<MaraRunRecord | null> {
   if (!runId) return null;
@@ -304,14 +300,28 @@ export function CmdbDashboard() {
         body: JSON.stringify({ migration_run_id: runId }),
       });
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      // ServiceNow wraps the payload in a `result` envelope; unwrap known layers.
+      let payload = body;
+      for (let depth = 0; depth < 3; depth++) {
+        const next = payload.result;
+        if (next && typeof next === "object" && !Array.isArray(next)) payload = next as Record<string, unknown>;
+        else break;
+      }
       // ServiceNow may queue Comprehend during import itself; its 409 with
       // already_running means the pipeline is active, not that the start failed.
-      const alreadyRunning = body.already_running === true || body.alreadyRunning === true;
-      if (!response.ok && !alreadyRunning) {
+      const alreadyRunning = payload.already_running === true || payload.alreadyRunning === true;
+      const alreadyCompleted = payload.already_completed === true || payload.alreadyCompleted === true;
+      if (!response.ok && !alreadyRunning && !alreadyCompleted) {
         throw new Error(typeof body.error === "string" ? body.error : `Comprehend start failed (${response.status}).`);
       }
       setAnalysisState("started");
-      setAnalysisMessage(alreadyRunning ? "Analysis is already running for this run." : "Analysis started. ServiceNow is processing this run.");
+      setAnalysisMessage(
+        alreadyCompleted
+          ? "Analysis already completed for this run — displaying existing results."
+          : alreadyRunning
+            ? "Analysis is already running for this run."
+            : "Analysis started. ServiceNow is processing this run.",
+      );
       void refreshRunResources(runId);
     } catch (error) {
       // Allow a deliberate retry after a genuine failure.
@@ -390,7 +400,10 @@ export function CmdbDashboard() {
     return matches && (filter === "all" || ci.status !== "live");
   }), [cis, search, filter]);
 
-  function openRun(run?: ImportedRun, startAnalysis = false) {
+  // Opens a run and starts polling. Never triggers Comprehend — ServiceNow
+  // `/import` already queues it. Manual `draft` recovery uses the explicit
+  // "Start analysis" button in ComprehendView, which calls `startComprehend`.
+  function openRun(run?: ImportedRun) {
     const runId = run ? run.id.trim() : activeRunId;
     const label = run?.label?.trim() || (runId ? `RUN-${runId.slice(0, 8).toUpperCase()}` : "");
     const changed = runId !== activeRunId;
@@ -414,7 +427,6 @@ export function CmdbDashboard() {
     else url.searchParams.delete("run");
     window.history.replaceState({}, "", url);
     if (!changed) void loadData(runId);
-    if (startAnalysis && runId) void startComprehend(runId);
   }
 
   function loadRunFromDraft() {
@@ -475,7 +487,7 @@ export function CmdbDashboard() {
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
-      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} />}
+      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} onStartAnalysis={() => activeRunId && void startComprehend(activeRunId)} />}
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "hr" && <AgentHrView timeline={timeline} timelineLive={resourceState.timeline === "live"} cis={resourceState.cis === "live" ? cis : null} activeRunId={activeRunId} />}
       {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
@@ -492,9 +504,9 @@ function ComprehendView(props: {
   filter: "all" | "review"; setFilter: (value: "all" | "review") => void; playing: boolean; activeStep: number;
   startPlayback: () => void; setActiveStep: (value: number) => void; apiState: ApiState; resourceState: ResourceState;
   activeRunId: string; runDraft: string; setRunDraft: (value: string) => void; loadRun: () => void; clearRun: () => void;
-  analysisState: AnalysisState; analysisMessage: string; runState: string;
+  analysisState: AnalysisState; analysisMessage: string; runState: string; onStartAnalysis: () => void;
 }) {
-  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState, resourceState, activeRunId, runDraft, setRunDraft, loadRun, clearRun, analysisState, analysisMessage, runState } = props;
+  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState, resourceState, activeRunId, runDraft, setRunDraft, loadRun, clearRun, analysisState, analysisMessage, runState, onStartAnalysis } = props;
   const cisLive = resourceState.cis === "live";
   const timelineLive = resourceState.timeline === "live";
   const cleared = cisLive
@@ -517,7 +529,10 @@ function ComprehendView(props: {
     : apiState === "partial" ? "Partial backend data"
     : apiState === "error" ? "ServiceNow run unavailable"
     : "Demo snapshot";
-  const analysisWorking = analysisState === "starting" || (Boolean(runState) && !terminalRunStates.has(runState));
+  const analysisWorking = analysisState === "starting"
+    || (Boolean(runState) && !terminalRunStates.has(runState) && !isDraftRunState(runState));
+  const canManuallyStart = isDraftRunState(runState) && Boolean(activeRunId) && analysisState !== "starting";
+  const startButtonLabel = analysisState === "error" ? "Retry analysis" : "Start analysis";
   const demoFallback = !activeRunId && apiState === "demo";
   const proposedEdgeLabel = `${relationships.length.toLocaleString()} PROPOSED ${relationships.length === 1 ? "EDGE" : "EDGES"}`;
   const proposedEdgeDelta = `${relationships.length.toLocaleString()} proposed ${relationships.length === 1 ? "edge" : "edges"}`;
@@ -527,7 +542,17 @@ function ComprehendView(props: {
     <section className="run-context panel">
       <div className="run-context-copy"><span className="section-index">00</span><div><h2>Backend run context</h2><p>All four Comprehend resources use the same ServiceNow migration-run sys_id.</p></div></div>
       <label className="run-id-field"><span>RUN SYS_ID</span><input value={runDraft} onChange={event => setRunDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") loadRun(); }} placeholder="Paste migration_run sys_id" /></label>
-      <div className="run-context-actions"><button className="primary-button" onClick={loadRun}><Icon name="refresh" size={15} /> Load run</button>{activeRunId && <button className="ghost-button" onClick={clearRun}>All runs</button>}</div>
+      <div className="run-context-actions">
+        <button className="primary-button" onClick={loadRun}><Icon name="refresh" size={15} /> Load run</button>
+        {canManuallyStart && <button className="primary-button" onClick={onStartAnalysis} title="This run is in draft — ServiceNow has not queued Comprehend yet."><Icon name="spark" size={15} /> {startButtonLabel}</button>}
+        {activeRunId && <button className="ghost-button" onClick={clearRun}>All runs</button>}
+      </div>
+      {(analysisMessage || (canManuallyStart && analysisState === "idle")) && (
+        <div className={`run-analysis-status status-${analysisState}`}>
+          <Icon name={analysisState === "error" ? "alert" : analysisState === "starting" ? "refresh" : "check"} size={14} />
+          <span>{analysisMessage || "This run is in draft. Comprehend has not been queued — click Start analysis to run it."}</span>
+        </div>
+      )}
       <div className="resource-statuses">
         {resourceNames.map(resource => <span key={resource} title={`${resource}: ${resourceState[resource]}`} className={`resource-status status-${resourceState[resource]}`}><i />{resource}</span>)}
       </div>
