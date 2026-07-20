@@ -52,30 +52,77 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function importedRunFromResponse(result: Record<string, unknown>, fallbackLabel: string): ImportedRun {
-  const resultEnvelope = firstObject(result.result);
-  const dataEnvelope = firstObject(result.data, resultEnvelope.data);
-  const run = firstObject(result.migration_run, result.run, resultEnvelope.migration_run, resultEnvelope.run, dataEnvelope.migration_run, dataEnvelope.run);
-  const id = stringValue(
-    result.runId ?? result.run_id ?? result.migration_run_id ?? result.batchId ?? result.batch_id ?? result.sys_id ??
-    resultEnvelope.runId ?? resultEnvelope.run_id ?? resultEnvelope.migration_run_id ?? resultEnvelope.batchId ??
-    resultEnvelope.batch_id ?? resultEnvelope.sys_id ?? dataEnvelope.runId ?? dataEnvelope.run_id ??
-    dataEnvelope.migration_run_id ?? dataEnvelope.batchId ?? dataEnvelope.batch_id ?? dataEnvelope.sys_id ??
-    run.sys_id ?? run.id,
-  );
-  const label = stringValue(run.number ?? run.name ?? result.runName ?? result.number ?? resultEnvelope.number ?? dataEnvelope.number) || fallbackLabel;
-  return { id, label };
+// A ServiceNow sys_id is exactly 32 hex characters.
+const SYS_ID_PATTERN = /^[0-9a-f]{32}$/i;
+
+// Checked in priority order so explicit run keys always beat generic ones like
+// `sys_id`, which may belong to a staged CI rather than the migration run.
+const RUN_ID_KEYS = [
+  "runId", "run_id", "runSysId", "run_sys_id",
+  "migrationRunId", "migration_run_id", "migrationRun", "migration_run",
+  "run", "batchId", "batch_id", "sys_id", "id",
+];
+
+const RUN_LABEL_KEYS = ["number", "run_number", "runNumber", "runName", "run_name", "name", "label"];
+
+export function isSysId(value: unknown): value is string {
+  return typeof value === "string" && SYS_ID_PATTERN.test(value.trim());
 }
 
-function firstObject(...values: unknown[]): Record<string, unknown> {
-  for (const value of values) {
-    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+/**
+ * Collect every plain object in the response graph, shallowest first, so the
+ * parser tolerates `result` / `data` / `items` / `records` envelopes, arrays,
+ * and nested combinations of them.
+ */
+function collectObjects(root: unknown): Record<string, unknown>[] {
+  const found: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  let frontier: unknown[] = [root];
+
+  for (let depth = 0; depth < 6 && frontier.length && found.length < 200; depth++) {
+    const next: unknown[] = [];
+    for (const node of frontier) {
+      if (!node || typeof node !== "object" || seen.has(node)) continue;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        next.push(...node);
+        continue;
+      }
+      const row = node as Record<string, unknown>;
+      found.push(row);
+      for (const value of Object.values(row)) {
+        if (value && typeof value === "object") next.push(value);
+      }
+    }
+    frontier = next;
   }
-  return {};
+  return found;
 }
 
-function stringValue(value: unknown) {
-  return value === undefined || value === null ? "" : String(value).trim();
+// ServiceNow reference fields serialize as { value, link } or { sys_id, display_value }.
+function unwrapValue(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const row = value as Record<string, unknown>;
+  return row.value ?? row.sys_id ?? row.display_value ?? "";
+}
+
+/** First value across all nodes matching a key, scanned key-major by priority. */
+function findByKeys(nodes: Record<string, unknown>[], keys: string[], accept: (value: unknown) => boolean): string {
+  for (const key of keys) {
+    for (const node of nodes) {
+      const raw = unwrapValue(node[key]);
+      if (accept(raw)) return String(raw).trim();
+    }
+  }
+  return "";
+}
+
+export function importedRunFromResponse(result: Record<string, unknown>, fallbackLabel: string): ImportedRun {
+  const nodes = collectObjects(result);
+  // Only a real 32-char sys_id counts as an id; a run number like DMR0001022 does not.
+  const id = findByKeys(nodes, RUN_ID_KEYS, isSysId);
+  const label = findByKeys(nodes, RUN_LABEL_KEYS, value => typeof value === "string" && value.trim().length > 0);
+  return { id, label: label || fallbackLabel };
 }
 
 export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun) => void }) {
@@ -220,10 +267,23 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
       const result = await response.json().catch(() => ({})) as Record<string, unknown>;
       if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "The staging endpoint rejected this batch.");
       const importedRun = importedRunFromResponse(result, runName);
-      const batchId = importedRun.label || importedRun.id || runName;
       setStagedRun(importedRun);
+
+      // Without a real sys_id the handoff would open Comprehend on "ALL RUNS",
+      // so surface the problem instead of navigating to an empty run.
+      if (!isSysId(importedRun.id)) {
+        console.error("Import staging response contained no valid migration run sys_id:", result);
+        setStatus("error");
+        setStatusMessage(
+          "Staging landed, but ServiceNow did not return a migration run sys_id. Open Comprehend and paste the run sys_id manually.",
+        );
+        return;
+      }
+
+      const batchId = importedRun.label || importedRun.id;
       setStatus("staged");
-      setStatusMessage(`Batch ${batchId} landed in staging. AI classification can now begin.`);
+      setStatusMessage(`Batch ${batchId} landed in staging. Opening the run…`);
+      onOpenRun(importedRun);
     } catch (error) {
       const message = error instanceof Error ? error.message : "The staging endpoint is unavailable.";
       if (message.includes("not configured")) {
