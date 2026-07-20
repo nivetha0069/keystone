@@ -29,6 +29,11 @@ import {
   type IreActionResponse,
   type IreLifecycleState,
 } from "./lib/cmdb/ire";
+import {
+  deriveRemediationWorkQueue,
+  type WorkQueueBucket,
+  type WorkQueueItemSource,
+} from "./lib/cmdb/work-queue";
 
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
@@ -569,10 +574,20 @@ function RemediateView(props: {
   const [ireRecords, setIreRecords] = useState<Record<string, IreWorkbenchRecord>>({});
   const [pendingAction, setPendingAction] = useState<IreAction | null>(null);
   const [rationale, setRationale] = useState("Reviewed simulation evidence and source identity for a single staged CI.");
+  const demoFallback = !activeRunId && apiState === "demo";
 
   const selectedCi = stagedCis.find(ci => ci.id === selectedCiId) ?? stagedCis[0];
   const workbench = selectedCi ? ireRecords[selectedCi.id] ?? {} : {};
   const lifecycle = pendingAction === "execute" ? "executing" : deriveIreLifecycleState(workbench);
+  const queue = useMemo(() => deriveRemediationWorkQueue({
+    cis: stagedCis,
+    timeline,
+    healthFixes: health.fixes,
+    ireRecords,
+    pending: { ciId: selectedCi?.id, action: pendingAction },
+    demoFallback,
+  }), [demoFallback, health.fixes, ireRecords, pendingAction, selectedCi?.id, stagedCis, timeline]);
+  const selectedQueueItem = queue.items.find(item => item.id === selectedCi?.id);
   const simulationCorrelation = workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id;
   const executionCorrelation = workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id;
   const approved = workbench.approval?.success && workbench.approval.status === "approved";
@@ -638,19 +653,26 @@ function RemediateView(props: {
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">REMEDIATE</span><h1>Single-record remediation workbench.</h1><p>Simulate, approve, execute, and verify one staged CI through ServiceNow IRE.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
     <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE</small><strong>ServiceNow rebuilds</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - APPROVE</small><strong>One decision updates</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - EXECUTE</small><strong>Identifier-only request</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - VERIFY</small><strong>Correlation tied</strong></div></div></section>
-    <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">01</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
+    <section className="panel work-queue-panel">
+      <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
+      <div className="queue-buckets">
+        {queue.buckets.map(bucket => <WorkQueueBucketCard key={bucket.id} bucket={bucket} selectedId={selectedCi?.id} onSelect={setSelectedCiId} />)}
+      </div>
+    </section>
+    <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">02</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
       {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
     </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected)}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
     <section className="workbench-layout">
       <div className="panel staged-workbench">
-        <div className="panel-heading"><div><span className="section-index">02</span><div><h2>IRE lifecycle</h2><p>Browser requests contain only staged record identifiers and correlation metadata.</p></div></div><span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span></div>
+        <div className="panel-heading"><div><span className="section-index">03</span><div><h2>IRE lifecycle</h2><p>Browser requests contain only staged record identifiers and correlation metadata.</p></div></div><span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span></div>
         <div className="workbench-body">
           <div className="staged-queue">
-            {stagedCis.map(ci => <button key={ci.id} className={selectedCi?.id === ci.id ? "staged-row selected" : "staged-row"} onClick={() => setSelectedCiId(ci.id)}><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={14} /></span><span><strong>{ci.name}</strong><small>{ci.id} / {ci.className}</small></span><OperationPill value={ci.operation} /></button>)}
+            {queue.items.map(item => <button key={item.id} className={selectedCi?.id === item.id ? "staged-row selected" : "staged-row"} onClick={() => setSelectedCiId(item.id)}><span className={`ci-icon status-${item.ci.status}`}><Icon name="database" size={14} /></span><span><strong>{item.ci.name}</strong><small>{item.stagedCiId} / {ireLifecycleLabel(item.lifecycle)}</small></span><OperationPill value={item.ci.operation} /></button>)}
             {!stagedCis.length && <div className="workbench-empty"><Icon name="database" size={22} /><strong>No staged CIs loaded</strong><p>Load an active migration run before using IRE actions.</p></div>}
           </div>
           <div className="ire-console">
             <div className="selected-ci-card"><div><span className="eyebrow accent">SELECTED STAGED CI</span><h3>{selectedCi?.name ?? "No record selected"}</h3><p>{selectedCi ? `${selectedCi.className} / ${selectedCi.source} / ${selectedCi.ip}` : "Choose a staged CI to start simulation."}</p></div><div className="selected-ci-meta"><div><small>RUN</small><strong>{activeRunId ? activeRunId.slice(0, 8) : "none"}</strong></div><div><small>STAGED CI</small><strong>{selectedCi ? (selectedCi.stagedCiId || selectedCi.id).slice(0, 8) : "none"}</strong></div><div><small>CONFIDENCE</small><strong>{selectedCi ? `${Math.round(selectedCi.confidence * 100)}%` : "none"}</strong></div></div></div>
+            {selectedQueueItem && <div className="queue-evidence"><div><span className={`source-dot ${selectedQueueItem.source}`} /><strong>{sourceLabel(selectedQueueItem.source)}</strong><p>{selectedQueueItem.reason}</p></div><div>{selectedQueueItem.evidence.map(item => <code key={item}>{item}</code>)}</div></div>}
             <div className="ire-action-grid">
               <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating..." : "Simulate"}</button>
               <button className="ghost-button" disabled={!liveRunReady || !simulationCorrelation || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving..." : "Approve"}</button>
@@ -664,9 +686,33 @@ function RemediateView(props: {
           </div>
         </div>
       </div>
-      <aside className="panel activity-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Lifecycle activity</h2><p>Derived from action results and Event Ledger playback.</p></div></div></div><div className="activity-feed">{activityRows(workbench, selectedActivity).map(row => <article key={row.id} className={row.tone}><small>{row.label}</small><strong>{row.title}</strong><p>{row.detail}</p></article>)}</div></aside>
+      <aside className="panel activity-panel"><div className="panel-heading compact"><div><span className="section-index">04</span><div><h2>Lifecycle activity</h2><p>Derived from action results and Event Ledger playback.</p></div></div></div><div className="activity-feed">{activityRows(workbench, selectedActivity).map(row => <article key={row.id} className={row.tone}><small>{row.label}</small><strong>{row.title}</strong><p>{row.detail}</p></article>)}</div></aside>
     </section>
   </div>;
+}
+
+function WorkQueueBucketCard({ bucket, selectedId, onSelect }: { bucket: WorkQueueBucket; selectedId?: string; onSelect: (id: string) => void }) {
+  const preview = bucket.items.slice(0, 3);
+  return <article className={`queue-bucket ${bucket.id}`}>
+    <button className="queue-bucket-top" disabled={!bucket.items.length} onClick={() => bucket.items[0] && onSelect(bucket.items[0].id)}>
+      <span>{bucket.label}</span><strong>{bucket.items.length}</strong>
+    </button>
+    <p>{bucket.description}</p>
+    <div className="queue-preview">
+      {preview.map(item => <button key={item.id} className={selectedId === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><span className={`source-dot ${item.source}`} /><strong>{item.ci.name}</strong><small>{ireLifecycleLabel(item.lifecycle)}</small></button>)}
+      {!preview.length && <span className="queue-empty">No records in this bucket</span>}
+    </div>
+  </article>;
+}
+
+function sourceLabel(source: WorkQueueItemSource) {
+  const labels: Record<WorkQueueItemSource, string> = {
+    servicenow_ledger: "ServiceNow Event Ledger",
+    live_action: "Live IRE response",
+    derived_staging: "Derived from staged CI",
+    demo_fallback: "Demo fallback state",
+  };
+  return labels[source];
 }
 
 export function LegacyRemediateView({ health, queuedFix, actionMessage, onSelect, onSubmit }: { health: HealthData; queuedFix: HealthFix | null; actionMessage: string; onSelect: (fix: HealthFix) => void; onSubmit: (fix: HealthFix) => void }) {

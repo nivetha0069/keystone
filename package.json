@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start",
     "test": "npm run build",
-    "lint": "eslint app next.config.ts"
+    "lint": "eslint app next.config.ts",
+    "smoke:work-queue": "node scripts/smoke-work-queue.cjs"
   },
   "dependencies": {
     "next": "16.2.6",

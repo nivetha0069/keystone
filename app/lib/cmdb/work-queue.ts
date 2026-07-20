@@ -1,0 +1,207 @@
+import type { ConfigurationItem, HealthFix, TimelineEvent } from "../../cmdb-data";
+import {
+  deriveIreLifecycleState,
+  type IreActionResponse,
+  type IreLifecycleState,
+  type IreLifecycleSnapshot,
+} from "./ire";
+
+export type WorkQueueBucketId =
+  | "ready_to_simulate"
+  | "simulation_failed"
+  | "needs_approval"
+  | "ready_to_execute"
+  | "needs_verification"
+  | "verified"
+  | "blocked";
+
+export type WorkQueueItem = {
+  id: string;
+  stagedCiId: string;
+  ci: ConfigurationItem;
+  lifecycle: IreLifecycleState;
+  bucket: WorkQueueBucketId;
+  source: WorkQueueItemSource;
+  reason: string;
+  evidence: string[];
+  latestEvent?: TimelineEvent;
+  healthFix?: HealthFix;
+};
+
+export type WorkQueueItemSource = "servicenow_ledger" | "live_action" | "derived_staging" | "demo_fallback";
+
+export type WorkQueueBucket = {
+  id: WorkQueueBucketId;
+  label: string;
+  description: string;
+  items: WorkQueueItem[];
+};
+
+export type WorkQueueSummary = {
+  items: WorkQueueItem[];
+  buckets: WorkQueueBucket[];
+  liveBackedCount: number;
+  fallbackCount: number;
+};
+
+export type WorkbenchRecord = {
+  simulation?: IreActionResponse;
+  approval?: IreActionResponse;
+  execution?: IreActionResponse;
+  verification?: IreActionResponse;
+};
+
+export const workQueueBucketDefinitions: Omit<WorkQueueBucket, "items">[] = [
+  { id: "ready_to_simulate", label: "Ready to simulate", description: "Eligible staged CIs with no simulation evidence yet." },
+  { id: "simulation_failed", label: "Simulation failed", description: "ServiceNow IRE simulation returned an error or failed result." },
+  { id: "needs_approval", label: "Needs approval", description: "Simulation evidence exists and is waiting for review." },
+  { id: "ready_to_execute", label: "Ready to execute", description: "A review decision approved the current simulation." },
+  { id: "needs_verification", label: "Needs verification", description: "Execution completed and read-back is still pending." },
+  { id: "verified", label: "Verified", description: "Read-back verification passed for the executed CI." },
+  { id: "blocked", label: "Blocked", description: "Rejected, stale, failed verification, or staged-data blockers." },
+];
+
+export function deriveRemediationWorkQueue(input: {
+  cis: ConfigurationItem[];
+  timeline: TimelineEvent[];
+  healthFixes?: HealthFix[];
+  ireRecords?: Record<string, WorkbenchRecord>;
+  pending?: { ciId?: string; action?: "simulate" | "approve" | "execute" | "verify" | null };
+  demoFallback?: boolean;
+}): WorkQueueSummary {
+  const items = input.cis
+    .filter(ci => ci.id || ci.stagedCiId)
+    .map(ci => {
+      const stagedCiId = ci.stagedCiId || ci.id;
+      const workbench = input.ireRecords?.[ci.id] ?? {};
+      const matchingEvents = matchingLedgerEvents(ci, input.timeline);
+      const ledgerLifecycle = lifecycleFromLedger(matchingEvents);
+      const actionLifecycle = lifecycleFromWorkbench(workbench, input.pending?.ciId === ci.id ? input.pending.action : null);
+      const lifecycle = actionLifecycle ?? ledgerLifecycle ?? lifecycleFromStaging(ci);
+      const approvalRejected = workbench.approval?.success && workbench.approval.status === "rejected";
+      const bucket = bucketForLifecycle(lifecycle, approvalRejected);
+      const latestEvent = matchingEvents.at(-1);
+      const healthFix = relatedHealthFix(ci, input.healthFixes ?? []);
+      const source: WorkQueueItem["source"] = actionLifecycle
+        ? "live_action"
+        : ledgerLifecycle
+          ? "servicenow_ledger"
+          : input.demoFallback
+            ? "demo_fallback"
+            : "derived_staging";
+
+      return {
+        id: ci.id,
+        stagedCiId,
+        ci,
+        lifecycle,
+        bucket,
+        source,
+        reason: queueReason({ ci, lifecycle, bucket, latestEvent, healthFix, approvalRejected }),
+        evidence: queueEvidence({ ci, workbench, latestEvent, healthFix }),
+        latestEvent,
+        healthFix,
+      };
+    });
+
+  const buckets = workQueueBucketDefinitions.map(bucket => ({
+    ...bucket,
+    items: items.filter(item => item.bucket === bucket.id),
+  }));
+
+  return {
+    items,
+    buckets,
+    liveBackedCount: items.filter(item => item.source === "servicenow_ledger" || item.source === "live_action").length,
+    fallbackCount: items.filter(item => item.source === "demo_fallback").length,
+  };
+}
+
+export function bucketForLifecycle(lifecycle: IreLifecycleState, approvalRejected = false): WorkQueueBucketId {
+  if (approvalRejected) return "blocked";
+  if (lifecycle === "not_simulated") return "ready_to_simulate";
+  if (lifecycle === "simulation_failed") return "simulation_failed";
+  if (lifecycle === "simulated_pending_approval") return "needs_approval";
+  if (lifecycle === "approved_for_execution") return "ready_to_execute";
+  if (lifecycle === "executing" || lifecycle === "executed_pending_verification") return "needs_verification";
+  if (lifecycle === "verified") return "verified";
+  return "blocked";
+}
+
+function lifecycleFromWorkbench(workbench: WorkbenchRecord, pendingAction?: "simulate" | "approve" | "execute" | "verify" | null): IreLifecycleState | null {
+  if (pendingAction === "execute") return "executing";
+  if (!workbench.simulation && !workbench.approval && !workbench.execution && !workbench.verification) return null;
+  return deriveIreLifecycleState(workbench as IreLifecycleSnapshot);
+}
+
+function lifecycleFromStaging(ci: ConfigurationItem): IreLifecycleState {
+  if (ci.operation === "ERROR" || ci.status === "incomplete") return "simulation_failed";
+  return "not_simulated";
+}
+
+function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null {
+  for (const event of [...events].reverse()) {
+    const text = `${event.name} ${event.reasoning} ${event.operation} ${event.status}`.toLowerCase();
+    if (text.includes("verification") && (text.includes("failed") || text.includes("mismatch") || event.status === "error")) return "verification_failed";
+    if (text.includes("verification") && (text.includes("passed") || text.includes("verified") || text.includes("read-back"))) return "verified";
+    if (text.includes("ire execution") && (text.includes("started") || event.status === "active")) return "executing";
+    if ((text.includes("ire execution") || text.includes("committed") || text.includes("cmdb published")) && event.status !== "error") return "executed_pending_verification";
+    if ((text.includes("stale") || text.includes("fingerprint")) && (text.includes("reject") || text.includes("failed"))) return "execution_rejected_stale_simulation";
+    if (text.includes("review") && (text.includes("approved") || text.includes("approval recorded"))) return "approved_for_execution";
+    if ((text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) && (text.includes("failed") || text.includes("error") || event.status === "error")) return "simulation_failed";
+    if (text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) return "simulated_pending_approval";
+  }
+  return null;
+}
+
+function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) {
+  const needles = [ci.id, ci.stagedCiId, ci.name]
+    .filter((value): value is string => Boolean(value))
+    .map(value => value.toLowerCase());
+  return timeline.filter(event => {
+    const haystack = `${event.recordName} ${event.name} ${event.reasoning}`.toLowerCase();
+    return needles.some(needle => haystack.includes(needle));
+  });
+}
+
+function relatedHealthFix(ci: ConfigurationItem, fixes: HealthFix[]) {
+  if (ci.status === "incomplete") return fixes.find(fix => /incomplete|identifier|ire|missing/i.test(`${fix.title} ${fix.description} ${fix.tool}`));
+  if (ci.status === "review") return fixes.find(fix => /review|approval|duplicate|class|ownership/i.test(`${fix.title} ${fix.description} ${fix.tool}`));
+  return fixes.find(fix => /simulate|ire|duplicate|stale/i.test(`${fix.title} ${fix.description} ${fix.tool}`));
+}
+
+function queueReason(input: {
+  ci: ConfigurationItem;
+  lifecycle: IreLifecycleState;
+  bucket: WorkQueueBucketId;
+  latestEvent?: TimelineEvent;
+  healthFix?: HealthFix;
+  approvalRejected?: boolean;
+}) {
+  if (input.approvalRejected) return "Review decision rejected the current remediation path.";
+  if (input.latestEvent) return input.latestEvent.reasoning;
+  if (input.healthFix) return input.healthFix.description;
+  if (input.bucket === "ready_to_simulate") return "Staged record has enough local gate evidence to request non-mutating IRE simulation.";
+  if (input.bucket === "simulation_failed") return "Staged record is incomplete or already failed local eligibility checks.";
+  return `Derived from staged CI status ${input.ci.status} and lifecycle ${input.lifecycle}.`;
+}
+
+function queueEvidence(input: {
+  ci: ConfigurationItem;
+  workbench: WorkbenchRecord;
+  latestEvent?: TimelineEvent;
+  healthFix?: HealthFix;
+}) {
+  return [
+    input.workbench.simulation?.simulation_fingerprint && `fingerprint ${shortId(input.workbench.simulation.simulation_fingerprint)}`,
+    input.workbench.simulation?.finding?.display_value && `finding ${input.workbench.simulation.finding.display_value}`,
+    input.workbench.execution?.execution_correlation_id && `execution ${shortId(input.workbench.execution.execution_correlation_id)}`,
+    input.latestEvent && `ledger seq ${input.latestEvent.seq}`,
+    input.healthFix && `${input.healthFix.affected} affected by ${input.healthFix.title}`,
+    `${Math.round(input.ci.confidence * 100)}% confidence`,
+  ].filter((value): value is string => Boolean(value));
+}
+
+function shortId(value: string) {
+  return value.length > 14 ? `${value.slice(0, 6)}...${value.slice(-4)}` : value;
+}
