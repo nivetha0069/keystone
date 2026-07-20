@@ -3,10 +3,11 @@
 import { useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
+import { importedRunFromResponse, isSysId, type ImportedRun } from "./lib/cmdb/run-id";
 
 type ImportMode = "file" | "url" | "paste";
 type ImportStatus = "idle" | "staging" | "staged" | "demo" | "error";
-export type ImportedRun = { id: string; label: string };
+export type { ImportedRun } from "./lib/cmdb/run-id";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const PREVIEW_LIMIT = 6;
@@ -52,80 +53,7 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// A ServiceNow sys_id is exactly 32 hex characters.
-const SYS_ID_PATTERN = /^[0-9a-f]{32}$/i;
-
-// Checked in priority order so explicit run keys always beat generic ones like
-// `sys_id`, which may belong to a staged CI rather than the migration run.
-const RUN_ID_KEYS = [
-  "runId", "run_id", "runSysId", "run_sys_id",
-  "migrationRunId", "migration_run_id", "migrationRun", "migration_run",
-  "run", "batchId", "batch_id", "sys_id", "id",
-];
-
-const RUN_LABEL_KEYS = ["number", "run_number", "runNumber", "runName", "run_name", "name", "label"];
-
-export function isSysId(value: unknown): value is string {
-  return typeof value === "string" && SYS_ID_PATTERN.test(value.trim());
-}
-
-/**
- * Collect every plain object in the response graph, shallowest first, so the
- * parser tolerates `result` / `data` / `items` / `records` envelopes, arrays,
- * and nested combinations of them.
- */
-function collectObjects(root: unknown): Record<string, unknown>[] {
-  const found: Record<string, unknown>[] = [];
-  const seen = new Set<unknown>();
-  let frontier: unknown[] = [root];
-
-  for (let depth = 0; depth < 6 && frontier.length && found.length < 200; depth++) {
-    const next: unknown[] = [];
-    for (const node of frontier) {
-      if (!node || typeof node !== "object" || seen.has(node)) continue;
-      seen.add(node);
-      if (Array.isArray(node)) {
-        next.push(...node);
-        continue;
-      }
-      const row = node as Record<string, unknown>;
-      found.push(row);
-      for (const value of Object.values(row)) {
-        if (value && typeof value === "object") next.push(value);
-      }
-    }
-    frontier = next;
-  }
-  return found;
-}
-
-// ServiceNow reference fields serialize as { value, link } or { sys_id, display_value }.
-function unwrapValue(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const row = value as Record<string, unknown>;
-  return row.value ?? row.sys_id ?? row.display_value ?? "";
-}
-
-/** First value across all nodes matching a key, scanned key-major by priority. */
-function findByKeys(nodes: Record<string, unknown>[], keys: string[], accept: (value: unknown) => boolean): string {
-  for (const key of keys) {
-    for (const node of nodes) {
-      const raw = unwrapValue(node[key]);
-      if (accept(raw)) return String(raw).trim();
-    }
-  }
-  return "";
-}
-
-export function importedRunFromResponse(result: Record<string, unknown>, fallbackLabel: string): ImportedRun {
-  const nodes = collectObjects(result);
-  // Only a real 32-char sys_id counts as an id; a run number like DMR0001022 does not.
-  const id = findByKeys(nodes, RUN_ID_KEYS, isSysId);
-  const label = findByKeys(nodes, RUN_LABEL_KEYS, value => typeof value === "string" && value.trim().length > 0);
-  return { id, label: label || fallbackLabel };
-}
-
-export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun) => void }) {
+export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun, startAnalysis?: boolean) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<ImportMode>("file");
   const [sourceName, setSourceName] = useState("External company dataset");
@@ -282,8 +210,10 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
 
       const batchId = importedRun.label || importedRun.id;
       setStatus("staged");
-      setStatusMessage(`Batch ${batchId} landed in staging. Opening the run…`);
-      onOpenRun(importedRun);
+      setStatusMessage(`Batch ${batchId} landed in staging. Starting analysis…`);
+      // Opens the run and asks ServiceNow to start Comprehend once. Comprehend
+      // queues Mara and Mara queues Prioritize, so nothing else is triggered here.
+      onOpenRun(importedRun, true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "The staging endpoint is unavailable.";
       if (message.includes("not configured")) {
