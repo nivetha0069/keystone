@@ -307,10 +307,13 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function unwrapObject(payload: unknown): Record<string, unknown> {
-  const root = objectRecord(payload) || {};
-  const result = objectRecord(root.result);
-  const data = objectRecord(root.data);
-  return result || data || root;
+  let current = objectRecord(payload) || {};
+  for (let depth = 0; depth < 4; depth++) {
+    const nested = objectRecord(current.result) || objectRecord(current.data);
+    if (!nested) break;
+    current = nested;
+  }
+  return current;
 }
 
 function bool(value: unknown, fallback: boolean) {

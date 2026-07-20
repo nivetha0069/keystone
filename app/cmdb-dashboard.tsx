@@ -30,6 +30,7 @@ import {
   ireLifecycleLabel,
   normalizeIreActionResponse,
   type IreAction,
+  type IreActionError,
   type IreActionResponse,
   type IreLifecycleState,
 } from "./lib/cmdb/ire";
@@ -620,7 +621,11 @@ function RemediateView(props: {
   const selectedQueueItem = queue.items.find(item => item.id === selectedCi?.id);
   const lifecycle = pendingAction === "execute" ? "executing" : selectedQueueItem?.lifecycle ?? deriveIreLifecycleState(workbench);
   const simulationCorrelation = workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? selectedQueueItem?.simulationCorrelation;
-  const executionCorrelation = workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? selectedQueueItem?.executionCorrelation;
+  const executionCorrelation = workbench.execution
+    ? workbench.execution.success
+      ? workbench.execution.execution_correlation_id
+      : undefined
+    : selectedQueueItem?.executionCorrelation;
   const approved = Boolean((workbench.approval?.success && workbench.approval.status === "approved") || selectedQueueItem?.review?.decision === "approved");
   const rejected = Boolean((workbench.approval?.success && workbench.approval.status === "rejected") || selectedQueueItem?.review?.decision === "rejected");
   const liveRunReady = Boolean(activeRunId && selectedCi && apiState !== "demo");
@@ -653,14 +658,16 @@ function RemediateView(props: {
         body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({ error: response.statusText }));
-      const normalized = response.ok
-        ? normalizeIreActionResponse(action, payload)
-        : normalizeIreActionResponse(action, {
+      const upstream = normalizeIreActionResponse(action, payload);
+      const normalized: IreActionResponse = response.ok
+        ? upstream
+        : {
+            ...upstream,
             success: false,
             action,
-            correlation_id: correlationId,
-            error: errorFromIreHttp(response.status, payload),
-          });
+            correlation_id: upstream.correlation_id ?? correlationId,
+            error: upstream.error ?? errorFromIreHttp(response.status, payload),
+          };
       setIreRecords(current => ({
         ...current,
         [selectedCi.id]: {
@@ -708,8 +715,8 @@ function RemediateView(props: {
               <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating..." : "Simulate"}</button>
               <button className="ghost-button" disabled={!liveRunReady || !simulationCorrelation || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving..." : "Approve"}</button>
               <button className="ghost-button danger" disabled={!liveRunReady || !simulationCorrelation || Boolean(pendingAction)} onClick={() => approve("rejected")}><Icon name="x" size={15} /> Reject</button>
-              <button className="primary-button" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing..." : "Execute"}</button>
-              <button className="ghost-button" disabled={!liveRunReady || !executionCorrelation || Boolean(pendingAction)} onClick={() => void runIreAction("verify", { execution_correlation_id: executionCorrelation ?? "" })}><Icon name="check" size={15} /> {pendingAction === "verify" ? "Verifying..." : "Verify"}</button>
+              <button className="primary-button" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || lifecycle !== "approved_for_execution" || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing..." : "Execute"}</button>
+              <button className="ghost-button" disabled={!liveRunReady || !executionCorrelation || lifecycle !== "executed_pending_verification" || Boolean(pendingAction)} onClick={() => void runIreAction("verify", { execution_correlation_id: executionCorrelation ?? "" })}><Icon name="check" size={15} /> {pendingAction === "verify" ? "Verifying..." : "Verify"}</button>
             </div>
             {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
             <label className="approval-rationale"><span>APPROVAL RATIONALE</span><textarea value={rationale} onChange={event => setRationale(event.target.value)} /></label>
@@ -760,6 +767,7 @@ export function LegacyRemediateView({ health, queuedFix, actionMessage, onSelect
 
 function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWorkbenchRecord; lifecycle: IreLifecycleState; playback?: WorkQueueItem }) {
   const latestError = workbench.verification?.error ?? workbench.execution?.error ?? workbench.approval?.error ?? workbench.simulation?.error;
+  const latestErrorDetails = ireErrorDetails(latestError?.details);
   return <div className="ire-results">
     {latestError && <div className="ire-error"><Icon name="x" size={15} />{friendlyIreError(latestError.code, latestError.message)}</div>}
     <div className="ire-result-grid">
@@ -767,16 +775,17 @@ function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWork
       <ResultMetric label="Simulation" value={workbench.simulation?.status ?? (playback?.simulationCorrelation ? "recorded" : "not run")} />
       <ResultMetric label="Fingerprint" value={shortId(workbench.simulation?.simulation_fingerprint ?? playback?.simulationFingerprint)} />
       <ResultMetric label="Approval" value={workbench.approval?.status ?? playback?.review?.decision ?? "pending"} />
-      <ResultMetric label="Execution" value={workbench.execution?.status ?? "pending"} />
-      <ResultMetric label="Verification" value={workbench.verification?.status ?? "pending"} />
+      <ResultMetric label="Execution" value={workbench.execution?.status ?? (lifecycle === "executed_pending_verification" || lifecycle === "verified" || lifecycle === "verification_failed" ? "committed" : "pending")} />
+      <ResultMetric label="Verification" value={workbench.verification?.status ?? (lifecycle === "verified" ? "verified" : lifecycle === "verification_failed" ? "mismatch" : "pending")} />
     </div>
     <div className="correlation-list">
       <code>simulation {shortId(workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback?.simulationCorrelation)}</code>
-      <code>execution {shortId(workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? playback?.executionCorrelation)}</code>
+      <code>execution {shortId(workbench.execution?.success ? workbench.execution.execution_correlation_id : playback?.executionCorrelation)}</code>
       <code>target {workbench.execution?.target_ci?.display_value ?? shortId(workbench.execution?.target_ci?.sys_id)}</code>
     </div>
     {workbench.simulation?.evidence?.length ? <ul className="ire-evidence">{workbench.simulation.evidence.map(item => <li key={item}>{item}</li>)}</ul> : null}
-    {workbench.verification?.verification_summary && <p className="verification-summary">{workbench.verification.verification_summary}</p>}
+    {latestErrorDetails.length ? <ul className="ire-evidence error-details">{latestErrorDetails.map(item => <li key={item}>{item}</li>)}</ul> : null}
+    {(workbench.verification?.verification_summary || (lifecycle === "verification_failed" ? playback?.reason : undefined)) && <p className="verification-summary">{workbench.verification?.verification_summary ?? playback?.reason}</p>}
   </div>;
 }
 
@@ -791,14 +800,20 @@ function recordSlot(action: IreAction): keyof IreWorkbenchRecord {
   return "verification";
 }
 
-function errorFromIreHttp(status: number, payload: unknown) {
+function errorFromIreHttp(status: number, payload: unknown): IreActionError {
   const row = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
   const message = typeof row.error === "string" ? row.error : typeof row.message === "string" ? row.message : `IRE request failed with HTTP ${status}.`;
-  const code = status === 503 ? "NOT_CONFIGURED" : status === 400 ? "INVALID_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : status === 404 ? "NOT_FOUND" : status === 409 ? inferConflictCode(message) : "IRE_FAILED";
+  const code: IreActionError["code"] = status === 503 ? "NOT_CONFIGURED" : status === 400 ? "INVALID_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : status === 404 ? "NOT_FOUND" : status === 409 ? inferConflictCode(message) : "IRE_FAILED";
   return { code, message, details: row.missing ?? row.detail ?? row.details };
 }
 
-function inferConflictCode(message: string) {
+function ireErrorDetails(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(item => String(item)).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
+function inferConflictCode(message: string): IreActionError["code"] {
   const normalized = message.toLowerCase();
   if (normalized.includes("approval")) return "APPROVAL_REQUIRED";
   if (normalized.includes("stale") || normalized.includes("fingerprint")) return "STALE_SIMULATION";

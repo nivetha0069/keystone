@@ -93,7 +93,8 @@ export function deriveRemediationWorkQueue(input: {
         : review?.decision === "rejected"
           ? "simulated_pending_approval"
           : null;
-      const lifecycle = actionLifecycle ?? reviewLifecycle ?? ledgerLifecycle ?? lifecycleFromStaging(ci);
+      const persistedLifecycle = lifecycleFromPersistedEvidence(ledgerLifecycle, reviewLifecycle, matchingEvents);
+      const lifecycle = actionLifecycle ?? persistedLifecycle ?? lifecycleFromStaging(ci);
       const approvalRejected = Boolean(
         (workbench.approval?.success && workbench.approval.status === "rejected") || review?.decision === "rejected",
       );
@@ -125,7 +126,11 @@ export function deriveRemediationWorkQueue(input: {
         healthFix,
         simulationCorrelation: workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback.simulationCorrelation,
         simulationFingerprint: workbench.simulation?.simulation_fingerprint ?? playback.simulationFingerprint,
-        executionCorrelation: workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? playback.executionCorrelation,
+        executionCorrelation: workbench.execution
+          ? workbench.execution.success
+            ? workbench.execution.execution_correlation_id
+            : undefined
+          : playback.executionCorrelation,
         finding,
         review,
       };
@@ -179,6 +184,21 @@ function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null 
     if (text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) return "simulated_pending_approval";
   }
   return null;
+}
+
+function lifecycleFromPersistedEvidence(
+  ledgerLifecycle: IreLifecycleState | null,
+  reviewLifecycle: IreLifecycleState | null,
+  events: TimelineEvent[],
+): IreLifecycleState | null {
+  if (!ledgerLifecycle) return reviewLifecycle;
+  if (ledgerLifecycle !== "simulated_pending_approval" || reviewLifecycle !== "approved_for_execution") return ledgerLifecycle;
+
+  const approvalWasRecorded = events.some(event => {
+    const text = `${event.name} ${event.reasoning}`.toLowerCase();
+    return text.includes("approved") || text.includes("approval recorded");
+  });
+  return approvalWasRecorded ? ledgerLifecycle : reviewLifecycle;
 }
 
 function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) {
