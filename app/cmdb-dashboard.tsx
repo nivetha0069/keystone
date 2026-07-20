@@ -41,12 +41,14 @@ import {
   type WorkQueueItemSource,
 } from "./lib/cmdb/work-queue";
 
+import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
+type AnalysisState = "idle" | "starting" | "started" | "error";
 type ResourceName = "cis" | "timeline" | "relationships" | "health" | "findings" | "reviews";
 type ResourceStatus = "connecting" | "live" | "error";
 type ResourceState = Record<ResourceName, ResourceStatus>;
@@ -83,6 +85,23 @@ async function readEndpoint(resource: ResourceName, runId = "") {
   const response = await fetch(`/api/cmdb/${resource}${query}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`${resource}: ${response.status}`);
   return response.json();
+}
+
+// Sections that reflect backend pipeline progress and therefore poll while a run works.
+const polledSections: Section[] = ["comprehend", "hr", "prioritize", "remediate"];
+
+// Backend states that mean the pipeline has stopped; polling ends here.
+const terminalRunStates = new Set(["awaiting_approval", "complete", "completed", "failed", "error"]);
+
+function isTerminalRunState(state?: string) {
+  return Boolean(state && terminalRunStates.has(state));
+}
+
+async function readRunStatus(runId: string): Promise<MaraRunRecord | null> {
+  if (!runId) return null;
+  const response = await fetch(`/api/cmdb/run?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`run: ${response.status}`);
+  return normalizeMaraRun(await response.json());
 }
 
 function currentRunFromLocation() {
@@ -139,6 +158,9 @@ export function CmdbDashboard() {
   const [queuedFix, setQueuedFix] = useState<HealthFix | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [instanceHost, setInstanceHost] = useState<string | null>(null);
+  const [runRecord, setRunRecord] = useState<MaraRunRecord | null>(null);
+  const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
+  const [analysisMessage, setAnalysisMessage] = useState("");
   const [activeRunId, setActiveRunId] = useState(currentRunFromLocation);
   const [activeRunLabel, setActiveRunLabel] = useState(() => activeRunId ? `RUN-${activeRunId.slice(0, 8).toUpperCase()}` : "");
   const [runDraft, setRunDraft] = useState(activeRunId);
@@ -146,6 +168,10 @@ export function CmdbDashboard() {
   const [liveRefreshing, setLiveRefreshing] = useState(false);
   const [liveRefreshCount, setLiveRefreshCount] = useState(0);
   const liveRefreshInFlight = useRef(false);
+  // Runs whose Comprehend pipeline this session already launched. Marked before
+  // the request resolves so rerenders and retries cannot start it twice.
+  const comprehendStarted = useRef(new Set<string>());
+  const pollInFlight = useRef(false);
 
   const loadData = useCallback(async (runId: string) => {
     setApiState("connecting");
@@ -221,7 +247,79 @@ export function CmdbDashboard() {
     setResourceState(nextResourceState);
     setApiState(liveCount === resourceNames.length ? "live" : liveCount > 0 ? "partial" : runId ? "error" : "demo");
     setLastSync(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+
+    // Backend run state drives polling lifetime; failures leave it unknown rather than assumed.
+    setRunRecord(runId ? await readRunStatus(runId).catch(() => null) : null);
   }, []);
+
+  /**
+   * Quiet refresh used while the backend pipeline is working: refetches the run
+   * resources and the run state without clearing the view or flashing
+   * "connecting", so polling does not make the UI flicker.
+   */
+  const refreshRunResources = useCallback(async (runId: string) => {
+    if (!runId || pollInFlight.current) return;
+    pollInFlight.current = true;
+    try {
+      const [results, run] = await Promise.all([
+        Promise.allSettled(resourceNames.map(resource => readEndpoint(resource, runId))),
+        readRunStatus(runId).catch(() => null),
+      ]);
+
+      // Only successful resources overwrite state; a failed poll keeps the last good data.
+      if (results[0].status === "fulfilled") setCis(normalizeComprehendCis(results[0].value));
+      if (results[1].status === "fulfilled") setTimeline(normalizeComprehendTimeline(results[1].value));
+      if (results[2].status === "fulfilled") setRelationships(normalizeComprehendRelationships(results[2].value));
+      if (results[3].status === "fulfilled") setHealth(normalizeComprehendHealth(results[3].value));
+      if (results[4].status === "fulfilled") setFindings(normalizeRemediationFindings(results[4].value));
+      if (results[5].status === "fulfilled") setReviews(normalizeRemediationReviews(results[5].value));
+
+      setResourceState(current => {
+        const next = { ...current };
+        resourceNames.forEach((resource, index) => {
+          next[resource] = results[index].status === "fulfilled" ? "live" : "error";
+        });
+        return next;
+      });
+      if (run) setRunRecord(run);
+      setLastSync(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+    } finally {
+      pollInFlight.current = false;
+    }
+  }, []);
+
+  /**
+   * Ask ServiceNow to start DotwalkersComprehendAgent for this run. Comprehend
+   * queues Mara and Mara queues Prioritize, so this is the only trigger sent.
+   */
+  const startComprehend = useCallback(async (runId: string) => {
+    if (!runId || comprehendStarted.current.has(runId)) return;
+    comprehendStarted.current.add(runId);
+    setAnalysisState("starting");
+    setAnalysisMessage("Starting Comprehend analysis…");
+    try {
+      const response = await fetch("/api/cmdb/comprehend", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ migration_run_id: runId }),
+      });
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      // ServiceNow may queue Comprehend during import itself; its 409 with
+      // already_running means the pipeline is active, not that the start failed.
+      const alreadyRunning = body.already_running === true || body.alreadyRunning === true;
+      if (!response.ok && !alreadyRunning) {
+        throw new Error(typeof body.error === "string" ? body.error : `Comprehend start failed (${response.status}).`);
+      }
+      setAnalysisState("started");
+      setAnalysisMessage(alreadyRunning ? "Analysis is already running for this run." : "Analysis started. ServiceNow is processing this run.");
+      void refreshRunResources(runId);
+    } catch (error) {
+      // Allow a deliberate retry after a genuine failure.
+      comprehendStarted.current.delete(runId);
+      setAnalysisState("error");
+      setAnalysisMessage(error instanceof Error ? error.message : "Could not start Comprehend analysis.");
+    }
+  }, [refreshRunResources]);
 
   const refreshLiveTimeline = useCallback(async () => {
     if (!activeRunId || liveRefreshInFlight.current) return;
@@ -255,11 +353,21 @@ export function CmdbDashboard() {
     url.searchParams.set("run", activeRunId);
     window.history.replaceState({}, "", url);
   }, [activeRunId]);
+  // Live Ops keeps its dedicated high-frequency timeline refresh.
   useEffect(() => {
-    if ((section !== "live" && section !== "hr") || livePaused || !activeRunId) return;
+    if (section !== "live" || livePaused || !activeRunId) return;
     const timer = window.setInterval(() => { void refreshLiveTimeline(); }, 8000);
     return () => window.clearInterval(timer);
   }, [activeRunId, livePaused, refreshLiveTimeline, section]);
+
+  // Pipeline-progress polling: refresh every run resource plus run state while the
+  // backend is still working, and stop once it reaches a terminal state.
+  useEffect(() => {
+    if (!activeRunId || !polledSections.includes(section) || livePaused) return;
+    if (isTerminalRunState(runRecord?.state)) return;
+    const timer = window.setInterval(() => { void refreshRunResources(activeRunId); }, 8000);
+    return () => window.clearInterval(timer);
+  }, [activeRunId, section, livePaused, runRecord?.state, refreshRunResources]);
   useEffect(() => {
     fetch("/api/cmdb/instance", { cache: "no-store" })
       .then(response => (response.ok ? response.json() : null))
@@ -282,10 +390,17 @@ export function CmdbDashboard() {
     return matches && (filter === "all" || ci.status !== "live");
   }), [cis, search, filter]);
 
-  function openRun(run?: ImportedRun) {
+  function openRun(run?: ImportedRun, startAnalysis = false) {
     const runId = run ? run.id.trim() : activeRunId;
     const label = run?.label?.trim() || (runId ? `RUN-${runId.slice(0, 8).toUpperCase()}` : "");
     const changed = runId !== activeRunId;
+    if (changed) {
+      setRunRecord(null);
+      if (!comprehendStarted.current.has(runId)) {
+        setAnalysisState("idle");
+        setAnalysisMessage("");
+      }
+    }
     setActiveRunId(runId);
     setActiveRunLabel(label);
     setRunDraft(runId);
@@ -299,6 +414,7 @@ export function CmdbDashboard() {
     else url.searchParams.delete("run");
     window.history.replaceState({}, "", url);
     if (!changed) void loadData(runId);
+    if (startAnalysis && runId) void startComprehend(runId);
   }
 
   function loadRunFromDraft() {
@@ -359,7 +475,7 @@ export function CmdbDashboard() {
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
-      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} />}
+      {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} />}
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "hr" && <AgentHrView timeline={timeline} timelineLive={resourceState.timeline === "live"} cis={resourceState.cis === "live" ? cis : null} activeRunId={activeRunId} />}
       {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
@@ -376,8 +492,9 @@ function ComprehendView(props: {
   filter: "all" | "review"; setFilter: (value: "all" | "review") => void; playing: boolean; activeStep: number;
   startPlayback: () => void; setActiveStep: (value: number) => void; apiState: ApiState; resourceState: ResourceState;
   activeRunId: string; runDraft: string; setRunDraft: (value: string) => void; loadRun: () => void; clearRun: () => void;
+  analysisState: AnalysisState; analysisMessage: string; runState: string;
 }) {
-  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState, resourceState, activeRunId, runDraft, setRunDraft, loadRun, clearRun } = props;
+  const { health, timeline, relationships, cis, allCis, setSelectedCi, search, setSearch, filter, setFilter, playing, activeStep, startPlayback, setActiveStep, apiState, resourceState, activeRunId, runDraft, setRunDraft, loadRun, clearRun, analysisState, analysisMessage, runState } = props;
   const cisLive = resourceState.cis === "live";
   const timelineLive = resourceState.timeline === "live";
   const cleared = cisLive
@@ -388,12 +505,24 @@ function ComprehendView(props: {
   const activeEvent = timeline[Math.min(activeStep, Math.max(0, timeline.length - 1))];
   const activePhase = activeEvent?.step ?? 1;
   const totalEvents = timeline.length;
-  const runStatus = apiState === "connecting" ? "Loading ServiceNow run" : apiState === "live" ? "Live backend connected" : apiState === "partial" ? "Partial backend data" : apiState === "error" ? "ServiceNow run unavailable" : "Demo snapshot";
+  // Prefer real backend signals: a failed start, then the ServiceNow run state,
+  // then the transport state. Nothing here invents progress.
+  const runStatus =
+    analysisState === "error" ? analysisMessage
+    : analysisState === "starting" ? "Starting analysis"
+    : runState ? runState.replaceAll("_", " ").replace(/^./, char => char.toUpperCase())
+    : analysisState === "started" ? "Analysis started"
+    : apiState === "connecting" ? "Loading ServiceNow run"
+    : apiState === "live" ? "Live backend connected"
+    : apiState === "partial" ? "Partial backend data"
+    : apiState === "error" ? "ServiceNow run unavailable"
+    : "Demo snapshot";
+  const analysisWorking = analysisState === "starting" || (Boolean(runState) && !terminalRunStates.has(runState));
   const demoFallback = !activeRunId && apiState === "demo";
   const proposedEdgeLabel = `${relationships.length.toLocaleString()} PROPOSED ${relationships.length === 1 ? "EDGE" : "EDGES"}`;
   const proposedEdgeDelta = `${relationships.length.toLocaleString()} proposed ${relationships.length === 1 ? "edge" : "edges"}`;
   return <div className="page">
-    <section className="page-heading"><div><span className="eyebrow accent">COMPREHEND</span><h1>What happened to your data?</h1><p>Follow every staged record from quarantine through deterministic analysis and the confidence gate.</p></div><div className="run-state"><span className={`run-pulse ${apiState === "partial" || apiState === "demo" || apiState === "error" ? "paused" : ""}`} /><div><small>RUN STATUS</small><strong>{runStatus}</strong></div><span className="run-time">{activeRunId ? activeRunId.slice(0, 8) : "ALL RUNS"}</span></div></section>
+    <section className="page-heading"><div><span className="eyebrow accent">COMPREHEND</span><h1>What happened to your data?</h1><p>Follow every staged record from quarantine through deterministic analysis and the confidence gate.</p></div><div className="run-state"><span className={`run-pulse ${analysisWorking ? "" : apiState === "partial" || apiState === "demo" || apiState === "error" ? "paused" : ""}`} /><div><small>RUN STATUS</small><strong>{runStatus}</strong></div><span className="run-time">{activeRunId ? activeRunId.slice(0, 8) : "ALL RUNS"}</span></div></section>
 
     <section className="run-context panel">
       <div className="run-context-copy"><span className="section-index">00</span><div><h2>Backend run context</h2><p>All four Comprehend resources use the same ServiceNow migration-run sys_id.</p></div></div>
