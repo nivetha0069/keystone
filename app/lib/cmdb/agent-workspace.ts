@@ -30,6 +30,13 @@ export type AgentEventDetailV1 = {
   simulation_correlation_id?: string;
   execution_correlation_id?: string;
   simulation_fingerprint?: string;
+  mapping_version?: string;
+  retry_count?: number;
+  max_retries?: number;
+  target_ci_sys_id?: string;
+  baseline_score?: number;
+  verified_score?: number;
+  projected_score?: number;
   health_impact?: number;
 };
 

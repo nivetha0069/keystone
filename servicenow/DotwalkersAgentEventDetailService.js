@@ -21,12 +21,22 @@ DotwalkersAgentEventDetailService.prototype = {
 		this._optional(detail, data, [
 			'staged_ci_id', 'finding_id', 'strategy_id', 'correlation_id',
 			'simulation_correlation_id', 'execution_correlation_id',
-			'simulation_fingerprint'
+			'simulation_fingerprint', 'mapping_version', 'target_ci_sys_id'
 		]);
-		if (data.health_impact !== undefined && !isNaN(Number(data.health_impact))) {
-			detail.health_impact = Math.round(Number(data.health_impact) * 10) / 10;
-		}
+		this._optionalNumber(detail, data, [
+			'retry_count', 'max_retries', 'baseline_score', 'verified_score',
+			'projected_score', 'health_impact'
+		]);
 		return JSON.stringify(detail);
+	},
+
+	_optionalNumber: function (target, source, keys) {
+		for (var i = 0; i < keys.length; i++) {
+			var value = source[keys[i]];
+			if (value !== undefined && value !== null && value !== '' && !isNaN(Number(value))) {
+				target[keys[i]] = Math.round(Number(value) * 10) / 10;
+			}
+		}
 	},
 
 	_optional: function (target, source, keys) {

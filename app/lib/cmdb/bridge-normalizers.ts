@@ -92,6 +92,11 @@ export function normalizeHealth(payload: unknown): HealthData {
 
   return {
     score: num(raw.score ?? raw.health_score, mockHealth.score),
+    baselineScore: optionalNum(raw.baseline_score ?? raw.baselineScore),
+    verifiedScore: optionalNum(raw.verified_score ?? raw.verifiedScore ?? raw.current_verified_score),
+    projectedScore: optionalNum(raw.projected_score ?? raw.projectedScore),
+    dimensionScores: normalizeDimensionScores(raw.dimension_scores ?? raw.dimensions),
+    workGroupImpacts: normalizeWorkGroupImpacts(raw.work_group_impacts ?? raw.workGroupImpacts),
     grade: str(raw.grade, mockHealth.grade),
     ciCount: num(raw.ciCount ?? raw.ci_count ?? raw.total_cis, mockHealth.ciCount),
     // Legacy bridge names describe detected candidates during the current read-only stage.
@@ -114,6 +119,35 @@ export function normalizeHealth(payload: unknown): HealthData {
     staleRecords: num(raw.staleRecords ?? raw.stale_records, mockHealth.staleRecords),
     fixes: fixes.length ? fixes : mockHealth.fixes,
   };
+}
+
+function normalizeDimensionScores(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, raw]) => [key, optionalNum(raw)] as const)
+      .filter((entry): entry is [string, number] => entry[1] !== undefined),
+  );
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function normalizeWorkGroupImpacts(value: unknown): HealthData["workGroupImpacts"] {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    const signature = optionalStr(row.signature ?? row.work_group_signature);
+    if (!signature) return [];
+    return [{
+      signature,
+      projected: num(row.projected ?? row.projected_lift, 0),
+      realized: num(row.realized ?? row.realized_lift, 0),
+      stagedCiIds: Array.isArray(row.staged_ci_ids)
+        ? row.staged_ci_ids.map(value => optionalStr(value)).filter((value): value is string => Boolean(value))
+        : undefined,
+    }];
+  });
+  return normalized.length ? normalized : undefined;
 }
 
 function arrayFromPayload(payload: unknown): unknown[] {
@@ -148,6 +182,12 @@ function referenceValue(value: unknown) {
 function num(value: unknown, fallback = 0) {
   const result = Number(value);
   return Number.isFinite(result) ? result : fallback;
+}
+
+function optionalNum(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : undefined;
 }
 
 function confidence(value: unknown, fallback = 0) {
