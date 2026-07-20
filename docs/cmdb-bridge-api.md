@@ -17,7 +17,7 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/relationships` | `/relationships` | GET | Reads `x_kest_dotwalkers_staged_relationship`. |
 | `/api/cmdb/health` | `/health` | GET | Aggregates staged records, staged relationships, and findings. |
 | `/api/cmdb/import` | `/import` | POST | Creates a migration run and quarantined staged records. |
-| `/api/cmdb/remediate` | `/remediate` | POST | Records a proposal/review decision only. It does not write to CMDB. |
+| `/api/cmdb/remediate` | `/remediate` | POST | Records an identifier-only proposal for one staged CI. Legacy fix/tool proposals remain compatible. It does not write to CMDB. |
 | `/api/cmdb/ire/simulate` | `/ire/simulate` | POST | Requests non-mutating single-record IRE simulation. |
 | `/api/cmdb/ire/approve` | `/ire/approve` | POST | Approves, rejects, or defers the single actionable remediation finding. |
 | `/api/cmdb/ire/execute` | `/ire/execute` | POST | Requests approved single-record IRE execution by identifier only. |
@@ -29,7 +29,7 @@ The IRE action routes accept only identifiers and correlation metadata from the 
 
 ## ServiceNow table usage
 
-The bridge uses the six existing tables from `docs/servicenow-schema-inventory.md`:
+The lifecycle bridge uses the original six tables from `docs/servicenow-schema-inventory.md`:
 
 - `x_kest_dotwalkers_migration_run`
 - `x_kest_dotwalkers_staged_ci_record`
@@ -37,6 +37,9 @@ The bridge uses the six existing tables from `docs/servicenow-schema-inventory.m
 - `x_kest_dotwalkers_finding`
 - `x_kest_dotwalkers_review_decision`
 - `x_kest_dotwalkers_event_ledger`
+
+The existing `x_kest_dotwalkers_ai_usage` table is the sole approved schema
+exception and stores sanitized model-call accounting only.
 
 The current bridge does not directly write to `cmdb_ci*` or `cmdb_rel_ci`.
 
@@ -133,6 +136,21 @@ Additional fields:
 - `/ire/approve`: `decision`, `rationale`, optional `simulation_correlation_id`.
 - `/ire/execute`: `simulation_correlation_id` only.
 - `/ire/verify`: `execution_correlation_id` only.
+
+The preferred `/remediate` contract contains `migration_run_id`,
+`staged_ci_id`, optional `finding_id`, `correlation_id`, and
+`idempotency_key`. Browser-supplied class names, mappings, CMDB values, and
+payloads are discarded.
+
+## Health progression
+
+`/health` keeps the existing `score` field and may additionally return
+`baseline_score`, `verified_score`, `projected_score`,
+`dimension_scores`, and `work_group_impacts`.
+
+Simulation affects readiness only. Realized health changes only after
+verification tied to the exact execution correlation. Projected impacts are
+deduplicated by staged CI and health dimension.
 
 Simulation must generate a deterministic fingerprint from the authoritative staged record, update/version metadata, migration run, proposed class, normalized allowed attributes, source identity, and intended IRE operation/result classification. Execution must rebuild the payload and reject if the current fingerprint differs from the approved simulation fingerprint.
 

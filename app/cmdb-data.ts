@@ -54,6 +54,16 @@ export type HealthFix = {
 
 export type HealthData = {
   score: number;
+  baselineScore?: number;
+  verifiedScore?: number;
+  projectedScore?: number;
+  dimensionScores?: Record<string, number>;
+  workGroupImpacts?: Array<{
+    signature: string;
+    projected: number;
+    realized: number;
+    stagedCiIds?: string[];
+  }>;
   grade: string;
   ciCount: number;
   duplicateCandidates: number;

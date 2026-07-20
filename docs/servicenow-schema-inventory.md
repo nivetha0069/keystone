@@ -221,6 +221,39 @@ Immutable audit history for migration playback.
 
 ---
 
+## 7. AI Usage
+
+**Table**
+
+x_kest_dotwalkers_ai_usage
+
+### Purpose
+
+Stores sanitized per-call model usage for an existing Migration Run. This table
+is the only approved schema exception added after the original six-table
+inventory. It never stores prompts, responses, credentials, hidden reasoning,
+or raw provider payloads.
+
+### Fields
+
+| Label | Element | Type | Reference |
+|-------|---------|------|-----------|
+| Migration Run | migration_run | Reference | x_kest_dotwalkers_migration_run |
+| Team Prefix | team_prefix | String | - |
+| Phase | phase | String/Choice | - |
+| Model | model | String | - |
+| Input Tokens | input_tokens | Integer | - |
+| Output Tokens | output_tokens | Integer | - |
+| Total Tokens | total_tokens | Integer | - |
+| Duration | duration_ms | Integer | - |
+| Status | status | String/Choice | - |
+| Fallback Reason | fallback_reason | String | - |
+| Provider Request ID | provider_request_id | String | - |
+| Created | created | Date/Time | - |
+
+Authorization requires the configured CMDB Bridge role and read access to the
+referenced Migration Run. Team prefix is a partition filter only.
+
 # Cross-Table Relationships
 
 ```text

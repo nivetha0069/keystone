@@ -99,12 +99,23 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   if (!url) return Response.json({ error: "Remediation is not configured" }, { status: 503 });
 
   const incoming = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const body = JSON.stringify({
-    fixId: incoming.fixId,
-    tool: incoming.tool,
-    route: "IRE",
-    mode: "proposal",
-  });
+  const migrationRunId = identifier(incoming.migration_run_id);
+  const stagedCiId = identifier(incoming.staged_ci_id);
+  const body = JSON.stringify(migrationRunId && stagedCiId
+    ? {
+        migration_run_id: migrationRunId,
+        staged_ci_id: stagedCiId,
+        ...(identifier(incoming.finding_id) ? { finding_id: identifier(incoming.finding_id) } : {}),
+        ...(token(incoming.correlation_id) ? { correlation_id: token(incoming.correlation_id) } : {}),
+        ...(token(incoming.idempotency_key) ? { idempotency_key: token(incoming.idempotency_key) } : {}),
+        mode: "proposal",
+      }
+    : {
+        fixId: incoming.fixId,
+        tool: incoming.tool,
+        route: "IRE",
+        mode: "proposal",
+      });
   const authorization = authorizationHeader();
   try {
     const response = await fetch(url, {
@@ -120,4 +131,14 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   } catch (error) {
     return Response.json({ error: "IRE remediation endpoint is unreachable", detail: error instanceof Error ? error.message : "Unknown error" }, { status: 502 });
   }
+}
+
+function identifier(value: unknown) {
+  const candidate = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[0-9a-f]{32}$/.test(candidate) ? candidate : "";
+}
+
+function token(value: unknown) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return /^[a-zA-Z0-9:._-]{1,180}$/.test(candidate) ? candidate : "";
 }

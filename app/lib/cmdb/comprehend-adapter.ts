@@ -12,6 +12,8 @@ export type RemediationFinding = {
   number: string;
   stagedCiId?: string;
   stagedCiLabel?: string;
+  type?: string;
+  severity?: string;
   recommendation: string;
 };
 
@@ -175,6 +177,8 @@ export function normalizeRemediationFindings(payload: unknown): RemediationFindi
       number: text(row.number, `finding-${index + 1}`),
       stagedCiId: referenceId(row.staged_ci),
       stagedCiLabel: referenceLabel(row.staged_ci),
+      type: text(row.type ?? row.finding_type, ""),
+      severity: text(row.severity, ""),
       recommendation: text(row.recommendation),
     };
   });
@@ -234,6 +238,11 @@ export function normalizeComprehendHealth(payload: unknown): HealthData {
 
   return {
     score,
+    baselineScore: optionalNumber(raw.baseline_score ?? raw.baselineScore),
+    verifiedScore: optionalNumber(raw.verified_score ?? raw.verifiedScore ?? raw.current_verified_score),
+    projectedScore: optionalNumber(raw.projected_score ?? raw.projectedScore),
+    dimensionScores: normalizeDimensionScores(raw.dimension_scores ?? raw.dimensions),
+    workGroupImpacts: normalizeWorkGroupImpacts(raw.work_group_impacts ?? raw.workGroupImpacts),
     grade: text(raw.grade, healthGrade(score)),
     ciCount: number(raw.ciCount ?? raw.ci_count ?? raw.total_cis ?? raw.total, 0),
     // `duplicates_merged` is a legacy bridge name. During Comprehend it means
@@ -256,6 +265,32 @@ export function normalizeComprehendHealth(payload: unknown): HealthData {
     staleRecords: number(raw.staleRecords ?? raw.stale_records, 0),
     fixes,
   };
+}
+
+function normalizeDimensionScores(value: unknown) {
+  const dimensions = record(value);
+  const normalized = Object.fromEntries(
+    Object.entries(dimensions)
+      .map(([key, raw]) => [key, optionalNumber(raw)] as const)
+      .filter((entry): entry is [string, number] => entry[1] !== undefined),
+  );
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function normalizeWorkGroupImpacts(value: unknown): HealthData["workGroupImpacts"] {
+  const impacts = Array.isArray(value) ? value : [];
+  const normalized = impacts.map(item => {
+    const row = record(item);
+    const signature = text(row.signature ?? row.work_group_signature, "");
+    if (!signature) return null;
+    return {
+      signature,
+      projected: number(row.projected ?? row.projected_lift, 0),
+      realized: number(row.realized ?? row.realized_lift, 0),
+      stagedCiIds: Array.isArray(row.staged_ci_ids) ? row.staged_ci_ids.map(value => text(value)).filter(Boolean) : undefined,
+    };
+  }).filter((item): item is NonNullable<typeof item> => item !== null);
+  return normalized.length ? normalized : undefined;
 }
 
 function deriveComprehendOutcome(row: Record<string, unknown>, confidence: number): Operation {
@@ -298,7 +333,11 @@ function eventPhase(eventType: string, actor: string, detail: string) {
 
 function eventTitle(actor: string, eventType: string, detail: string) {
   const action = ledgerAction(detail);
+  const decision = detail.match(/\bdecision=([^\s|]+)/i)?.[1]?.toLowerCase();
   if (action) return `${actor} selected ${humanize(action)}`;
+  if (eventType === "approved" && decision === "rejected") return `${actor} rejected approval`;
+  if (eventType === "approved" && decision === "deferred") return `${actor} deferred approval`;
+  if (eventType === "approved" && decision === "approved") return `${actor} authorized execution`;
   if (/^observation:/i.test(detail)) return `${actor} recorded an observation`;
   if (/analysis session started/i.test(detail)) return "Analysis session started";
   if (/analysis completed/i.test(detail)) return "Analysis completed";
@@ -484,6 +523,7 @@ function detailText(value: unknown) {
 }
 
 function ledgerDetailText(value: Record<string, unknown>) {
+  if (value.schema === "keystone.agent.v1") return JSON.stringify(value);
   const summary = text(value.summary ?? value.detail, JSON.stringify(value));
   const metadataKeys = [
     "staged_ci_id",
@@ -498,6 +538,9 @@ function ledgerDetailText(value: Record<string, unknown>) {
     "decision",
     "status",
     "operation",
+    "strategy_id",
+    "mapping_version",
+    "health_impact",
   ];
   const metadata = metadataKeys.flatMap(key => {
     const raw = value[key];

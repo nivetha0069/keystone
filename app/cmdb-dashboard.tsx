@@ -49,13 +49,14 @@ import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 import { MaraCompanion } from "./mara-companion";
+import { AgentWorkspaceView } from "./agent-workspace";
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
 type AnalysisState = "idle" | "starting" | "started" | "error";
 type ResourceName = "cis" | "timeline" | "relationships" | "health" | "findings" | "reviews";
 type ResourceStatus = "connecting" | "live" | "error";
 type ResourceState = Record<ResourceName, ResourceStatus>;
-type Section = "import" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
+type Section = "import" | "workspace" | "approvals" | "evidence" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 type IreWorkbenchRecord = {
   simulation?: IreActionResponse;
   approval?: IreActionResponse;
@@ -90,7 +91,7 @@ async function readEndpoint(resource: ResourceName, runId = "") {
 }
 
 // Sections that reflect backend pipeline progress and therefore poll while a run works.
-const polledSections: Section[] = ["comprehend", "hr", "prioritize", "remediate"];
+const polledSections: Section[] = ["workspace", "approvals", "evidence", "comprehend", "hr", "prioritize", "remediate"];
 
 const terminalRunStates = new Set<string>(TERMINAL_RUN_STATES);
 
@@ -144,14 +145,15 @@ export function CmdbDashboard() {
   const [filter, setFilter] = useState<"all" | "review">("all");
   const [lastSync, setLastSync] = useState("—");
   const [queuedFix, setQueuedFix] = useState<HealthFix | null>(null);
+  const [remediationTargetId, setRemediationTargetId] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [instanceHost, setInstanceHost] = useState<string | null>(null);
   const [runRecord, setRunRecord] = useState<MaraRunRecord | null>(null);
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
   const [analysisMessage, setAnalysisMessage] = useState("");
-  const [activeRunId, setActiveRunId] = useState(currentRunFromLocation);
-  const [activeRunLabel, setActiveRunLabel] = useState(() => activeRunId ? `RUN-${activeRunId.slice(0, 8).toUpperCase()}` : "");
-  const [runDraft, setRunDraft] = useState(activeRunId);
+  const [activeRunId, setActiveRunId] = useState("");
+  const [activeRunLabel, setActiveRunLabel] = useState("");
+  const [runDraft, setRunDraft] = useState("");
   const [livePaused, setLivePaused] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [liveRefreshing, setLiveRefreshing] = useState(false);
@@ -161,6 +163,24 @@ export function CmdbDashboard() {
   // the request resolves so rerenders and retries cannot start it twice.
   const comprehendStarted = useRef(new Set<string>());
   const pollInFlight = useRef(false);
+
+  useEffect(() => {
+    const restoredRun = currentRunFromLocation();
+    if (!restoredRun) return;
+    const timer = window.setTimeout(() => {
+      setCis([]);
+      setTimeline([]);
+      setRelationships([]);
+      setHealth(emptyHealth);
+      setFindings([]);
+      setReviews([]);
+      setActiveRunId(restoredRun);
+      setActiveRunLabel("RUN-" + restoredRun.slice(0, 8).toUpperCase());
+      setRunDraft(restoredRun);
+      setSection("workspace");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const loadData = useCallback(async (runId: string) => {
     setApiState("connecting");
@@ -413,7 +433,7 @@ export function CmdbDashboard() {
     setActiveStep(0);
     setLivePaused(false);
     setLiveRefreshCount(0);
-    setSection("comprehend");
+    setSection("workspace");
     rememberRun(runId);
     const url = new URL(window.location.href);
     if (runId) url.searchParams.set("run", runId);
@@ -434,16 +454,18 @@ export function CmdbDashboard() {
 
   function openEventLedger() {
     setSelectedCi(null);
-    setSection("comprehend");
-    window.setTimeout(() => {
-      document.getElementById("event-ledger")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 0);
+    setSection("evidence");
   }
 
-  async function submitRemediation(fix: HealthFix) {
+  async function submitRemediation(fix: HealthFix, ci?: ConfigurationItem, finding?: RemediationFinding) {
     setQueuedFix(fix); setActionMessage("Preparing governed proposal…");
     try {
-      const response = await fetch("/api/cmdb/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fixId: fix.id, tool: fix.tool, route: "IRE", mode: "proposal" }) });
+      const stagedCiId = ci?.stagedCiId || ci?.id || "";
+      const correlationId = "ks-proposal-" + Date.now();
+      const identifierBody = /^[0-9a-f]{32}$/i.test(activeRunId) && /^[0-9a-f]{32}$/i.test(stagedCiId)
+        ? { migration_run_id: activeRunId, staged_ci_id: stagedCiId, finding_id: finding?.id, correlation_id: correlationId, idempotency_key: "keystone:proposal:" + activeRunId + ":" + stagedCiId }
+        : { fixId: fix.id, tool: fix.tool };
+      const response = await fetch("/api/cmdb/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(identifierBody) });
       if (!response.ok) throw new Error("not configured");
       setActionMessage("Proposal accepted. IRE validation is now queued.");
     } catch {
@@ -451,22 +473,23 @@ export function CmdbDashboard() {
     }
   }
 
-  const nav: { id: Section; label: string; detail: string; icon: IconName }[] = [
+  const nav: { id: Section | "ai-usage"; label: string; detail: string; icon: IconName; href?: string }[] = [
     { id: "import", label: "Import", detail: "Bring data in", icon: "upload" },
-    { id: "comprehend", label: "Comprehend", detail: "See the run", icon: "grid" },
-    { id: "live", label: "Live Ops", detail: "Watch agents work", icon: "bolt" },
-    { id: "hr", label: "Agent HR", detail: "LLM supervisor & audit", icon: "users" },
-    { id: "prioritize", label: "Prioritize", detail: "Rank what matters", icon: "pulse" },
-    { id: "remediate", label: "Remediate", detail: "Close the loop", icon: "tool" },
+    { id: "workspace", label: "Agent Workspace", detail: "Watch the run progress", icon: "spark" },
+    { id: "approvals", label: "Approvals", detail: "Authorize governed work", icon: "shield" },
+    { id: "evidence", label: "Evidence", detail: "Inspect durable activity", icon: "clock" },
+    { id: "ai-usage", label: "AI Usage", detail: "Review model activity", icon: "pulse", href: activeRunId ? "/ai-usage?run=" + encodeURIComponent(activeRunId) : "/ai-usage" },
   ];
 
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar" aria-hidden={sidebarCollapsed}>
       <div className="brand"><span className="brand-mark"><span /></span><div><strong>CMDB</strong><small>MODERNIZATION CONTROL</small></div></div>
       <nav className="main-nav" aria-label="Main navigation">
-        {nav.map(item => <button key={item.id} aria-label={`${item.label}: ${item.detail}`} title={item.label} className={section === item.id ? "active" : ""} onClick={() => setSection(item.id)}>
-          <span className="nav-icon"><Icon name={item.icon} /></span><span><strong>{item.label}</strong><small>{item.detail}</small></span><Icon name="chevron" size={14} />
-        </button>)}
+        {nav.map(item => item.href
+          ? <a key={item.id} className="nav-link" href={item.href} aria-label={item.label + ": " + item.detail} title={item.label}><span className="nav-icon"><Icon name={item.icon} /></span><span><strong>{item.label}</strong><small>{item.detail}</small></span><Icon name="chevron" size={14} /></a>
+          : <button key={item.id} aria-label={item.label + ": " + item.detail} title={item.label} className={section === item.id ? "active" : ""} onClick={() => setSection(item.id as Section)}>
+              <span className="nav-icon"><Icon name={item.icon} /></span><span><strong>{item.label}</strong><small>{item.detail}</small></span><Icon name="chevron" size={14} />
+            </button>)}
       </nav>
       <div className="sidebar-rule" />
       <div className="governance-card"><span className="shield"><Icon name="shield" size={17} /></span><div><small>GOVERNANCE LOCK</small><strong>IRE is the only write path</strong><p>Every CMDB mutation is reconciled, attributed, and logged.</p></div></div>
@@ -491,17 +514,19 @@ export function CmdbDashboard() {
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
+      {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runState={runRecord?.state ?? ""} apiState={apiState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onRefresh={() => void loadData(activeRunId)} />}
+      {section === "evidence" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} onStartAnalysis={() => activeRunId && void startComprehend(activeRunId)} />}
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "hr" && <AgentHrView timeline={timeline} timelineLive={resourceState.timeline === "live"} cis={resourceState.cis === "live" ? cis : null} activeRunId={activeRunId} />}
       {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
-      {section === "remediate" && <RemediateView health={health} cis={cis} timeline={timeline} findings={findings} reviews={reviews} activeRunId={activeRunId} apiState={apiState} queuedFix={queuedFix} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} />}
+      {section === "remediate" && <RemediateView health={health} cis={cis} timeline={timeline} findings={findings} reviews={reviews} activeRunId={activeRunId} apiState={apiState} queuedFix={queuedFix} initialStagedCiId={remediationTargetId} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} />}
     </main>
 
     {selectedCi && <ProvenancePanel ci={selectedCi} onClose={() => setSelectedCi(null)} onOpenLedger={openEventLedger} />}
 
     <MaraCompanion
-      section={section}
+      section={section === "workspace" ? "comprehend" : section === "approvals" ? "remediate" : section === "evidence" ? "live" : section}
       activeRunId={activeRunId}
       activeRunLabel={activeRunLabel}
       runState={runRecord?.state ?? ""}
@@ -513,7 +538,7 @@ export function CmdbDashboard() {
       findings={findings}
       reviews={reviews}
       queuedFix={queuedFix}
-      onNavigate={setSection}
+      onNavigate={next => setSection(next)}
       onOpenLedger={openEventLedger}
       onShowReviewQueue={() => { setFilter("review"); setSection("comprehend"); }}
     />
@@ -769,14 +794,15 @@ function RemediateView(props: {
   activeRunId: string;
   apiState: ApiState;
   queuedFix: HealthFix | null;
+  initialStagedCiId?: string;
   actionMessage: string;
   onSelect: (fix: HealthFix) => void;
-  onSubmit: (fix: HealthFix) => void;
+  onSubmit: (fix: HealthFix, ci?: ConfigurationItem, finding?: RemediationFinding) => void;
 }) {
-  const { health, cis, timeline, findings, reviews, activeRunId, apiState, queuedFix, actionMessage, onSelect, onSubmit } = props;
+  const { health, cis, timeline, findings, reviews, activeRunId, apiState, queuedFix, initialStagedCiId, actionMessage, onSelect, onSubmit } = props;
   const selected = queuedFix || health.fixes[0];
   const stagedCis = cis.filter(ci => ci.id || ci.stagedCiId);
-  const [selectedCiId, setSelectedCiId] = useState(() => stagedCis[0]?.id ?? "");
+  const [selectedCiId, setSelectedCiId] = useState(() => stagedCis.find(ci => ci.id === initialStagedCiId || ci.stagedCiId === initialStagedCiId)?.id ?? stagedCis[0]?.id ?? "");
   const [ireRecords, setIreRecords] = useState<Record<string, IreWorkbenchRecord>>({});
   const [pendingAction, setPendingAction] = useState<IreAction | null>(null);
   const [rationale, setRationale] = useState("Reviewed simulation evidence and source identity for a single staged CI.");
@@ -805,6 +831,7 @@ function RemediateView(props: {
   const approved = Boolean((workbench.approval?.success && workbench.approval.status === "approved") || selectedQueueItem?.review?.decision === "approved");
   const rejected = Boolean((workbench.approval?.success && workbench.approval.status === "rejected") || selectedQueueItem?.review?.decision === "rejected");
   const liveRunReady = Boolean(activeRunId && selectedCi && apiState !== "demo");
+  const approvable = lifecycle === "simulated_pending_approval" && Boolean(simulationCorrelation && selectedQueueItem?.simulationFingerprint);
   const selectedActivity = selectedCi ? timeline
     .filter(event => {
       const haystack = `${event.recordName} ${event.reasoning} ${event.name}`.toLowerCase();
@@ -865,7 +892,7 @@ function RemediateView(props: {
   }
 
   return <div className="page">
-    <section className="page-heading"><div><span className="eyebrow accent">REMEDIATE</span><h1>Single-record remediation workbench.</h1><p>Simulate, approve, execute, and verify one staged CI through ServiceNow IRE.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
+    <section className="page-heading"><div><span className="eyebrow accent">ADVANCED REMEDIATION DETAIL</span><h1>Single-record IRE workbench.</h1><p>Recovery and validation controls for one staged CI. The normal agent journey resumes automatically after approval.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
     <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE</small><strong>ServiceNow rebuilds</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - APPROVE</small><strong>One decision updates</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - EXECUTE</small><strong>Identifier-only request</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - VERIFY</small><strong>Correlation tied</strong></div></div></section>
     <section className="panel work-queue-panel">
       <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
@@ -875,7 +902,7 @@ function RemediateView(props: {
     </section>
     <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">02</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
       {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
-    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected)}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
+    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding)}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
     <section className="workbench-layout">
       <div className="panel staged-workbench">
         <div className="panel-heading"><div><span className="section-index">03</span><div><h2>IRE lifecycle</h2><p>Browser requests contain only staged record identifiers and correlation metadata.</p></div></div><span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span></div>
@@ -889,9 +916,9 @@ function RemediateView(props: {
             {selectedQueueItem && <div className="queue-evidence"><div><span className={`source-dot ${selectedQueueItem.source}`} /><strong>{sourceLabel(selectedQueueItem.source)}</strong><p>{selectedQueueItem.reason}</p></div><div>{selectedQueueItem.evidence.map(item => <code key={item}>{item}</code>)}</div></div>}
             <div className="ire-action-grid">
               <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating..." : "Simulate"}</button>
-              <button className="ghost-button" disabled={!liveRunReady || !simulationCorrelation || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving..." : "Approve"}</button>
-              <button className="ghost-button danger" disabled={!liveRunReady || !simulationCorrelation || Boolean(pendingAction)} onClick={() => approve("rejected")}><Icon name="x" size={15} /> Reject</button>
-              <button className="primary-button" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || lifecycle !== "approved_for_execution" || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing..." : "Execute"}</button>
+              <button className="ghost-button" title="Authorizes one IRE execution for this staged CI and simulation fingerprint." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving..." : "Approve once"}</button>
+              <button className="ghost-button danger" disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("rejected")}><Icon name="x" size={15} /> Reject</button>
+              <button className="primary-button" title="Advanced recovery control" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || lifecycle !== "approved_for_execution" || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing..." : "Manual execute"}</button>
               <button className="ghost-button" disabled={!liveRunReady || !executionCorrelation || lifecycle !== "executed_pending_verification" || Boolean(pendingAction)} onClick={() => void runIreAction("verify", { execution_correlation_id: executionCorrelation ?? "" })}><Icon name="check" size={15} /> {pendingAction === "verify" ? "Verifying..." : "Verify"}</button>
             </div>
             {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}

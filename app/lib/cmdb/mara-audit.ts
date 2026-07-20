@@ -390,14 +390,53 @@ function gateConsistencyCheck(timeline: TimelineEvent[], cis: ConfigurationItem[
 function writeContainmentCheck(timeline: TimelineEvent[]): MaraCheck {
   const title = "Write containment";
   if (!timeline.length) return check("containment", title, "unverifiable", "No Event Ledger entries were recorded for this run.");
-  const committed = timeline.filter(event => event.step === 6);
-  const approved = timeline.filter(event => event.step === 5);
+  const committed = timeline.filter(event => event.step === 6 && /execut|commit|ire/i.test(`${event.name} ${event.reasoning}`));
+  const approved = timeline.filter(event => event.step === 5 && /approv/i.test(`${event.name} ${event.reasoning}`));
   if (!committed.length) return check("containment", title, "pass", "No CMDB commit events were recorded — this run has not written outside IRE governance.");
   if (!approved.length) {
     return check("containment", title, "fail", "Commit events were recorded without any preceding approval or simulation evidence.",
       committed.map(event => `#${event.seq} ${event.source}: ${event.reasoning}`));
   }
-  return check("containment", title, "pass", `${committed.length} commit ${committed.length === 1 ? "event is" : "events are"} preceded by approval evidence.`);
+  const issues = committed.flatMap(event => {
+    const committedEvidence = eventEvidence(event);
+    const matchingApproval = [...approved].reverse().find(candidate => {
+      if (candidate.seq >= event.seq) return false;
+      const approvalEvidence = eventEvidence(candidate);
+      return evidenceMatches(committedEvidence.stagedCiId, approvalEvidence.stagedCiId)
+        && evidenceMatches(committedEvidence.fingerprint, approvalEvidence.fingerprint)
+        && evidenceMatches(committedEvidence.simulationCorrelation, approvalEvidence.simulationCorrelation);
+    });
+    const verification = timeline.find(candidate => {
+      if (candidate.seq <= event.seq || !/verif/i.test(`${candidate.name} ${candidate.reasoning}`)) return false;
+      return evidenceMatches(committedEvidence.executionCorrelation, eventEvidence(candidate).executionCorrelation);
+    });
+    const failures: string[] = [];
+    if (!committedEvidence.stagedCiId) failures.push("missing staged_ci_id");
+    if (!committedEvidence.fingerprint) failures.push("missing simulation_fingerprint");
+    if (!committedEvidence.executionCorrelation) failures.push("missing execution_correlation_id");
+    if (!committedEvidence.targetCiSysId || !/^[0-9a-f]{32}$/i.test(committedEvidence.targetCiSysId)) failures.push("invalid target_ci_sys_id");
+    if (!matchingApproval) failures.push("no preceding approval with matching staged CI, fingerprint, and simulation correlation");
+    if (!verification) failures.push("no later verification with the exact execution correlation");
+    return failures.length ? [`Event #${event.seq}: ${failures.join("; ")}.`] : [];
+  });
+  if (issues.length) return check("containment", title, "fail", "IRE write evidence is incomplete or not correlation-linked.", issues);
+  return check("containment", title, "pass", `${committed.length} IRE commit ${committed.length === 1 ? "has" : "events have"} matching approval, fingerprint, target CI, and verification evidence in ledger order.`);
+}
+
+function eventEvidence(event: TimelineEvent) {
+  const value = event.reasoning;
+  const read = (key: string) => value.match(new RegExp(`(?:"?${key}"?\\s*[:=]\\s*"?)([a-zA-Z0-9:._-]+)`, "i"))?.[1];
+  return {
+    stagedCiId: read("staged_ci_id"),
+    fingerprint: read("simulation_fingerprint") ?? read("fingerprint"),
+    simulationCorrelation: read("simulation_correlation_id"),
+    executionCorrelation: read("execution_correlation_id") ?? (/execut/i.test(event.name) ? read("correlation_id") : undefined),
+    targetCiSysId: read("target_ci_sys_id"),
+  };
+}
+
+function evidenceMatches(left?: string, right?: string) {
+  return Boolean(left && right && left === right);
 }
 
 function findingsLinkageCheck(cis: ConfigurationItem[] | null, findings: MaraFinding[] | null): MaraCheck {

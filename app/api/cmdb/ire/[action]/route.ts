@@ -68,7 +68,7 @@ async function proxyIreAction(action: IreAction, body: Record<string, string>) {
   }
 }
 
-function sanitizeIreRequest(action: IreAction, incoming: Record<string, unknown>) {
+export function sanitizeIreRequest(action: IreAction, incoming: Record<string, unknown>) {
   const base = {
     migration_run_id: value(incoming.migration_run_id ?? incoming.migrationRunId),
     staged_ci_id: value(incoming.staged_ci_id ?? incoming.stagedCiId),

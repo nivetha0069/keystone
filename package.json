@@ -16,7 +16,8 @@
     "smoke:run-lifecycle": "node scripts/smoke-run-lifecycle.cjs",
     "smoke:run-context": "node scripts/smoke-run-context.cjs",
     "smoke:usage-adapter": "node scripts/smoke-usage-adapter.cjs",
-    "smoke:mara-companion": "node scripts/smoke-mara-companion.cjs"
+    "smoke:mara-companion": "node scripts/smoke-mara-companion.cjs",
+    "smoke:agent-workspace": "node scripts/smoke-agent-workspace.cjs"
   },
   "dependencies": {
     "next": "16.2.6",

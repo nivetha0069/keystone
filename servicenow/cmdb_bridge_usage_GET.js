@@ -10,7 +10,7 @@
  * Status codes:
  *   400  missing "run"
  *   404  run not found
- *   403  run belongs to a different team_prefix
+ *   403  caller lacks the required role or cannot read the run
  *   200  success (calls may be [])
  *   500  unexpected server error
  *
@@ -27,6 +27,11 @@
 	}
 
 	try {
+		var REQUIRED_ROLE = gs.getProperty('x_kest_dotwalkers.cmdb_bridge.required_role', 'x_kest_dotwalkers.cmdb_operator');
+		if (!gs.hasRole(REQUIRED_ROLE) && !gs.hasRole('admin')) {
+			return send(403, { error: 'Caller lacks the required CMDB Bridge role.' });
+		}
+
 		var runId = request.queryParams.run;
 		if (runId && runId.length) {
 			runId = ('' + runId[0]).trim();
@@ -43,6 +48,14 @@
 		var run = new GlideRecord('x_kest_dotwalkers_migration_run');
 		if (!run.get(runId)) {
 			return send(404, { error: 'Migration run not found.', runId: runId });
+		}
+		if (!run.canRead()) {
+			return send(403, { error: 'Caller cannot read this migration run.', runId: runId });
+		}
+		var initiatedBy = ('' + run.getValue('initiated_by')).trim();
+		var OWNER_OVERRIDE_ROLE = gs.getProperty('x_kest_dotwalkers.cmdb_bridge.owner_override_role', 'x_kest_dotwalkers.cmdb_admin');
+		if (initiatedBy && initiatedBy !== gs.getUserID() && !gs.hasRole(OWNER_OVERRIDE_ROLE) && !gs.hasRole('admin')) {
+			return send(403, { error: 'Caller does not own this migration run.', runId: runId });
 		}
 
 		// 403 — wrong team partition
