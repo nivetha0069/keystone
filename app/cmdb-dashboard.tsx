@@ -152,6 +152,7 @@ export function CmdbDashboard() {
   const [activeRunLabel, setActiveRunLabel] = useState(() => activeRunId ? `RUN-${activeRunId.slice(0, 8).toUpperCase()}` : "");
   const [runDraft, setRunDraft] = useState(activeRunId);
   const [livePaused, setLivePaused] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [liveRefreshing, setLiveRefreshing] = useState(false);
   const [liveRefreshCount, setLiveRefreshCount] = useState(0);
   const liveRefreshInFlight = useRef(false);
@@ -458,8 +459,8 @@ export function CmdbDashboard() {
     { id: "remediate", label: "Remediate", detail: "Close the loop", icon: "tool" },
   ];
 
-  return <div className="app-shell">
-    <aside className="sidebar">
+  return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <aside className="sidebar" aria-hidden={sidebarCollapsed}>
       <div className="brand"><span className="brand-mark"><span /></span><div><strong>CMDB</strong><small>MODERNIZATION CONTROL</small></div></div>
       <nav className="main-nav" aria-label="Main navigation">
         {nav.map(item => <button key={item.id} aria-label={`${item.label}: ${item.detail}`} title={item.label} className={section === item.id ? "active" : ""} onClick={() => setSection(item.id)}>
@@ -473,7 +474,18 @@ export function CmdbDashboard() {
 
     <main className="main-content">
       <header className="topbar">
-        <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : activeRunLabel || "ALL MIGRATION RUNS"}</strong></div>
+        <div className="topbar-lead">
+          <button
+            type="button"
+            className="sidebar-toggle"
+            aria-label={sidebarCollapsed ? "Open navigation" : "Close navigation"}
+            aria-expanded={!sidebarCollapsed}
+            onClick={() => setSidebarCollapsed(current => !current)}
+          >
+            <Icon name="menu" size={18} />
+          </button>
+          <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : activeRunLabel || "ALL MIGRATION RUNS"}</strong></div>
+        </div>
         <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><a className="ghost-button" href={activeRunId ? `/ai-usage?run=${encodeURIComponent(activeRunId)}` : "/ai-usage"}><Icon name="spark" size={15} /> AI Usage</a><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
 

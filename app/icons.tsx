@@ -1,7 +1,7 @@
 export type IconName =
   | "grid" | "pulse" | "tool" | "shield" | "play" | "pause" | "search" | "arrow" | "check"
   | "database" | "spark" | "clock" | "graph" | "refresh" | "x" | "filter" | "chevron"
-  | "bolt" | "users" | "award" | "alert" | "target" | "book" | "heart" | "upload" | "link" | "file";
+  | "bolt" | "users" | "award" | "alert" | "target" | "book" | "heart" | "upload" | "link" | "file" | "menu";
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -32,6 +32,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     upload: <><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 14v5h14v-5"/></>,
     link: <><path d="M10 13a4 4 0 0 0 5.7.1l2.4-2.4a4 4 0 0 0-5.7-5.7L11 6.4"/><path d="M14 11a4 4 0 0 0-5.7-.1l-2.4 2.4a4 4 0 0 0 5.7 5.7l1.4-1.4"/></>,
     file: <><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></>,
+    menu: <><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
