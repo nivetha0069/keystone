@@ -43,6 +43,7 @@ import {
 
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import { isDraftRunState, isTerminalRunState, TERMINAL_RUN_STATES } from "./lib/cmdb/run-lifecycle";
+import { rememberRun, resolveActiveRun } from "./lib/cmdb/run-context";
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
@@ -64,7 +65,6 @@ type IreWorkbenchRecord = {
 const steps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB", "Event log"];
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
-const activeRunStorageKey = "cmdb-modernization:last-run-id";
 const emptyHealth: HealthData = {
   ...mockHealth,
   score: 0,
@@ -100,21 +100,12 @@ async function readRunStatus(runId: string): Promise<MaraRunRecord | null> {
   return normalizeMaraRun(await response.json());
 }
 
+// Resolve on mount from the shared run-context module so AI Usage and the
+// dashboard share exactly the same priority: URL first, then localStorage.
 function currentRunFromLocation() {
-  if (typeof window === "undefined") return "";
-  const runFromUrl = new URLSearchParams(window.location.search).get("run")?.trim() || "";
-  if (runFromUrl) {
-    try { window.localStorage.setItem(activeRunStorageKey, runFromUrl); } catch {}
-    return runFromUrl;
-  }
-  try { return window.localStorage.getItem(activeRunStorageKey)?.trim() || ""; } catch { return ""; }
-}
-
-function rememberRun(runId: string) {
-  try {
-    if (runId) window.localStorage.setItem(activeRunStorageKey, runId);
-    else window.localStorage.removeItem(activeRunStorageKey);
-  } catch {}
+  const resolved = resolveActiveRun();
+  if (resolved) rememberRun(resolved);
+  return resolved;
 }
 
 function OperationPill({ value }: { value: Operation }) {

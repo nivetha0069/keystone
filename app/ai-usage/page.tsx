@@ -1,29 +1,48 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import {
   AiUsageCall,
   AiUsageResponse,
+  AiUsageTotals,
   computeTotals,
   groupByModel,
   groupByPhase,
   normalizeUsage,
-  totalsDiffer,
 } from "../lib/cmdb/usage-adapter";
+import { normalizeMaraRun } from "../lib/cmdb/mara-audit";
+import { isTerminalRunState } from "../lib/cmdb/run-lifecycle";
+import {
+  isSysId,
+  rememberRun,
+  resolveActiveRun,
+  writeRunToUrl,
+} from "../lib/cmdb/run-context";
 
 const PHASES = ["Comprehend", "Mara", "Prioritize"] as const;
 const intFmt = new Intl.NumberFormat("en-US");
+// Polling cadence for a live-processing run. Matches the dashboard's
+// pipeline-progress interval so the user sees consistent refresh behavior.
+const POLL_INTERVAL_MS = 8000;
+// Backend states we treat as "still working" — worth polling for fresh usage.
+const ACTIVE_RUN_STATES = new Set(["ingesting", "analyzing"]);
 
 type LoadState = "idle" | "loading" | "ready" | "empty" | "unavailable" | "error";
 
-function runFromLocation() {
-  if (typeof window === "undefined") return "";
-  return new URLSearchParams(window.location.search).get("run")?.trim() || "";
+function fmt(n: number) { return intFmt.format(n); }
+
+// Render "—" for a missing token count, the formatted number otherwise.
+// "Missing" is distinct from an explicit 0 the backend actually returned.
+function fmtTokens(value: number | undefined): string {
+  return value === undefined ? "—" : fmt(value);
 }
 
-function fmt(n: number) {
-  return intFmt.format(n);
+function fmtDuration(ms?: number) {
+  if (ms === undefined) return "—";
+  if (ms < 1000) return `${fmt(Math.round(ms))} ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`;
 }
 
 // Pull a human-readable string out of an arbitrary error body (string, {message},
@@ -38,100 +57,141 @@ function readableError(raw: unknown): string {
   return "";
 }
 
-function fmtDuration(ms?: number) {
-  if (ms === undefined) return "—";
-  if (ms < 1000) return `${fmt(Math.round(ms))} ms`;
-  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`;
-}
-
 export default function AiUsagePage() {
-  // Seed empty so SSR and first client render agree; the URL run is read after mount.
-  const [runDraft, setRunDraft] = useState("");
+  // Seeded empty so SSR and the first client render match; the real value is
+  // resolved after mount from URL → localStorage.
   const [runId, setRunId] = useState("");
+  const [runDraft, setRunDraft] = useState("");
+  const [showChangeRun, setShowChangeRun] = useState(false);
   const [state, setState] = useState<LoadState>("idle");
   const [message, setMessage] = useState("");
   const [data, setData] = useState<AiUsageResponse | null>(null);
+  const [runState, setRunState] = useState("");
+  const [runLabel, setRunLabel] = useState("");
+  const [lastSync, setLastSync] = useState("");
+  const inFlight = useRef(false);
 
-  const load = useCallback(async (run: string) => {
+  const load = useCallback(async (run: string, { silent = false }: { silent?: boolean } = {}) => {
     const trimmed = run.trim();
-    if (!trimmed) {
+    if (!isSysId(trimmed)) {
       setState("idle");
       setData(null);
-      setMessage("Enter a migration run sys_id to load its AI usage.");
+      setMessage("");
       return;
     }
-    setState("loading");
-    setMessage("");
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (!silent) setState(current => current === "ready" ? "ready" : "loading");
     try {
-      // GET only — this page never mutates ServiceNow.
-      const response = await fetch(`/api/cmdb/usage?run=${encodeURIComponent(trimmed)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
-      const raw = await response.json().catch(() => ({}));
-      const usage = normalizeUsage(raw, trimmed);
-      if (!response.ok) {
+      // Fetch usage and the migration-run record in parallel: the run record
+      // drives auto-refresh (poll while active, stop at terminal). Both are
+      // GETs — this page never mutates ServiceNow.
+      const [usageResponse, runResponse] = await Promise.all([
+        fetch(`/api/cmdb/usage?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }),
+        fetch(`/api/cmdb/run?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }).catch(() => null),
+      ]);
+
+      const rawUsage = await usageResponse.json().catch(() => ({}));
+      const usage = normalizeUsage(rawUsage, trimmed);
+
+      if (runResponse && runResponse.ok) {
+        try {
+          const runRecord = normalizeMaraRun(await runResponse.json());
+          if (runRecord?.state) setRunState(runRecord.state);
+          if (runRecord?.number) setRunLabel(runRecord.number);
+        } catch { /* run record is best-effort; usage still renders */ }
+      }
+
+      if (!usageResponse.ok) {
         setData(null);
-        // "Not built / not reachable" backends → unavailable; genuine bad requests → error.
-        const unavailableStatus = [404, 501, 502, 503].includes(response.status);
+        const unavailableStatus = [404, 501, 502, 503].includes(usageResponse.status);
         setState(unavailableStatus ? "unavailable" : "error");
-        setMessage(readableError(raw) || `Request failed (${response.status}).`);
+        setMessage(readableError(rawUsage) || `Request failed (${usageResponse.status}).`);
         return;
       }
       setData(usage);
+      setLastSync(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
       if (usage.calls.length) {
         setState("ready");
+        setMessage("");
       } else {
-        // 200 with no calls is a healthy "no usage captured yet" run, not a fault.
-        // Prefer the backend's own reason (e.g. unavailableReason) over a generic string.
         setState("empty");
         setMessage(readableError(usage.unavailable) || "");
       }
     } catch (error) {
-      setData(null);
-      setState("error");
-      setMessage(error instanceof Error ? error.message : "Unable to reach the AI usage endpoint.");
+      if (!silent) {
+        setData(null);
+        setState("error");
+        setMessage(error instanceof Error ? error.message : "Unable to reach the AI usage endpoint.");
+      }
+    } finally {
+      inFlight.current = false;
     }
   }, []);
 
-  // Read the run from the URL after mount (not during render) so hydration matches,
-  // then kick off the initial load. Deferred to a timeout so the setState calls do
-  // not run synchronously inside the effect body.
+  // Auto-resolve on mount: URL > localStorage. No manual paste required.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const fromUrl = runFromLocation();
-      if (fromUrl) {
-        setRunDraft(fromUrl);
-        setRunId(fromUrl);
-        void load(fromUrl);
+      const resolved = resolveActiveRun();
+      if (isSysId(resolved)) {
+        setRunId(resolved);
+        setRunDraft(resolved);
+        rememberRun(resolved);
+        writeRunToUrl(resolved);
+        void load(resolved);
       } else {
-        setMessage("Enter a migration run sys_id to load its AI usage.");
+        setState("idle");
+        setMessage("");
       }
     }, 0);
     return () => window.clearTimeout(timer);
-    // Run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function submit() {
-    const trimmed = runDraft.trim();
-    setRunId(trimmed);
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      if (trimmed) url.searchParams.set("run", trimmed);
-      else url.searchParams.delete("run");
-      window.history.replaceState({}, "", url);
+  // Poll while the backend is still working on this run. Stops on any terminal
+  // state and on unmount. Never issues a write.
+  useEffect(() => {
+    if (!isSysId(runId)) return;
+    if (isTerminalRunState(runState)) return;
+    if (runState && !ACTIVE_RUN_STATES.has(runState)) return;
+    const timer = window.setInterval(() => { void load(runId, { silent: true }); }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [runId, runState, load]);
+
+  function switchRun(next: string) {
+    const trimmed = next.trim();
+    if (!isSysId(trimmed)) {
+      setState("idle");
+      setMessage(trimmed ? "Not a valid 32-character migration_run sys_id." : "");
+      return;
     }
+    setRunId(trimmed);
+    setRunDraft(trimmed);
+    setShowChangeRun(false);
+    rememberRun(trimmed);
+    writeRunToUrl(trimmed);
+    setData(null);
+    setRunState("");
+    setRunLabel("");
     void load(trimmed);
   }
 
   const backHref = runId ? `/?run=${encodeURIComponent(runId)}` : "/";
   const calls = useMemo(() => data?.calls ?? [], [data]);
-  const clientTotals = useMemo(() => computeTotals(calls), [calls]);
+  const clientTotals: AiUsageTotals = useMemo(() => computeTotals(calls), [calls]);
   const phaseGroups = useMemo(() => groupByPhase(calls), [calls]);
   const modelGroups = useMemo(() => groupByModel(calls), [calls]);
   const fallbackCount = useMemo(() => calls.filter(c => c.status.toLowerCase() === "fallback").length, [calls]);
-  const mismatch = data ? totalsDiffer(data.totals, clientTotals) && data.totals.callCount > 0 : false;
+  const partialTelemetry = calls.length > 0 && clientTotals.callsWithTokens > 0 && clientTotals.callsWithTokens < calls.length;
+  const noTelemetry = calls.length > 0 && clientTotals.callsWithTokens === 0;
+  // ServiceNow /usage today ships `{"inputTokens":0,"outputTokens":0,"totalTokens":0}`
+  // for every call, even when duration > 0. Per the contract we preserve the
+  // explicit 0, but flag the pattern so it is not silently misread as "the model
+  // used no tokens" — the real cause is missing instrumentation on the backend.
+  const suspiciousAllZero = clientTotals.tokenMetricsAvailable
+    && clientTotals.callsWithTokens === clientTotals.callCount
+    && clientTotals.totalTokens === 0
+    && (clientTotals.durationMs ?? 0) > 0;
 
   return (
     <div className="app-shell">
@@ -143,36 +203,66 @@ export default function AiUsagePage() {
               <h1>AI usage for this run</h1>
               <p>Token consumption and model calls across Comprehend, Mara, and Prioritize — read-only, per migration run.</p>
             </div>
-            <a className="ghost-button" href={backHref}><Icon name="chevron" size={14} /> Back to control plane</a>
+            <Link className="ghost-button" href={backHref}><Icon name="chevron" size={14} /> Back to control plane</Link>
           </section>
 
           <section className="run-context panel">
             <div className="run-context-copy">
               <span className="section-index">AI</span>
               <div>
-                <h2>Backend run context</h2>
-                <p>Usage is sourced from the scoped bridge; no global AI tables are queried from the browser.</p>
+                <h2>Active migration run</h2>
+                <p>Resolved from the control plane. Usage refreshes automatically while the run is still processing.</p>
               </div>
             </div>
-            <label className="run-id-field">
-              <span>RUN SYS_ID</span>
-              <input
-                value={runDraft}
-                onChange={event => setRunDraft(event.target.value)}
-                onKeyDown={event => { if (event.key === "Enter") submit(); }}
-                placeholder="Paste migration_run sys_id"
-              />
-            </label>
-            <div className="run-context-actions">
-              <button className="primary-button" onClick={submit} disabled={state === "loading"}>
-                <Icon name="refresh" size={15} /> {state === "loading" ? "Loading" : data ? "Refresh" : "Load usage"}
-              </button>
-            </div>
+            {runId ? (
+              <div className="run-context-summary">
+                <div className="run-context-facts">
+                  <div><small>RUN</small><strong>{runLabel || `RUN-${runId.slice(0, 8).toUpperCase()}`}</strong></div>
+                  <div><small>SYS_ID</small><code>{runId}</code></div>
+                  {runState && <div><small>STATE</small><strong>{runState.replaceAll("_", " ")}</strong></div>}
+                  {lastSync && <div><small>LAST SYNC</small><strong>{lastSync}</strong></div>}
+                </div>
+                <div className="run-context-actions">
+                  <button className="primary-button" onClick={() => void load(runId)} disabled={state === "loading"}>
+                    <Icon name="refresh" size={15} /> {state === "loading" ? "Refreshing" : "Refresh"}
+                  </button>
+                  <button className="ghost-button" onClick={() => setShowChangeRun(current => !current)}>
+                    <Icon name="chevron" size={13} /> {showChangeRun ? "Cancel" : "Change run"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="run-context-summary">
+                <div><strong style={{ color: "var(--amber)" }}>No migration run is selected.</strong><p style={{ margin: "4px 0 0", color: "var(--muted)" }}>Open a run in the control plane and it will flow through here automatically.</p></div>
+                <div className="run-context-actions">
+                  <Link className="primary-button" href="/"><Icon name="chevron" size={13} /> Open control plane</Link>
+                  <button className="ghost-button" onClick={() => setShowChangeRun(current => !current)}>{showChangeRun ? "Cancel" : "Enter sys_id"}</button>
+                </div>
+              </div>
+            )}
+            {showChangeRun && (
+              <label className="run-id-field">
+                <span>MIGRATION RUN SYS_ID</span>
+                <input
+                  value={runDraft}
+                  onChange={event => setRunDraft(event.target.value)}
+                  onKeyDown={event => { if (event.key === "Enter") switchRun(runDraft); }}
+                  placeholder="Paste migration_run sys_id"
+                  autoFocus
+                />
+                <button className="primary-button" onClick={() => switchRun(runDraft)}>Load</button>
+              </label>
+            )}
           </section>
 
-          {state === "loading" && <div className="panel empty-state">Loading AI usage for {runId.slice(0, 8) || "run"}…</div>}
+          {state === "loading" && !data && <div className="panel empty-state">Loading AI usage for {runId.slice(0, 8) || "run"}…</div>}
 
-          {state === "idle" && <div className="panel empty-state">{message}</div>}
+          {state === "idle" && !runId && (
+            <div className="panel empty-state">
+              <strong style={{ display: "block", marginBottom: 6 }}>No migration run selected</strong>
+              <p style={{ margin: 0, color: "var(--muted)" }}>Pick a run in the control plane and its AI usage will load here automatically.</p>
+            </div>
+          )}
 
           {state === "unavailable" && (
             <div className="panel empty-state">
@@ -192,25 +282,37 @@ export default function AiUsagePage() {
             <div className="panel empty-state">{message || `No model calls were recorded for run ${runId.slice(0, 8)}.`}</div>
           )}
 
-          {state === "ready" && data && (
+          {(state === "ready" || (state === "loading" && data)) && data && (
             <>
-              {mismatch && (
-                <div className="panel empty-state" style={{ padding: "12px 16px", textAlign: "left", color: "var(--amber)", font: "10px var(--mono)" }}>
-                  Usage totals were recalculated from the individual model calls.
-                </div>
-              )}
-
               {fallbackCount > 0 && (
                 <div className="panel empty-state" style={{ padding: "12px 16px", textAlign: "left", color: "var(--amber)", font: "10px var(--mono)" }}>
                   DETERMINISTIC FALLBACK USED · {fallbackCount} of {calls.length} call{calls.length === 1 ? "" : "s"} ran without a model.
                 </div>
               )}
 
+              {noTelemetry && (
+                <div className="panel empty-state" style={{ padding: "12px 16px", textAlign: "left", color: "var(--amber)", font: "10px var(--mono)" }}>
+                  TOKEN METRICS NOT CAPTURED · The backend returned {calls.length} call{calls.length === 1 ? "" : "s"} without token counts. Duration and status are still shown.
+                </div>
+              )}
+
+              {partialTelemetry && (
+                <div className="panel empty-state" style={{ padding: "12px 16px", textAlign: "left", color: "var(--amber)", font: "10px var(--mono)" }}>
+                  PARTIAL TOKEN METRICS · Token metadata available for {clientTotals.callsWithTokens} of {calls.length} call{calls.length === 1 ? "" : "s"}. Missing calls show “—”.
+                </div>
+              )}
+
+              {suspiciousAllZero && (
+                <div className="panel empty-state" style={{ padding: "12px 16px", textAlign: "left", color: "var(--amber)", font: "10px var(--mono)" }}>
+                  BACKEND REPORTED ZERO TOKENS FOR EVERY CALL · Durations are non-zero, so the model ran. ServiceNow /usage is likely not populating input_tokens/output_tokens — the frontend is not fabricating counts, it is displaying what the backend returned.
+                </div>
+              )}
+
               <section className="kpi-grid">
                 <SummaryCard tone="lime" label="AI CALLS" value={fmt(clientTotals.callCount)} foot="Model + fallback" />
-                <SummaryCard tone="green" label="INPUT TOKENS" value={fmt(clientTotals.inputTokens)} foot="Prompt" />
-                <SummaryCard tone="amber" label="OUTPUT TOKENS" value={fmt(clientTotals.outputTokens)} foot="Completion" />
-                <SummaryCard tone="lime" label="TOTAL TOKENS" value={fmt(clientTotals.totalTokens)} foot="Input + output" />
+                <SummaryCard tone="green" label="INPUT TOKENS" value={fmtTokens(clientTotals.inputTokens)} foot={tokenCardFoot(clientTotals)} />
+                <SummaryCard tone="amber" label="OUTPUT TOKENS" value={fmtTokens(clientTotals.outputTokens)} foot={tokenCardFoot(clientTotals)} />
+                <SummaryCard tone="lime" label="TOTAL TOKENS" value={fmtTokens(clientTotals.totalTokens)} foot={tokenCardFoot(clientTotals)} />
               </section>
 
               {clientTotals.durationMs !== undefined && (
@@ -234,7 +336,7 @@ export default function AiUsagePage() {
                 index="01"
                 title="Phase breakdown"
                 subtitle="Comprehend · Mara · Prioritize"
-                rows={PHASES.map(phase => phaseGroups.find(g => g.key === phase) ?? { key: phase, callCount: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, durationMs: undefined })
+                rows={PHASES.map(phase => phaseGroups.find(g => g.key === phase) ?? emptyGroup(phase))
                   .concat(phaseGroups.filter(g => !PHASES.includes(g.key as (typeof PHASES)[number])))}
               />
 
@@ -267,7 +369,7 @@ export default function AiUsagePage() {
                 </div>
                 <div className="table-footer">
                   <span>Recalculated client-side from {fmt(calls.length)} calls</span>
-                  <span>TOTAL <strong>{fmt(clientTotals.totalTokens)}</strong> tokens</span>
+                  <span>TOTAL <strong>{fmtTokens(clientTotals.totalTokens)}</strong> tokens</span>
                 </div>
               </section>
             </>
@@ -276,6 +378,16 @@ export default function AiUsagePage() {
       </main>
     </div>
   );
+}
+
+function tokenCardFoot(totals: AiUsageTotals): string {
+  if (!totals.tokenMetricsAvailable) return "Not captured by backend";
+  if (totals.callsWithTokens < totals.callCount) return `From ${totals.callsWithTokens} of ${totals.callCount} calls`;
+  return "Sum across calls";
+}
+
+function emptyGroup(key: string) {
+  return { key, callCount: 0, inputTokens: undefined, outputTokens: undefined, totalTokens: undefined, durationMs: undefined, callsWithTokens: 0, tokenMetricsAvailable: false };
 }
 
 function SummaryCard({ tone, label, value, foot }: { tone: string; label: string; value: string; foot: string }) {
@@ -290,7 +402,7 @@ function SummaryCard({ tone, label, value, foot }: { tone: string; label: string
 
 function BreakdownPanel({ index, title, subtitle, rows }: {
   index: string; title: string; subtitle: string;
-  rows: { key: string; callCount: number; inputTokens: number; outputTokens: number; totalTokens: number; durationMs?: number }[];
+  rows: { key: string; callCount: number; inputTokens?: number; outputTokens?: number; totalTokens?: number; durationMs?: number; callsWithTokens: number; tokenMetricsAvailable: boolean }[];
 }) {
   return (
     <section className="panel table-panel" style={{ marginTop: 12 }}>
@@ -317,9 +429,9 @@ function BreakdownPanel({ index, title, subtitle, rows }: {
               <tr key={row.key} style={{ cursor: "default" }}>
                 <td><strong style={{ color: "var(--ink)" }}>{row.key}</strong></td>
                 <td style={{ textAlign: "right" }}>{fmt(row.callCount)}</td>
-                <td style={{ textAlign: "right" }}>{fmt(row.inputTokens)}</td>
-                <td style={{ textAlign: "right" }}>{fmt(row.outputTokens)}</td>
-                <td style={{ textAlign: "right" }}>{fmt(row.totalTokens)}</td>
+                <td style={{ textAlign: "right" }}>{fmtTokens(row.inputTokens)}</td>
+                <td style={{ textAlign: "right" }}>{fmtTokens(row.outputTokens)}</td>
+                <td style={{ textAlign: "right" }}>{fmtTokens(row.totalTokens)}</td>
                 <td style={{ textAlign: "right" }}>{fmtDuration(row.durationMs)}</td>
               </tr>
             ))}
@@ -338,9 +450,9 @@ function CallRow({ call }: { call: AiUsageCall }) {
       <td className="source-name">{call.timestamp}</td>
       <td>{call.phase}</td>
       <td>{call.model}</td>
-      <td style={{ textAlign: "right" }}>{fmt(call.inputTokens)}</td>
-      <td style={{ textAlign: "right" }}>{fmt(call.outputTokens)}</td>
-      <td style={{ textAlign: "right" }}>{fmt(call.totalTokens)}</td>
+      <td style={{ textAlign: "right" }}>{fmtTokens(call.inputTokens)}</td>
+      <td style={{ textAlign: "right" }}>{fmtTokens(call.outputTokens)}</td>
+      <td style={{ textAlign: "right" }}>{fmtTokens(call.totalTokens)}</td>
       <td style={{ textAlign: "right" }}>{fmtDuration(call.durationMs)}</td>
       <td><span className={`operation operation-${tone}`}>{call.status}</span></td>
     </tr>
