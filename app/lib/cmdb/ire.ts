@@ -251,7 +251,7 @@ export function deriveIreLifecycleState(snapshot: IreLifecycleSnapshot): IreLife
     return snapshot.execution.state ?? "execution_rejected_stale_simulation";
   }
 
-  if (snapshot.approval?.success && snapshot.approval.status === "approved") return "approved_for_execution";
+  if (snapshot.approval?.success && (snapshot.approval.status === "approved" || snapshot.approval.state === "approved_for_execution")) return "approved_for_execution";
   if (snapshot.approval?.success && snapshot.approval.status === "rejected") return "simulated_pending_approval";
 
   if (snapshot.simulation) {

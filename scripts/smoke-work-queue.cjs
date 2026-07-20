@@ -94,4 +94,30 @@ const staleExecution = deriveRemediationWorkQueue({
 });
 assert.equal(staleExecution.items[0]?.bucket, "blocked");
 
+const restoredApproval = deriveRemediationWorkQueue({
+  cis: [ci],
+  timeline: [{
+    ...simulationEvent,
+    recordName: "alexn",
+    reasoning: `Simulation: incomplete | staged_ci_id=${ci.id} correlation_id=ks-simulate-restored simulation_fingerprint=fp-restored`,
+  }],
+  findings: [{ id: "finding-1", number: "DWF0001136", stagedCiId: ci.id, recommendation: "Review simulation" }],
+  reviews: [{ id: "review-1", findingId: "finding-1", decision: "approved", rationale: "Approved after review", policyApproved: true }],
+});
+assert.equal(restoredApproval.items[0]?.bucket, "ready_to_execute");
+assert.equal(restoredApproval.items[0]?.simulationCorrelation, "ks-simulate-restored");
+assert.equal(restoredApproval.items[0]?.simulationFingerprint, "fp-restored");
+assert.equal(restoredApproval.items[0]?.source, "servicenow_ledger");
+
+const stateOnlyApproval = deriveRemediationWorkQueue({
+  cis: [ci],
+  timeline: [],
+  ireRecords: {
+    [ci.id]: {
+      approval: { success: true, action: "approve", state: "approved_for_execution" },
+    },
+  },
+});
+assert.equal(stateOnlyApproval.items[0]?.bucket, "ready_to_execute");
+
 console.log("work-queue smoke passed");

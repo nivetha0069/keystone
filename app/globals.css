@@ -396,7 +396,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .queue-evidence > div:last-child { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-content: start; }
 .queue-evidence code { padding: 4px 6px; color: var(--lime); background: rgba(199, 243, 77, .055); border: 1px solid rgba(199, 243, 77, .16); font: 8px var(--mono); }
 .source-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.source-dot.servicenow_ledger, .source-dot.live_action { background: var(--green); box-shadow: 0 0 7px rgba(89, 197, 139, .55); }
+.source-dot.servicenow_ledger, .source-dot.servicenow_records, .source-dot.live_action { background: var(--green); box-shadow: 0 0 7px rgba(89, 197, 139, .55); }
 .source-dot.derived_staging { background: var(--amber); }
 .source-dot.demo_fallback { background: var(--coral); }
 .ire-action-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }

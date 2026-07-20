@@ -7,6 +7,23 @@ import {
   TimelineEvent,
 } from "../../cmdb-data";
 
+export type RemediationFinding = {
+  id: string;
+  number: string;
+  stagedCiId?: string;
+  stagedCiLabel?: string;
+  recommendation: string;
+};
+
+export type RemediationReview = {
+  id: string;
+  findingId?: string;
+  findingLabel?: string;
+  decision: string;
+  rationale: string;
+  policyApproved?: boolean;
+};
+
 const SENTRY_THRESHOLD = 0.5;
 
 export function normalizeComprehendCis(payload: unknown): ConfigurationItem[] {
@@ -148,6 +165,33 @@ export function normalizeComprehendTimeline(payload: unknown): TimelineEvent[] {
       };
     })
     .sort((a, b) => a.seq - b.seq);
+}
+
+export function normalizeRemediationFindings(payload: unknown): RemediationFinding[] {
+  return arrayFromPayload(payload, ["findings"]).map((item, index) => {
+    const row = record(item);
+    return {
+      id: text(row.sys_id ?? row.id, `finding-${index + 1}`),
+      number: text(row.number, `finding-${index + 1}`),
+      stagedCiId: referenceId(row.staged_ci),
+      stagedCiLabel: referenceLabel(row.staged_ci),
+      recommendation: text(row.recommendation),
+    };
+  });
+}
+
+export function normalizeRemediationReviews(payload: unknown): RemediationReview[] {
+  return arrayFromPayload(payload, ["reviews", "decisions"]).map((item, index) => {
+    const row = record(item);
+    return {
+      id: text(row.sys_id ?? row.id, `review-${index + 1}`),
+      findingId: referenceId(row.finding),
+      findingLabel: referenceLabel(row.finding),
+      decision: text(row.decision, "deferred").toLowerCase(),
+      rationale: text(row.rationale),
+      policyApproved: optionalBoolean(row.policy_approved),
+    };
+  });
 }
 
 export function normalizeComprehendRelationships(payload: unknown): Relationship[] {
@@ -425,7 +469,7 @@ function detailText(value: unknown) {
       const parsed = JSON.parse(value) as unknown;
       if (parsed && typeof parsed === "object") {
         const parsedRecord = record(parsed);
-        return text(parsedRecord.summary ?? parsedRecord.detail, JSON.stringify(parsed));
+        return ledgerDetailText(parsedRecord);
       }
     } catch {
       return value.trim();
@@ -434,9 +478,40 @@ function detailText(value: unknown) {
   }
   if (value && typeof value === "object") {
     const valueRecord = record(value);
-    return text(valueRecord.summary ?? valueRecord.detail, JSON.stringify(value));
+    return ledgerDetailText(valueRecord);
   }
   return "";
+}
+
+function ledgerDetailText(value: Record<string, unknown>) {
+  const summary = text(value.summary ?? value.detail, JSON.stringify(value));
+  const metadataKeys = [
+    "staged_ci_id",
+    "finding_id",
+    "correlation_id",
+    "simulation_correlation_id",
+    "execution_correlation_id",
+    "simulation_fingerprint",
+    "decision",
+    "status",
+    "operation",
+  ];
+  const metadata = metadataKeys.flatMap(key => {
+    const raw = value[key];
+    const normalized = referenceId(raw) ?? referenceLabel(raw) ?? (raw === undefined || raw === null ? "" : String(raw));
+    return normalized ? [`${key}=${normalized}`] : [];
+  });
+  return metadata.length && !metadata.every(item => summary.includes(item))
+    ? `${summary} | ${metadata.join(" ")}`
+    : summary;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  const normalized = text(value).trim().toLowerCase();
+  if (["1", "true", "yes"].includes(normalized)) return true;
+  if (["0", "false", "no"].includes(normalized)) return false;
+  return undefined;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

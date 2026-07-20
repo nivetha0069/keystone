@@ -5,6 +5,7 @@ import {
   type IreLifecycleState,
   type IreLifecycleSnapshot,
 } from "./ire";
+import type { RemediationFinding, RemediationReview } from "./comprehend-adapter";
 
 export type WorkQueueBucketId =
   | "ready_to_simulate"
@@ -26,9 +27,14 @@ export type WorkQueueItem = {
   evidence: string[];
   latestEvent?: TimelineEvent;
   healthFix?: HealthFix;
+  simulationCorrelation?: string;
+  simulationFingerprint?: string;
+  executionCorrelation?: string;
+  finding?: RemediationFinding;
+  review?: RemediationReview;
 };
 
-export type WorkQueueItemSource = "servicenow_ledger" | "live_action" | "derived_staging" | "demo_fallback";
+export type WorkQueueItemSource = "servicenow_ledger" | "servicenow_records" | "live_action" | "derived_staging" | "demo_fallback";
 
 export type WorkQueueBucket = {
   id: WorkQueueBucketId;
@@ -65,6 +71,8 @@ export function deriveRemediationWorkQueue(input: {
   cis: ConfigurationItem[];
   timeline: TimelineEvent[];
   healthFixes?: HealthFix[];
+  findings?: RemediationFinding[];
+  reviews?: RemediationReview[];
   ireRecords?: Record<string, WorkbenchRecord>;
   pending?: { ciId?: string; action?: "simulate" | "approve" | "execute" | "verify" | null };
   demoFallback?: boolean;
@@ -77,15 +85,29 @@ export function deriveRemediationWorkQueue(input: {
       const matchingEvents = matchingLedgerEvents(ci, input.timeline);
       const ledgerLifecycle = lifecycleFromLedger(matchingEvents);
       const actionLifecycle = lifecycleFromWorkbench(workbench, input.pending?.ciId === ci.id ? input.pending.action : null);
-      const lifecycle = actionLifecycle ?? ledgerLifecycle ?? lifecycleFromStaging(ci);
-      const approvalRejected = workbench.approval?.success && workbench.approval.status === "rejected";
+      const findings = relatedFindings(ci, input.findings ?? []);
+      const reviews = relatedReviews(findings, input.reviews ?? []);
+      const review = reviews.at(-1);
+      const reviewLifecycle = review?.decision === "approved"
+        ? "approved_for_execution"
+        : review?.decision === "rejected"
+          ? "simulated_pending_approval"
+          : null;
+      const lifecycle = actionLifecycle ?? reviewLifecycle ?? ledgerLifecycle ?? lifecycleFromStaging(ci);
+      const approvalRejected = Boolean(
+        (workbench.approval?.success && workbench.approval.status === "rejected") || review?.decision === "rejected",
+      );
       const bucket = bucketForLifecycle(lifecycle, approvalRejected);
       const latestEvent = matchingEvents.at(-1);
+      const playback = playbackIdentifiers(matchingEvents);
+      const finding = findings.at(-1);
       const healthFix = relatedHealthFix(ci, input.healthFixes ?? []);
       const source: WorkQueueItem["source"] = actionLifecycle
         ? "live_action"
         : ledgerLifecycle
           ? "servicenow_ledger"
+          : finding || review
+            ? "servicenow_records"
           : input.demoFallback
             ? "demo_fallback"
             : "derived_staging";
@@ -97,10 +119,15 @@ export function deriveRemediationWorkQueue(input: {
         lifecycle,
         bucket,
         source,
-        reason: queueReason({ ci, lifecycle, bucket, latestEvent, healthFix, approvalRejected }),
-        evidence: queueEvidence({ ci, workbench, latestEvent, healthFix }),
+        reason: queueReason({ ci, lifecycle, bucket, latestEvent, healthFix, review, approvalRejected }),
+        evidence: queueEvidence({ ci, workbench, latestEvent, healthFix, finding, review, playback }),
         latestEvent,
         healthFix,
+        simulationCorrelation: workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback.simulationCorrelation,
+        simulationFingerprint: workbench.simulation?.simulation_fingerprint ?? playback.simulationFingerprint,
+        executionCorrelation: workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? playback.executionCorrelation,
+        finding,
+        review,
       };
     });
 
@@ -112,7 +139,7 @@ export function deriveRemediationWorkQueue(input: {
   return {
     items,
     buckets,
-    liveBackedCount: items.filter(item => item.source === "servicenow_ledger" || item.source === "live_action").length,
+    liveBackedCount: items.filter(item => item.source === "servicenow_ledger" || item.source === "servicenow_records" || item.source === "live_action").length,
     fallbackCount: items.filter(item => item.source === "demo_fallback").length,
   };
 }
@@ -147,7 +174,7 @@ function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null 
     if (text.includes("ire execution") && (text.includes("started") || event.status === "active")) return "executing";
     if ((text.includes("ire execution") || text.includes("committed") || text.includes("cmdb published")) && event.status !== "error") return "executed_pending_verification";
     if ((text.includes("stale") || text.includes("fingerprint")) && (text.includes("reject") || text.includes("failed"))) return "execution_rejected_stale_simulation";
-    if (text.includes("review") && (text.includes("approved") || text.includes("approval recorded"))) return "approved_for_execution";
+    if (text.includes("approved") || text.includes("approval recorded")) return "approved_for_execution";
     if ((text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) && (text.includes("failed") || text.includes("error") || event.status === "error")) return "simulation_failed";
     if (text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) return "simulated_pending_approval";
   }
@@ -164,6 +191,39 @@ function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) 
   });
 }
 
+function relatedFindings(ci: ConfigurationItem, findings: RemediationFinding[]) {
+  const ids = [ci.id, ci.stagedCiId].filter((value): value is string => Boolean(value));
+  return findings.filter(finding =>
+    ids.includes(finding.stagedCiId ?? "") ||
+    ids.includes(finding.stagedCiLabel ?? "") ||
+    finding.stagedCiLabel === ci.name,
+  );
+}
+
+function relatedReviews(findings: RemediationFinding[], reviews: RemediationReview[]) {
+  const findingKeys = findings.flatMap(finding => [finding.id, finding.number]).filter(Boolean);
+  return reviews.filter(review =>
+    findingKeys.includes(review.findingId ?? "") || findingKeys.includes(review.findingLabel ?? ""),
+  );
+}
+
+function playbackIdentifiers(events: TimelineEvent[]) {
+  const text = events.map(event => event.reasoning).join(" ");
+  return {
+    simulationCorrelation: lastMetadataValue(text, "simulation_correlation_id") ?? lastSimulationCorrelation(text),
+    simulationFingerprint: lastMetadataValue(text, "simulation_fingerprint"),
+    executionCorrelation: lastMetadataValue(text, "execution_correlation_id"),
+  };
+}
+
+function lastMetadataValue(text: string, key: string) {
+  return [...text.matchAll(new RegExp(`\\b${key}=([^\\s|]+)`, "g"))].at(-1)?.[1];
+}
+
+function lastSimulationCorrelation(text: string) {
+  return [...text.matchAll(/\bcorrelation_id=(ks-simulate-[^\s|]+)/g)].at(-1)?.[1];
+}
+
 function relatedHealthFix(ci: ConfigurationItem, fixes: HealthFix[]) {
   if (ci.status === "incomplete") return fixes.find(fix => /incomplete|identifier|ire|missing/i.test(`${fix.title} ${fix.description} ${fix.tool}`));
   if (ci.status === "review") return fixes.find(fix => /review|approval|duplicate|class|ownership/i.test(`${fix.title} ${fix.description} ${fix.tool}`));
@@ -176,9 +236,11 @@ function queueReason(input: {
   bucket: WorkQueueBucketId;
   latestEvent?: TimelineEvent;
   healthFix?: HealthFix;
+  review?: RemediationReview;
   approvalRejected?: boolean;
 }) {
   if (input.approvalRejected) return "Review decision rejected the current remediation path.";
+  if (input.review?.decision === "approved") return input.review.rationale || "ServiceNow review decision approved the current simulation.";
   if (input.latestEvent) return input.latestEvent.reasoning;
   if (input.healthFix) return input.healthFix.description;
   if (input.bucket === "ready_to_simulate") return "Staged record has enough local gate evidence to request non-mutating IRE simulation.";
@@ -191,10 +253,16 @@ function queueEvidence(input: {
   workbench: WorkbenchRecord;
   latestEvent?: TimelineEvent;
   healthFix?: HealthFix;
+  finding?: RemediationFinding;
+  review?: RemediationReview;
+  playback: ReturnType<typeof playbackIdentifiers>;
 }) {
   return [
     input.workbench.simulation?.simulation_fingerprint && `fingerprint ${shortId(input.workbench.simulation.simulation_fingerprint)}`,
     input.workbench.simulation?.finding?.display_value && `finding ${input.workbench.simulation.finding.display_value}`,
+    input.playback.simulationFingerprint && `fingerprint ${shortId(input.playback.simulationFingerprint)}`,
+    input.finding?.number && `finding ${input.finding.number}`,
+    input.review?.decision && `review ${input.review.decision}`,
     input.workbench.execution?.execution_correlation_id && `execution ${shortId(input.workbench.execution.execution_correlation_id)}`,
     input.latestEvent && `ledger seq ${input.latestEvent.seq}`,
     input.healthFix && `${input.healthFix.affected} affected by ${input.healthFix.title}`,

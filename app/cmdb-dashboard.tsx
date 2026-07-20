@@ -19,6 +19,10 @@ import {
   normalizeComprehendHealth,
   normalizeComprehendRelationships,
   normalizeComprehendTimeline,
+  normalizeRemediationFindings,
+  normalizeRemediationReviews,
+  type RemediationFinding,
+  type RemediationReview,
 } from "./lib/cmdb/comprehend-adapter";
 import {
   createIreCorrelationId,
@@ -32,6 +36,7 @@ import {
 import {
   deriveRemediationWorkQueue,
   type WorkQueueBucket,
+  type WorkQueueItem,
   type WorkQueueItemSource,
 } from "./lib/cmdb/work-queue";
 
@@ -41,7 +46,7 @@ import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
-type ResourceName = "cis" | "timeline" | "relationships" | "health";
+type ResourceName = "cis" | "timeline" | "relationships" | "health" | "findings" | "reviews";
 type ResourceStatus = "connecting" | "live" | "error";
 type ResourceState = Record<ResourceName, ResourceStatus>;
 type Section = "import" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
@@ -53,8 +58,8 @@ type IreWorkbenchRecord = {
 };
 
 const steps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB", "Event log"];
-const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health"];
-const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting" };
+const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
+const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
 const activeRunStorageKey = "cmdb-modernization:last-run-id";
 const emptyHealth: HealthData = {
   ...mockHealth,
@@ -122,6 +127,8 @@ export function CmdbDashboard() {
   const [timeline, setTimeline] = useState(mockTimeline);
   const [relationships, setRelationships] = useState(mockRelationships);
   const [health, setHealth] = useState(mockHealth);
+  const [findings, setFindings] = useState<RemediationFinding[]>([]);
+  const [reviews, setReviews] = useState<RemediationReview[]>([]);
   const [selectedCi, setSelectedCi] = useState<ConfigurationItem | null>(null);
   const [playing, setPlaying] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
@@ -147,6 +154,8 @@ export function CmdbDashboard() {
       setTimeline([]);
       setRelationships([]);
       setHealth(emptyHealth);
+      setFindings([]);
+      setReviews([]);
     }
 
     const results = await Promise.allSettled(resourceNames.map(resource => readEndpoint(resource, runId)));
@@ -155,6 +164,8 @@ export function CmdbDashboard() {
     let nextTimeline = runId ? [] : mockTimeline;
     let nextRelationships = runId ? [] : mockRelationships;
     let nextHealth = runId ? emptyHealth : mockHealth;
+    let nextFindings: RemediationFinding[] = [];
+    let nextReviews: RemediationReview[] = [];
     let liveCount = 0;
     if (results[0].status === "fulfilled") {
       nextCis = normalizeComprehendCis(results[0].value);
@@ -184,14 +195,30 @@ export function CmdbDashboard() {
     } else {
       nextResourceState.health = "error";
     }
+    if (results[4].status === "fulfilled") {
+      nextFindings = normalizeRemediationFindings(results[4].value);
+      nextResourceState.findings = "live";
+      liveCount++;
+    } else {
+      nextResourceState.findings = "error";
+    }
+    if (results[5].status === "fulfilled") {
+      nextReviews = normalizeRemediationReviews(results[5].value);
+      nextResourceState.reviews = "live";
+      liveCount++;
+    } else {
+      nextResourceState.reviews = "error";
+    }
     setCis(nextCis);
     setTimeline(nextTimeline);
     setRelationships(nextRelationships);
     setHealth(nextHealth);
+    setFindings(nextFindings);
+    setReviews(nextReviews);
     setActiveStep(0);
     setPlaying(false);
     setResourceState(nextResourceState);
-    setApiState(liveCount === 4 ? "live" : liveCount > 0 ? "partial" : runId ? "error" : "demo");
+    setApiState(liveCount === resourceNames.length ? "live" : liveCount > 0 ? "partial" : runId ? "error" : "demo");
     setLastSync(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
   }, []);
 
@@ -335,7 +362,7 @@ export function CmdbDashboard() {
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "hr" && <AgentHrView timeline={timeline} timelineLive={resourceState.timeline === "live"} cis={resourceState.cis === "live" ? cis : null} activeRunId={activeRunId} />}
       {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
-      {section === "remediate" && <RemediateView health={health} cis={cis} timeline={timeline} activeRunId={activeRunId} apiState={apiState} queuedFix={queuedFix} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} />}
+      {section === "remediate" && <RemediateView health={health} cis={cis} timeline={timeline} findings={findings} reviews={reviews} activeRunId={activeRunId} apiState={apiState} queuedFix={queuedFix} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} />}
     </main>
 
     {selectedCi && <ProvenancePanel ci={selectedCi} onClose={() => setSelectedCi(null)} onOpenLedger={openEventLedger} />}
@@ -560,6 +587,8 @@ function RemediateView(props: {
   health: HealthData;
   cis: ConfigurationItem[];
   timeline: TimelineEvent[];
+  findings: RemediationFinding[];
+  reviews: RemediationReview[];
   activeRunId: string;
   apiState: ApiState;
   queuedFix: HealthFix | null;
@@ -567,7 +596,7 @@ function RemediateView(props: {
   onSelect: (fix: HealthFix) => void;
   onSubmit: (fix: HealthFix) => void;
 }) {
-  const { health, cis, timeline, activeRunId, apiState, queuedFix, actionMessage, onSelect, onSubmit } = props;
+  const { health, cis, timeline, findings, reviews, activeRunId, apiState, queuedFix, actionMessage, onSelect, onSubmit } = props;
   const selected = queuedFix || health.fixes[0];
   const stagedCis = cis.filter(ci => ci.id || ci.stagedCiId);
   const [selectedCiId, setSelectedCiId] = useState(() => stagedCis[0]?.id ?? "");
@@ -578,20 +607,22 @@ function RemediateView(props: {
 
   const selectedCi = stagedCis.find(ci => ci.id === selectedCiId) ?? stagedCis[0];
   const workbench = selectedCi ? ireRecords[selectedCi.id] ?? {} : {};
-  const lifecycle = pendingAction === "execute" ? "executing" : deriveIreLifecycleState(workbench);
   const queue = useMemo(() => deriveRemediationWorkQueue({
     cis: stagedCis,
     timeline,
     healthFixes: health.fixes,
+    findings,
+    reviews,
     ireRecords,
     pending: { ciId: selectedCi?.id, action: pendingAction },
     demoFallback,
-  }), [demoFallback, health.fixes, ireRecords, pendingAction, selectedCi?.id, stagedCis, timeline]);
+  }), [demoFallback, findings, health.fixes, ireRecords, pendingAction, reviews, selectedCi?.id, stagedCis, timeline]);
   const selectedQueueItem = queue.items.find(item => item.id === selectedCi?.id);
-  const simulationCorrelation = workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id;
-  const executionCorrelation = workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id;
-  const approved = workbench.approval?.success && workbench.approval.status === "approved";
-  const rejected = workbench.approval?.success && workbench.approval.status === "rejected";
+  const lifecycle = pendingAction === "execute" ? "executing" : selectedQueueItem?.lifecycle ?? deriveIreLifecycleState(workbench);
+  const simulationCorrelation = workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? selectedQueueItem?.simulationCorrelation;
+  const executionCorrelation = workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? selectedQueueItem?.executionCorrelation;
+  const approved = Boolean((workbench.approval?.success && workbench.approval.status === "approved") || selectedQueueItem?.review?.decision === "approved");
+  const rejected = Boolean((workbench.approval?.success && workbench.approval.status === "rejected") || selectedQueueItem?.review?.decision === "rejected");
   const liveRunReady = Boolean(activeRunId && selectedCi && apiState !== "demo");
   const selectedActivity = selectedCi ? timeline
     .filter(event => {
@@ -682,7 +713,7 @@ function RemediateView(props: {
             </div>
             {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
             <label className="approval-rationale"><span>APPROVAL RATIONALE</span><textarea value={rationale} onChange={event => setRationale(event.target.value)} /></label>
-            <IreResultPanel workbench={workbench} lifecycle={lifecycle} />
+            <IreResultPanel workbench={workbench} lifecycle={lifecycle} playback={selectedQueueItem} />
           </div>
         </div>
       </div>
@@ -708,6 +739,7 @@ function WorkQueueBucketCard({ bucket, selectedId, onSelect }: { bucket: WorkQue
 function sourceLabel(source: WorkQueueItemSource) {
   const labels: Record<WorkQueueItemSource, string> = {
     servicenow_ledger: "ServiceNow Event Ledger",
+    servicenow_records: "ServiceNow findings and reviews",
     live_action: "Live IRE response",
     derived_staging: "Derived from staged CI",
     demo_fallback: "Demo fallback state",
@@ -726,21 +758,21 @@ export function LegacyRemediateView({ health, queuedFix, actionMessage, onSelect
   </div>;
 }
 
-function IreResultPanel({ workbench, lifecycle }: { workbench: IreWorkbenchRecord; lifecycle: IreLifecycleState }) {
+function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWorkbenchRecord; lifecycle: IreLifecycleState; playback?: WorkQueueItem }) {
   const latestError = workbench.verification?.error ?? workbench.execution?.error ?? workbench.approval?.error ?? workbench.simulation?.error;
   return <div className="ire-results">
     {latestError && <div className="ire-error"><Icon name="x" size={15} />{friendlyIreError(latestError.code, latestError.message)}</div>}
     <div className="ire-result-grid">
       <ResultMetric label="State" value={ireLifecycleLabel(lifecycle)} />
-      <ResultMetric label="Simulation" value={workbench.simulation?.status ?? (workbench.simulation ? "recorded" : "not run")} />
-      <ResultMetric label="Fingerprint" value={workbench.simulation?.simulation_fingerprint ? shortId(workbench.simulation.simulation_fingerprint) : "pending"} />
-      <ResultMetric label="Approval" value={workbench.approval?.status ?? "pending"} />
+      <ResultMetric label="Simulation" value={workbench.simulation?.status ?? (playback?.simulationCorrelation ? "recorded" : "not run")} />
+      <ResultMetric label="Fingerprint" value={shortId(workbench.simulation?.simulation_fingerprint ?? playback?.simulationFingerprint)} />
+      <ResultMetric label="Approval" value={workbench.approval?.status ?? playback?.review?.decision ?? "pending"} />
       <ResultMetric label="Execution" value={workbench.execution?.status ?? "pending"} />
       <ResultMetric label="Verification" value={workbench.verification?.status ?? "pending"} />
     </div>
     <div className="correlation-list">
-      <code>simulation {shortId(workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id)}</code>
-      <code>execution {shortId(workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id)}</code>
+      <code>simulation {shortId(workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback?.simulationCorrelation)}</code>
+      <code>execution {shortId(workbench.execution?.execution_correlation_id ?? workbench.execution?.correlation_id ?? playback?.executionCorrelation)}</code>
       <code>target {workbench.execution?.target_ci?.display_value ?? shortId(workbench.execution?.target_ci?.sys_id)}</code>
     </div>
     {workbench.simulation?.evidence?.length ? <ul className="ire-evidence">{workbench.simulation.evidence.map(item => <li key={item}>{item}</li>)}</ul> : null}
