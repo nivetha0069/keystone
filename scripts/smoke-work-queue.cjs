@@ -157,7 +157,7 @@ const persistedVerificationFailure = deriveRemediationWorkQueue({
     id: "ev-execute",
     seq: 11,
     name: "IRE committed",
-    reasoning: `CI committed | staged_ci_id=${ci.id} execution_correlation_id=ks-execute-persisted`,
+    reasoning: `CI committed | staged_ci_id=${ci.id} execution_correlation_id=ks-execute-persisted target_ci_sys_id=f41dd7bf168ec7109ae721961ee4da4f target_ci_name=pay-gw-lnx-03`,
   }, {
     ...simulationEvent,
     id: "ev-verify-failed",
@@ -172,5 +172,29 @@ const persistedVerificationFailure = deriveRemediationWorkQueue({
 assert.equal(persistedVerificationFailure.items[0]?.bucket, "blocked");
 assert.equal(persistedVerificationFailure.items[0]?.lifecycle, "verification_failed");
 assert.equal(persistedVerificationFailure.items[0]?.executionCorrelation, "ks-execute-persisted");
+assert.equal(persistedVerificationFailure.items[0]?.targetCiSysId, "f41dd7bf168ec7109ae721961ee4da4f");
+assert.equal(persistedVerificationFailure.items[0]?.targetCiName, "pay-gw-lnx-03");
+
+const recoveredVerification = deriveRemediationWorkQueue({
+  cis: [ci],
+  timeline: [simulationEvent, {
+    ...simulationEvent,
+    id: "ev-execute-recovered",
+    seq: 11,
+    name: "IRE committed",
+    reasoning: `CI committed | staged_ci_id=${ci.id} execution_correlation_id=ks-execute-recovered target_ci_sys_id=f41dd7bf168ec7109ae721961ee4da4f target_ci_name=srv-001`,
+  }, {
+    ...simulationEvent,
+    id: "ev-verify-recovered",
+    seq: 12,
+    name: "Committed",
+    reasoning: `Verification successful | staged_ci_id=${ci.id} execution_correlation_id=ks-execute-recovered target_ci_sys_id=f41dd7bf168ec7109ae721961ee4da4f actual_name=pay-gw-lnx-03`,
+  }],
+  findings: [{ id: "finding-1", number: "DWF0001136", stagedCiId: ci.id, recommendation: "Review simulation" }],
+  reviews: [{ id: "review-1", findingId: "finding-1", decision: "approved", rationale: "Approved after review", policyApproved: true }],
+});
+assert.equal(recoveredVerification.items[0]?.bucket, "verified");
+assert.equal(recoveredVerification.items[0]?.lifecycle, "verified");
+assert.equal(recoveredVerification.items[0]?.targetCiName, "pay-gw-lnx-03");
 
 console.log("work-queue smoke passed");

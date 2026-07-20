@@ -768,6 +768,8 @@ export function LegacyRemediateView({ health, queuedFix, actionMessage, onSelect
 function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWorkbenchRecord; lifecycle: IreLifecycleState; playback?: WorkQueueItem }) {
   const latestError = workbench.verification?.error ?? workbench.execution?.error ?? workbench.approval?.error ?? workbench.simulation?.error;
   const latestErrorDetails = ireErrorDetails(latestError?.details);
+  const targetCi = workbench.execution?.target_ci;
+  const targetLabel = targetCi?.display_value ?? playback?.targetCiName ?? shortId(targetCi?.sys_id ?? playback?.targetCiSysId);
   return <div className="ire-results">
     {latestError && <div className="ire-error"><Icon name="x" size={15} />{friendlyIreError(latestError.code, latestError.message)}</div>}
     <div className="ire-result-grid">
@@ -781,7 +783,7 @@ function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWork
     <div className="correlation-list">
       <code>simulation {shortId(workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback?.simulationCorrelation)}</code>
       <code>execution {shortId(workbench.execution?.success ? workbench.execution.execution_correlation_id : playback?.executionCorrelation)}</code>
-      <code>target {workbench.execution?.target_ci?.display_value ?? shortId(workbench.execution?.target_ci?.sys_id)}</code>
+      <code>target {targetLabel}</code>
     </div>
     {workbench.simulation?.evidence?.length ? <ul className="ire-evidence">{workbench.simulation.evidence.map(item => <li key={item}>{item}</li>)}</ul> : null}
     {latestErrorDetails.length ? <ul className="ire-evidence error-details">{latestErrorDetails.map(item => <li key={item}>{item}</li>)}</ul> : null}

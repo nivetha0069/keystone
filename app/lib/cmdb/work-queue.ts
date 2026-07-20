@@ -30,6 +30,8 @@ export type WorkQueueItem = {
   simulationCorrelation?: string;
   simulationFingerprint?: string;
   executionCorrelation?: string;
+  targetCiSysId?: string;
+  targetCiName?: string;
   finding?: RemediationFinding;
   review?: RemediationReview;
 };
@@ -131,6 +133,8 @@ export function deriveRemediationWorkQueue(input: {
             ? workbench.execution.execution_correlation_id
             : undefined
           : playback.executionCorrelation,
+        targetCiSysId: workbench.execution?.target_ci?.sys_id ?? playback.targetCiSysId,
+        targetCiName: workbench.execution?.target_ci?.display_value ?? playback.targetCiName,
         finding,
         review,
       };
@@ -175,7 +179,7 @@ function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null 
   for (const event of [...events].reverse()) {
     const text = `${event.name} ${event.reasoning} ${event.operation} ${event.status}`.toLowerCase();
     if (text.includes("verification") && (text.includes("failed") || text.includes("mismatch") || event.status === "error")) return "verification_failed";
-    if (text.includes("verification") && (text.includes("passed") || text.includes("verified") || text.includes("read-back"))) return "verified";
+    if (text.includes("verification") && (text.includes("passed") || text.includes("verified") || text.includes("successful") || text.includes("read-back"))) return "verified";
     if (text.includes("ire execution") && (text.includes("started") || event.status === "active")) return "executing";
     if ((text.includes("ire execution") || text.includes("committed") || text.includes("cmdb published")) && event.status !== "error") return "executed_pending_verification";
     if ((text.includes("stale") || text.includes("fingerprint")) && (text.includes("reject") || text.includes("failed"))) return "execution_rejected_stale_simulation";
@@ -233,6 +237,8 @@ function playbackIdentifiers(events: TimelineEvent[]) {
     simulationCorrelation: lastMetadataValue(text, "simulation_correlation_id") ?? lastSimulationCorrelation(text),
     simulationFingerprint: lastMetadataValue(text, "simulation_fingerprint"),
     executionCorrelation: lastMetadataValue(text, "execution_correlation_id"),
+    targetCiSysId: lastMetadataValue(text, "target_ci_sys_id"),
+    targetCiName: lastMetadataValue(text, "actual_name") ?? lastMetadataValue(text, "target_ci_name"),
   };
 }
 
