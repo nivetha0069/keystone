@@ -454,6 +454,40 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .source-dot.servicenow_ledger, .source-dot.servicenow_records, .source-dot.live_action { background: var(--green); box-shadow: 0 0 7px rgba(89, 197, 139, .55); }
 .source-dot.derived_staging { background: var(--amber); }
 .source-dot.demo_fallback { background: var(--coral); }
+
+/* CI-scoped evidence card — replaces the old .queue-evidence for the
+   selected staged CI. Run-level Mara summaries live in .run-summary-*. */
+.ci-evidence-card { margin-top: 12px; padding: 12px 13px; background: #0d100d; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.ci-evidence-card.ci-scope-live { border-color: rgba(89, 197, 139, .35); box-shadow: inset 3px 0 var(--green); }
+.ci-evidence-card.ci-scope-strategy-error { border-color: rgba(255, 101, 66, .38); box-shadow: inset 3px 0 var(--coral); }
+.ci-evidence-card.ci-scope-empty { border-style: dashed; }
+.ci-evidence-head { display: flex; flex-direction: column; gap: 3px; }
+.ci-evidence-scope { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
+.ci-evidence-head strong { font-size: 12px; color: var(--ink); }
+.ci-evidence-message { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.ci-evidence-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ci-evidence-chips code { padding: 4px 6px; color: var(--lime); background: rgba(199, 243, 77, .055); border: 1px solid rgba(199, 243, 77, .16); font: 9px var(--mono); }
+.ci-evidence-details { margin: 4px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.ci-evidence-details > div { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, .015); }
+.ci-evidence-details dt { font: 9px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+.ci-evidence-details dd { margin: 0; font-size: 11.5px; color: var(--ink); word-break: break-word; }
+
+/* Run-wide Mara summary chips. Never mixed with CI-scoped evidence. */
+.run-summary-section { margin-top: 10px; padding: 10px 12px; background: #0c0f0c; border: 1px dashed var(--line); display: flex; flex-direction: column; gap: 8px; }
+.run-summary-head { display: flex; flex-direction: column; gap: 2px; }
+.run-summary-scope { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
+.run-summary-head strong { font-size: 11.5px; color: var(--ink); }
+.run-summary-chips { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 6px; }
+.run-summary-chip { display: flex; flex-direction: column; gap: 1px; padding: 5px 7px; border: 1px solid var(--line); background: rgba(255, 255, 255, .015); }
+.run-summary-chip strong { font-size: 13px; color: var(--ink); line-height: 1.1; }
+.run-summary-chip span { font: 9px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+.run-summary-chip.warn { border-color: rgba(232, 178, 61, .35); background: rgba(232, 178, 61, .07); }
+.run-summary-chip.warn strong { color: var(--amber); }
+.run-summary-chip.good { border-color: rgba(89, 197, 139, .35); background: rgba(89, 197, 139, .07); }
+.run-summary-chip.good strong { color: var(--green); }
+.run-summary-empty { margin: 0; font-size: 11px; color: var(--faint); }
+.run-summary-technical summary { cursor: pointer; font: 10px var(--mono); letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+.run-summary-technical pre { margin: 6px 0 0; padding: 8px 10px; max-height: 200px; overflow: auto; background: #05070a; color: var(--muted); font: 10px var(--mono); border: 1px solid var(--line); }
 .ire-action-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
 .ire-action-grid button { min-width: 0; height: 38px; padding-inline: 9px; white-space: nowrap; }
 .ghost-button.danger:hover { color: var(--coral); border-color: rgba(255, 101, 66, .35); background: rgba(255, 101, 66, .04); }

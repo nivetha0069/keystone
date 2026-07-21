@@ -29,6 +29,7 @@
     "smoke:mara-observation": "node scripts/smoke-mara-observation.cjs",
     "smoke:mara-live-state": "node scripts/smoke-mara-live-state.cjs",
     "smoke:frontend-errors": "node scripts/smoke-frontend-errors.cjs",
+    "smoke:selected-ci-evidence": "node scripts/smoke-selected-ci-evidence.cjs",
     "verify:cold-load": "node scripts/verify-cold-load-no-400.cjs"
   },
   "dependencies": {
