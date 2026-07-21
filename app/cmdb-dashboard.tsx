@@ -8,10 +8,6 @@ import {
   Operation,
   Relationship,
   TimelineEvent,
-  mockCis,
-  mockHealth,
-  mockRelationships,
-  mockTimeline,
 } from "./cmdb-data";
 
 import {
@@ -77,7 +73,6 @@ const steps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB",
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
 const emptyHealth: HealthData = {
-  ...mockHealth,
   score: 0,
   grade: "—",
   ciCount: 0,
@@ -141,10 +136,10 @@ export function CmdbDashboard() {
   const [section, setSection] = useState<Section>("import");
   const [apiState, setApiState] = useState<ApiState>("connecting");
   const [resourceState, setResourceState] = useState<ResourceState>(connectingResources);
-  const [cis, setCis] = useState(mockCis);
-  const [timeline, setTimeline] = useState(mockTimeline);
-  const [relationships, setRelationships] = useState(mockRelationships);
-  const [health, setHealth] = useState(mockHealth);
+  const [cis, setCis] = useState<ConfigurationItem[]>([]);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [relationships, setRelationships] = useState<Relationship[]>([]);
+  const [health, setHealth] = useState<HealthData>(emptyHealth);
   const [findings, setFindings] = useState<RemediationFinding[]>([]);
   const [reviews, setReviews] = useState<RemediationReview[]>([]);
   const [selectedCi, setSelectedCi] = useState<ConfigurationItem | null>(null);
@@ -220,10 +215,10 @@ export function CmdbDashboard() {
 
     const results = await Promise.allSettled(resourceNames.map(resource => readEndpoint(resource, runId)));
     const nextResourceState = { ...connectingResources };
-    let nextCis = runId ? [] : mockCis;
-    let nextTimeline = runId ? [] : mockTimeline;
-    let nextRelationships = runId ? [] : mockRelationships;
-    let nextHealth = runId ? emptyHealth : mockHealth;
+    let nextCis: ConfigurationItem[] = [];
+    let nextTimeline: TimelineEvent[] = [];
+    let nextRelationships: Relationship[] = [];
+    let nextHealth: HealthData = emptyHealth;
     let nextFindings: RemediationFinding[] = [];
     let nextReviews: RemediationReview[] = [];
     let liveCount = 0;

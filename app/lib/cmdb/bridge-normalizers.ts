@@ -5,7 +5,6 @@ import {
   Operation,
   Relationship,
   TimelineEvent,
-  mockHealth,
 } from "../../cmdb-data";
 
 const playbackSteps = ["Intake", "Staging", "AI read", "Confidence gate", "IRE", "CMDB", "Event log"];
@@ -91,14 +90,14 @@ export function normalizeHealth(payload: unknown): HealthData {
   });
 
   return {
-    score: num(raw.score ?? raw.health_score, mockHealth.score),
+    score: num(raw.score ?? raw.health_score, 0),
     baselineScore: optionalNum(raw.baseline_score ?? raw.baselineScore),
     verifiedScore: optionalNum(raw.verified_score ?? raw.verifiedScore ?? raw.current_verified_score),
     projectedScore: optionalNum(raw.projected_score ?? raw.projectedScore),
     dimensionScores: normalizeDimensionScores(raw.dimension_scores ?? raw.dimensions),
     workGroupImpacts: normalizeWorkGroupImpacts(raw.work_group_impacts ?? raw.workGroupImpacts),
-    grade: str(raw.grade, mockHealth.grade),
-    ciCount: num(raw.ciCount ?? raw.ci_count ?? raw.total_cis, mockHealth.ciCount),
+    grade: str(raw.grade, "—"),
+    ciCount: num(raw.ciCount ?? raw.ci_count ?? raw.total_cis, 0),
     // Legacy bridge names describe detected candidates during the current read-only stage.
     duplicateCandidates: num(
       raw.duplicates_detected ??
@@ -108,16 +107,16 @@ export function normalizeHealth(payload: unknown): HealthData {
       raw.duplicatesMerged ??
       raw.duplicates_merged ??
       raw.duplicates_avoided,
-      mockHealth.duplicateCandidates,
+      0,
     ),
-    reviewCount: num(raw.reviewCount ?? raw.review_count ?? raw.pending_review, mockHealth.reviewCount),
-    relationshipCount: num(raw.relationshipCount ?? raw.relationship_count ?? raw.relationships, mockHealth.relationshipCount),
-    completeness: num(raw.completeness, mockHealth.completeness),
-    correctness: num(raw.correctness, mockHealth.correctness),
-    compliance: num(raw.compliance, mockHealth.compliance),
-    duplicateRate: num(raw.duplicateRate ?? raw.duplicate_rate, mockHealth.duplicateRate),
-    staleRecords: num(raw.staleRecords ?? raw.stale_records, mockHealth.staleRecords),
-    fixes: fixes.length ? fixes : mockHealth.fixes,
+    reviewCount: num(raw.reviewCount ?? raw.review_count ?? raw.pending_review, 0),
+    relationshipCount: num(raw.relationshipCount ?? raw.relationship_count ?? raw.relationships, 0),
+    completeness: num(raw.completeness, 0),
+    correctness: num(raw.correctness, 0),
+    compliance: num(raw.compliance, 0),
+    duplicateRate: num(raw.duplicateRate ?? raw.duplicate_rate, 0),
+    staleRecords: num(raw.staleRecords ?? raw.stale_records, 0),
+    fixes,
   };
 }
 
