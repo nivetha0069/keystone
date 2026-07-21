@@ -247,6 +247,7 @@ export function MaraCompanion(props: MaraCompanionProps) {
           <div className="mara-bubble-body">
             <p className="mara-primary">{live.message}</p>
             {live.secondary && <p className="mara-secondary">{live.secondary}</p>}
+            {view && <MaraInsights view={view} />}
             <p className="mara-status" aria-live="polite">
               <span className={`mara-status-dot mara-status-${stateSlug}`} aria-hidden="true" />
               <span>{label}{activeRunLabel ? ` · ${activeRunLabel}` : ""}</span>
@@ -295,6 +296,28 @@ export function MaraCompanion(props: MaraCompanionProps) {
       )}
     </div>
   );
+}
+
+function MaraInsights({ view }: { view: WorkspaceViewState }) {
+  const chips: Array<{ label: string; value: string; tone?: string }> = [];
+  if (view.workGroupCount > 0) chips.push({ label: "Groups", value: String(view.workGroupCount) });
+  if (view.approvalCount > 0) chips.push({ label: "Approvals", value: String(view.approvalCount), tone: "warn" });
+  if (view.heldCount > 0 && view.approvalCount === 0) chips.push({ label: "Held", value: String(view.heldCount), tone: "warn" });
+  const executing = view.queue.items.filter(i => i.bucket === "needs_verification").length;
+  const verified = view.queue.items.filter(i => i.bucket === "verified").length;
+  if (executing > 0) chips.push({ label: "Executing", value: String(executing) });
+  if (verified > 0) chips.push({ label: "Verified", value: String(verified), tone: "good" });
+  if (view.readyToSimulateCount > 0 && view.remediateStatus !== "working") chips.push({ label: "Ready", value: String(view.readyToSimulateCount) });
+  if (!chips.length && view.hasRun && view.queue.items.length > 0) chips.push({ label: "Staged", value: String(view.queue.items.length) });
+  if (!chips.length) return null;
+  return <ul className="mara-insights" aria-label="Run insights">
+    {chips.slice(0, 4).map(chip => (
+      <li key={chip.label} className={"mara-insight " + (chip.tone ?? "")}>
+        <small>{chip.label}</small>
+        <strong>{chip.value}</strong>
+      </li>
+    ))}
+  </ul>;
 }
 
 function fallbackHeadline(state: MaraVisualState): string {

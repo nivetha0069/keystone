@@ -8,19 +8,15 @@ import type { RemediationFinding, RemediationReview } from "./lib/cmdb/comprehen
 import {
   deriveWorkspaceViewState,
   type ApiState,
-  type WorkspacePhaseId,
   type WorkspaceViewState,
 } from "./lib/cmdb/workspace-view-state";
+import {
+  deriveRunJourney,
+  type JourneyChapter,
+  type JourneyChapterId,
+} from "./lib/cmdb/run-journey";
 
 type WorkspaceFocus = "overview" | "approvals";
-
-const WORKSPACE_TABS: Array<{ id: WorkspacePhaseId | "overview"; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "comprehend", label: "Comprehend" },
-  { id: "prioritize", label: "Prioritize" },
-  { id: "remediate", label: "Remediate" },
-  { id: "verify", label: "Verify" },
-];
 
 export function AgentWorkspaceView(props: {
   runLabel: string;
@@ -58,34 +54,17 @@ export function AgentWorkspaceView(props: {
     props.relationships, props.reviews, props.runId, props.runLabel, props.runState, props.timeline,
   ]);
 
-  const [tab, setTab] = useState<WorkspacePhaseId | "overview">("overview");
-  const [autopilot, setAutopilot] = useState(true);
-  const [lastActivePhase, setLastActivePhase] = useState<WorkspacePhaseId>(view.activePhase);
-
-  if (autopilot && view.activePhase !== lastActivePhase) {
-    setLastActivePhase(view.activePhase);
-    if (tab !== view.activePhase) setTab(view.activePhase);
-  }
+  const journey = useMemo(() => deriveRunJourney(view), [view]);
 
   const sourceLabel = props.apiState === "live" || props.apiState === "partial"
-    ? "SERVICENOW-BACKED AUTONOMY"
+    ? "LIVE FACTORY FLOOR"
     : props.apiState === "connecting"
       ? "CONNECTING TO SERVICENOW"
       : props.runLabel
         ? "SERVICENOW EVIDENCE UNAVAILABLE"
         : "DEMO FALLBACK";
 
-  const selectTab = useCallback((next: WorkspacePhaseId | "overview") => {
-    setAutopilot(false);
-    setTab(next);
-  }, []);
-
-  const resumeAutopilot = useCallback(() => {
-    setAutopilot(true);
-    setTab(view.activePhase);
-  }, [view.activePhase]);
-
-  const openPhase = useCallback((phase: WorkspacePhaseId) => {
+  const openPhase = useCallback((phase: CprPhaseId | "verify") => {
     if (phase === "verify") {
       if (props.onOpenVerify) props.onOpenVerify();
       else props.onOpenEvidence();
@@ -94,280 +73,249 @@ export function AgentWorkspaceView(props: {
     props.onOpenPhase(phase);
   }, [props]);
 
+  if (props.focus === "approvals") {
+    return <div className="page agent-workspace-page">
+      <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} />
+      <ApprovalWorkspace view={view} onOpenRemediation={props.onOpenRemediation} />
+    </div>;
+  }
+
   return <div className="page agent-workspace-page">
-    <section className="workspace-command">
-      <div>
-        <div className="workspace-kicker"><span className={"api-dot " + props.apiState} /> {sourceLabel}</div>
-        <h1>{props.focus === "approvals" ? "Governed approvals" : "Agent Workspace"}</h1>
-        <p>{view.snapshot.objective}</p>
-      </div>
-      <div className={"agent-now " + view.snapshot.status}>
-        <span><Icon name={view.snapshot.status === "approval_required" ? "shield" : "spark"} size={18} /></span>
-        <div>
-          <small>{view.snapshot.activeAgent.toUpperCase()} / {view.snapshot.decisionSource.replaceAll("_", " ")}</small>
-          <strong className="agent-action-text">{view.snapshot.activeAction}</strong>
-        </div>
-        <i />
-      </div>
-    </section>
+    <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} />
 
-    <nav className="workspace-tabs" role="tablist" aria-label="Workspace phase navigation">
-      {WORKSPACE_TABS.map(item => {
-        const status = tabStatus(item.id, view);
-        const active = tab === item.id;
-        const highlight = autopilot && item.id !== "overview" && view.activePhase === item.id;
-        return <button
-          key={item.id}
-          role="tab"
-          aria-selected={active}
-          className={"workspace-tab" + (active ? " active" : "") + (highlight ? " highlight" : "") + " status-" + status}
-          onClick={() => selectTab(item.id)}
-        >
-          <span className="workspace-tab-label">{item.label}</span>
-          <small className="workspace-tab-status">{tabStatusLabel(status)}</small>
-        </button>;
-      })}
-      <div className="workspace-tab-actions">
-        <button
-          type="button"
-          className={"autopilot-toggle" + (autopilot ? " active" : "")}
-          aria-pressed={autopilot}
-          onClick={() => (autopilot ? setAutopilot(false) : resumeAutopilot())}
-          title={autopilot ? "Autopilot follows the active phase" : "Resume the live journey"}
-        >
-          <span className="autopilot-dot" />
-          {autopilot ? "Autopilot" : "Resume live journey"}
-        </button>
-      </div>
-    </nav>
+    <RunJourneyBanner journey={journey} />
 
-    <section className="cpr-rail panel" aria-label="CPR phase progress">
-      {view.snapshot.phases.map((phase, index) => <button
-        key={phase.id}
-        className={"cpr-phase " + phase.state + (autopilot && view.activePhase === phase.id ? " highlight" : "")}
-        onClick={() => openPhase(phase.id)}
-      >
-        <span>{String(index + 1).padStart(2, "0")}</span>
-        <div>
-          <small>{phase.state.replaceAll("_", " ")}</small>
-          <strong>{phase.label}</strong>
-          <p>{phase.summary}</p>
-        </div>
-        <Icon name="chevron" size={15} />
-      </button>)}
-    </section>
-
-    {props.focus === "approvals"
-      ? <ApprovalWorkspace view={view} onOpenRemediation={props.onOpenRemediation} />
-      : <WorkspaceOverview
-          view={view}
-          autopilot={autopilot}
-          activeTab={tab}
+    <ol className="journey-spine" aria-label="Run journey chapters">
+      {journey.chapters.map((chapter, index) => (
+        <JourneyChapterCard
+          key={chapter.id}
+          chapter={chapter}
+          index={index + 1}
+          onOpenPhase={openPhase}
           onOpenRemediation={props.onOpenRemediation}
           onOpenEvidence={props.onOpenEvidence}
-          onOpenPhase={openPhase}
-          onRefresh={props.onRefresh}
-        />}
+        />
+      ))}
+    </ol>
   </div>;
 }
 
-function tabStatus(id: WorkspacePhaseId | "overview", view: WorkspaceViewState) {
-  if (id === "overview") return "overview";
-  if (id === "comprehend") return view.comprehendStatus;
-  if (id === "prioritize") return view.prioritizeStatus;
-  if (id === "remediate") return view.remediateStatus;
-  return view.verifyStatus;
+function FactoryHeader({ view, sourceLabel, runLabel, onRefresh }: { view: WorkspaceViewState; sourceLabel: string; runLabel: string; onRefresh: () => void }) {
+  return <section className="factory-header">
+    <div className="factory-kicker"><span className={"api-dot " + statusToDot(view)} /> {sourceLabel}</div>
+    <div className="factory-headline">
+      <h1>{view.hasRun ? "Agent Workspace" : "Waiting for a run"}</h1>
+      <div className="factory-actions">
+        <span className="factory-run-tag">{runLabel || "NO RUN"}</span>
+        <button className="icon-command" title="Refresh evidence" aria-label="Refresh evidence" onClick={onRefresh}>
+          <Icon name="refresh" size={16} />
+        </button>
+      </div>
+    </div>
+    <p className="factory-sub">{view.snapshot.objective}</p>
+  </section>;
 }
 
-function tabStatusLabel(status: string) {
-  if (status === "approval_required") return "Approval";
-  if (status === "working") return "Live";
-  if (status === "complete") return "Done";
-  if (status === "blocked") return "Blocked";
-  if (status === "unknown") return "—";
-  if (status === "overview") return "";
-  return "Waiting";
+function statusToDot(view: WorkspaceViewState) {
+  if (view.requiresApproval) return "partial";
+  if (view.verifyStatus === "complete") return "live";
+  if (view.hasRun) return "live";
+  return "demo";
 }
 
-function WorkspaceOverview(props: {
-  view: WorkspaceViewState;
-  autopilot: boolean;
-  activeTab: WorkspacePhaseId | "overview";
+function RunJourneyBanner({ journey }: { journey: ReturnType<typeof deriveRunJourney> }) {
+  return <section className="journey-banner">
+    <div className="journey-banner-mara">
+      <span className="journey-banner-avatar" aria-hidden="true">🪷</span>
+      <div>
+        <small>MARA</small>
+        <strong>{journey.headline}</strong>
+      </div>
+    </div>
+    <p className="journey-banner-message">{journey.narration}</p>
+    <p className="journey-banner-summary">{journey.summary}</p>
+  </section>;
+}
+
+function JourneyChapterCard(props: {
+  chapter: JourneyChapter;
+  index: number;
+  onOpenPhase: (phase: JourneyChapterId) => void;
   onOpenRemediation: (stagedCiId?: string) => void;
   onOpenEvidence: () => void;
-  onOpenPhase: (phase: WorkspacePhaseId) => void;
-  onRefresh: () => void;
 }) {
-  const { view } = props;
-  return <>
-    <HealthStrip view={view} />
+  const { chapter } = props;
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const autoOpen = chapter.isActive || chapter.status === "approval_required" || chapter.status === "blocked";
+  const open = manualOpen === null ? autoOpen : manualOpen;
 
-    <LiveAgentPlanPanel view={view} />
+  const statusClass = chapter.pause
+    ? "paused"
+    : chapter.status === "complete"
+      ? "done"
+      : chapter.status === "working" || chapter.isActive
+        ? "active"
+        : chapter.status === "blocked"
+          ? "blocked"
+          : "waiting";
 
-    <section className="workspace-grid">
-      <div className="panel work-groups-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="section-index">01</span>
-            <div><h2>Ranked work groups</h2><p>Repeated findings become one bounded agent strategy.</p></div>
-          </div>
-          <button className="icon-command" title="Refresh ServiceNow evidence" aria-label="Refresh ServiceNow evidence" onClick={props.onRefresh}>
-            <Icon name="refresh" size={16} />
-          </button>
+  return <li className={"journey-chapter " + statusClass + (open ? " open" : "")}>
+    <button
+      type="button"
+      className="journey-chapter-head"
+      onClick={() => setManualOpen(current => (current === null ? !autoOpen : !current))}
+      aria-expanded={open}
+    >
+      <span className="journey-chapter-node" aria-hidden="true">
+        {chapter.status === "complete" ? <Icon name="check" size={14} /> : String(props.index).padStart(2, "0")}
+      </span>
+      <div className="journey-chapter-head-copy">
+        <small>CHAPTER {props.index} · {statusLabel(statusClass)}</small>
+        <strong>{chapter.title}</strong>
+        <p>{chapter.narration}</p>
+      </div>
+      <span className="journey-chapter-caret"><Icon name="chevron" size={14} /></span>
+    </button>
+
+    {open && <div className="journey-chapter-body">
+      {chapter.pause && <PauseCard pause={chapter.pause} onReview={() => props.onOpenPhase("comprehend")} onApprovals={() => props.onOpenRemediation()} />}
+
+      <EvidenceBlock chapter={chapter} onOpenRemediation={props.onOpenRemediation} />
+
+      {chapter.beats.length > 0 && <div className="journey-beats">
+        <h3>Story so far</h3>
+        <ul>
+          {chapter.beats.slice(-5).reverse().map(beat => <li key={beat.id} className={"journey-beat " + beat.status}>
+            <span className={"journey-beat-dot " + beat.status} aria-hidden="true" />
+            <div>
+              <small>#{beat.seq} · {beat.actor}{beat.tool ? " · " + beat.tool : ""}</small>
+              <strong>{beat.headline}</strong>
+              <p>{beat.summary}</p>
+            </div>
+          </li>)}
+        </ul>
+      </div>}
+
+      <div className="journey-chapter-foot">
+        <button className="ghost-button" onClick={() => props.onOpenPhase(chapter.inspect === "verify" ? "verify" as JourneyChapterId : chapter.inspect as JourneyChapterId)}>
+          <Icon name="arrow" size={14} /> Inspect in {chapter.title} module
+        </button>
+      </div>
+    </div>}
+  </li>;
+}
+
+function statusLabel(statusClass: string) {
+  switch (statusClass) {
+    case "done": return "Complete";
+    case "active": return "Working";
+    case "paused": return "Awaiting decision";
+    case "blocked": return "Blocked";
+    default: return "Waiting";
+  }
+}
+
+function PauseCard({ pause, onReview, onApprovals }: { pause: { message: string; actions: string[] }; onReview: () => void; onApprovals: () => void }) {
+  return <div className="journey-pause">
+    <div className="journey-pause-top">
+      <span className="journey-pause-avatar" aria-hidden="true">🪷</span>
+      <div>
+        <small>MARA NEEDS A DECISION</small>
+        <strong>{pause.message}</strong>
+      </div>
+    </div>
+    <div className="journey-pause-actions">
+      {pause.actions.includes("review_findings") && <button className="ghost-button" onClick={onReview}>
+        <Icon name="search" size={14} /> Review evidence
+      </button>}
+      {pause.actions.includes("open_approvals") && <button className="primary-button" onClick={onApprovals}>
+        <Icon name="shield" size={14} /> Open approvals
+      </button>}
+    </div>
+  </div>;
+}
+
+function EvidenceBlock({ chapter, onOpenRemediation }: { chapter: JourneyChapter; onOpenRemediation: (stagedCiId?: string) => void }) {
+  const evidence = chapter.evidence;
+  switch (evidence.kind) {
+    case "comprehend":
+      return <div className="journey-evidence journey-evidence-stats">
+        <Stat label="Staged" value={evidence.staged} />
+        <Stat label="Ready" value={evidence.ready} />
+        <Stat label="Held" value={evidence.held} />
+      </div>;
+    case "prioritize":
+      if (evidence.totalGroups === 0) return <div className="journey-evidence journey-evidence-empty">No work groups ranked yet.</div>;
+      return <div className="journey-evidence">
+        <div className="journey-evidence-meta">
+          <span>{evidence.totalGroups} work groups · showing top {Math.min(3, evidence.topGroups.length)}</span>
         </div>
-        <div className="work-group-list">
-          {view.snapshot.groups.map(group => <article key={group.id} className="work-group-row">
-            <span className="work-priority">{group.priority}</span>
-            <div className="work-group-copy">
-              <small>{group.signature}</small>
+        <ul className="journey-groups">
+          {evidence.topGroups.map(group => <li key={group.id}>
+            <span className="journey-group-priority">{group.priority}</span>
+            <div>
               <strong>{group.title}</strong>
               <p>{group.blocker || (group.strategy ? "Allowlisted strategy: " + group.strategy : "Awaiting deterministic strategy evidence.")}</p>
             </div>
-            <div className="work-group-impact">
+            <div className="journey-group-impact">
               <small>IMPACT</small>
               <strong>+{group.projectedLift}</strong>
-              <span>{group.realizedLift} verified</span>
             </div>
-            <div className="work-group-state">
-              <small>{group.affected} affected</small>
-              <span className={group.blocker ? "blocked" : "ready"}>
-                {group.blocker ? "Blocked" : group.strategy ? "Retry eligible" : "Observed"}
-              </span>
+          </li>)}
+        </ul>
+      </div>;
+    case "remediate":
+      return <div className="journey-evidence journey-evidence-stats">
+        <Stat label="Awaiting approval" value={evidence.totalApprovals} tone={evidence.totalApprovals > 0 ? "warn" : "muted"} />
+        <Stat label="Executing" value={evidence.executing} />
+        <Stat label="Verified" value={evidence.verified} tone={evidence.verified > 0 ? "good" : "muted"} />
+        {evidence.approvals.length > 0 && <div className="journey-approval-list">
+          {evidence.approvals.map(item => <button key={item.id} className="journey-approval-row" onClick={() => onOpenRemediation(item.stagedCiId)}>
+            <span className="journey-approval-icon"><Icon name="shield" size={13} /></span>
+            <div>
+              <strong>{item.ci.name}</strong>
+              <small>{item.finding?.number || "IRE simulation"} · {item.stagedCiId.slice(0, 8)}</small>
             </div>
-          </article>)}
-          {!view.snapshot.groups.length && <EmptyWorkspaceState title="No finding groups yet" detail="Mara is waiting for persisted ServiceNow findings and health evidence." />}
+            <Icon name="arrow" size={13} />
+          </button>)}
+        </div>}
+      </div>;
+    case "verify":
+      return <div className="journey-evidence">
+        <div className="journey-health">
+          <div className="journey-health-cell">
+            <small>BASELINE</small>
+            <strong>{formatHealth(evidence.baseline)}</strong>
+          </div>
+          <Icon name="arrow" size={14} />
+          <div className="journey-health-cell">
+            <small>VERIFIED NOW</small>
+            <strong className="verified">{formatHealth(evidence.verified)}</strong>
+            <span>{evidence.realizedLift === null ? "Awaiting backend confirmation" : `+${evidence.realizedLift} realized`}</span>
+          </div>
+          <Icon name="arrow" size={14} />
+          <div className="journey-health-cell">
+            <small>PROJECTED</small>
+            <strong className="projected">{formatHealth(evidence.projected)}</strong>
+            <span>{evidence.remainingLift === null ? "Projection unavailable" : `+${evidence.remainingLift} available`}</span>
+          </div>
         </div>
-      </div>
-
-      <aside className="workspace-side">
-        <GovernancePanel view={view} onOpenRemediation={props.onOpenRemediation} />
-        <ActivityStreamPanel view={view} onOpenEvidence={props.onOpenEvidence} />
-      </aside>
-    </section>
-  </>;
+        <div className="journey-verify-meta">
+          <span>{evidence.verifiedCount} verified · {evidence.groupsResolved} groups resolved · {evidence.relationshipsReady}/{evidence.relationshipsTotal} relationships ready</span>
+        </div>
+      </div>;
+  }
 }
 
-function HealthStrip({ view }: { view: WorkspaceViewState }) {
-  const { health, snapshot } = view;
-  const showValue = (value: number | null) => value === null || Number.isNaN(value) ? "—" : String(value);
-  const realized = health.realizedLift;
-  const remaining = health.remainingLift;
-  return <section className="workspace-health">
-    <div className="health-stage baseline">
-      <small>BASELINE</small>
-      <strong>{showValue(health.baseline)}</strong>
-      <span>Before verified work</span>
-    </div>
-    <Icon name="arrow" size={18} />
-    <div className="health-stage verified">
-      <small>VERIFIED NOW</small>
-      <strong>{showValue(health.verified)}</strong>
-      <span>{realized === null ? "Awaiting backend confirmation" : `+${realized} realized`}</span>
-    </div>
-    <Icon name="arrow" size={18} />
-    <div className="health-stage projected">
-      <small>PROJECTED</small>
-      <strong>{showValue(health.projected)}</strong>
-      <span>{remaining === null ? "Projection unavailable" : `+${remaining} available`}</span>
-    </div>
-    <div className="relationship-readiness">
-      <small>RELATIONSHIP READINESS</small>
-      <strong>{snapshot.relationships.ready}<span> / {snapshot.relationships.total}</span></strong>
-      <p>{snapshot.relationships.blocked} held until both endpoints verify</p>
-    </div>
-  </section>;
+function formatHealth(value: number | null) {
+  return value === null || Number.isNaN(value) ? "—" : String(value);
 }
 
-function LiveAgentPlanPanel({ view }: { view: WorkspaceViewState }) {
-  const hasData = view.activityCards.length > 0 || view.requiresApproval;
-  return <section className="panel live-plan-panel">
-    <div className="panel-heading compact">
-      <div><span className="section-index">02</span><div><h2>Live agent plan</h2><p>Recorded activity — not chain-of-thought.</p></div></div>
-      <span className={"plan-source-pill " + (hasData ? "live" : "empty")}>{hasData ? "Event Ledger" : "Awaiting data"}</span>
-    </div>
-    {hasData ? <div className="live-plan-grid">
-      <PlanCell label="Current phase" value={phaseLabelForId(view.activePhase)} />
-      <PlanCell label="Current agent" value={view.currentAgent || "—"} />
-      <PlanCell label="Current tool" value={view.currentTool ?? "—"} />
-      <PlanCell label="Current action" value={truncate(view.currentAction, 120)} />
-      <PlanCell label="Latest completed result" value={truncate(view.latestResult, 130)} />
-      <PlanCell label="Next phase" value={view.nextPhase ? phaseLabelForId(view.nextPhase) : view.nextAction} />
-    </div> : <div className="live-plan-empty">
-      <Icon name="clock" size={22} />
-      <strong>Waiting for recorded activity</strong>
-      <p>The Event Ledger has not published a durable decision for this run yet.</p>
-    </div>}
-  </section>;
-}
-
-function PlanCell({ label, value }: { label: string; value: string }) {
-  return <div className="live-plan-cell">
-    <small>{label.toUpperCase()}</small>
+function Stat({ label, value, tone }: { label: string; value: number; tone?: "warn" | "good" | "muted" }) {
+  return <div className={"journey-stat " + (tone ?? "muted")}>
+    <small>{label}</small>
     <strong>{value}</strong>
   </div>;
-}
-
-function ActivityStreamPanel({ view, onOpenEvidence }: { view: WorkspaceViewState; onOpenEvidence: () => void }) {
-  const events = [...view.activityCards].slice(-8).reverse();
-  const [expanded, setExpanded] = useState<string | null>(null);
-  return <section className="panel activity-stream">
-    <div className="panel-heading compact">
-      <div>
-        <span className="section-index">03</span>
-        <div><h2>Activity stream</h2><p>Durable decisions and tool evidence.</p></div>
-      </div>
-      <button className="icon-command" title="Open full evidence" aria-label="Open full evidence" onClick={onOpenEvidence}>
-        <Icon name="clock" size={16} />
-      </button>
-    </div>
-    <div className="activity-stream-list">
-      {events.map(card => {
-        const isOpen = expanded === card.id;
-        const ledgerItem = view.queue.items.find(item => item.latestEvent?.id === card.id);
-        return <article key={card.id} className={"activity-row " + card.status + (isOpen ? " open" : "")}>
-          <button className="activity-row-top" onClick={() => setExpanded(current => (current === card.id ? null : card.id))} aria-expanded={isOpen}>
-            <span className={"event-status " + card.status} />
-            <div className="activity-row-copy">
-              <small>#{card.seq} · {card.actor} · {card.tool ?? card.phase}</small>
-              <strong>{card.headline}</strong>
-              <p>{truncate(card.summary, 200)}</p>
-            </div>
-            <span className={"activity-status-pill " + card.status}>{card.status}</span>
-          </button>
-          {isOpen && <div className="activity-row-detail">
-            <dl>
-              <dt>Affected CI</dt><dd>{ledgerItem?.ci?.name ?? "—"}</dd>
-              <dt>Finding IDs</dt><dd>{ledgerItem?.finding?.number ?? "—"}</dd>
-              <dt>Phase</dt><dd>{card.phase}</dd>
-              <dt>Sequence</dt><dd>#{card.seq}</dd>
-            </dl>
-            <details className="activity-technical">
-              <summary>Technical evidence</summary>
-              <pre>{card.technical}</pre>
-            </details>
-          </div>}
-        </article>;
-      })}
-      {!events.length && <EmptyWorkspaceState title="Activity stream is quiet" detail="No Event Ledger entries have been published for this run yet." />}
-    </div>
-  </section>;
-}
-
-function GovernancePanel({ view, onOpenRemediation }: { view: WorkspaceViewState; onOpenRemediation: (stagedCiId?: string) => void }) {
-  const nextApproval = view.snapshot.approvals[0];
-  return <section className={"panel approval-summary tone-" + view.governance.tone + (view.requiresApproval ? " required" : "")}>
-    <div>
-      <span><Icon name="shield" size={17} /></span>
-      <div>
-        <small>{view.governance.title.toUpperCase()}</small>
-        <strong>{nextApproval ? nextApproval.ci.name : view.governance.title}</strong>
-      </div>
-    </div>
-    <p>{view.governance.message}</p>
-    {nextApproval && <button className="primary-button full" onClick={() => onOpenRemediation(nextApproval.stagedCiId)}>
-      Review approval <Icon name="arrow" size={15} />
-    </button>}
-  </section>;
 }
 
 function ApprovalWorkspace({ view, onOpenRemediation }: { view: WorkspaceViewState; onOpenRemediation: (stagedCiId?: string) => void }) {
@@ -390,7 +338,11 @@ function ApprovalWorkspace({ view, onOpenRemediation }: { view: WorkspaceViewSta
             Review authorization <Icon name="arrow" size={15} />
           </button>
         </article>)}
-        {!view.snapshot.approvals.length && <EmptyWorkspaceState title="No approvals waiting" detail="Mara pauses here only when a policy boundary requires human authorization." />}
+        {!view.snapshot.approvals.length && <div className="workspace-empty">
+          <Icon name="spark" size={20} />
+          <strong>No approvals waiting</strong>
+          <p>Mara pauses here only when a policy boundary requires human authorization.</p>
+        </div>}
       </div>
     </div>
     <aside className="panel authorization-scope">
@@ -401,24 +353,4 @@ function ApprovalWorkspace({ view, onOpenRemediation }: { view: WorkspaceViewSta
       <strong>Changes to staged data invalidate the approval.</strong>
     </aside>
   </section>;
-}
-
-function EmptyWorkspaceState({ title, detail }: { title: string; detail: string }) {
-  return <div className="workspace-empty"><Icon name="spark" size={20} /><strong>{title}</strong><p>{detail}</p></div>;
-}
-
-function phaseLabelForId(id: WorkspacePhaseId | undefined) {
-  if (!id) return "—";
-  const labels: Record<WorkspacePhaseId, string> = {
-    comprehend: "Comprehend",
-    prioritize: "Prioritize",
-    remediate: "Remediate",
-    verify: "Verify",
-  };
-  return labels[id];
-}
-
-function truncate(value: string | undefined, limit: number) {
-  if (!value) return "—";
-  return value.length > limit ? value.slice(0, limit - 1) + "…" : value;
 }
