@@ -19,9 +19,11 @@ DotwalkersAgentEventDetailService.prototype = {
 			summary: this._safe(data.summary, 300)
 		};
 		this._optional(detail, data, [
-			'staged_ci_id', 'finding_id', 'strategy_id', 'correlation_id',
+			'migration_run_id', 'staged_ci_id', 'finding_id', 'strategy_id', 'correlation_id',
 			'simulation_correlation_id', 'execution_correlation_id',
-			'simulation_fingerprint', 'mapping_version', 'target_ci_sys_id'
+			'simulation_fingerprint', 'mapping_version', 'target_ci_sys_id',
+			'idempotency_key', 'work_group_signature', 'operation',
+			'simulation_matched_ci'
 		]);
 		this._optionalNumber(detail, data, [
 			'retry_count', 'max_retries', 'baseline_score', 'verified_score',

@@ -12,7 +12,9 @@
     "test": "npm run build",
     "lint": "eslint app next.config.ts",
     "fixtures:stress": "node scripts/generate-company-stress-fixtures.mjs",
+    "export:servicenow": "node scripts/export-servicenow-scope.mjs",
     "acceptance:lifecycle": "node scripts/acceptance-autonomous-lifecycle.cjs",
+    "acceptance:lifecycle:report": "node scripts/acceptance-autonomous-lifecycle.cjs --report",
     "smoke:stress-fixtures": "node scripts/smoke-company-stress-fixtures.cjs",
     "smoke:work-queue": "node scripts/smoke-work-queue.cjs",
     "smoke:run-parser": "node scripts/smoke-run-parser.cjs",
@@ -20,9 +22,12 @@
     "smoke:run-context": "node scripts/smoke-run-context.cjs",
     "smoke:usage-adapter": "node scripts/smoke-usage-adapter.cjs",
     "smoke:mara-companion": "node scripts/smoke-mara-companion.cjs",
+    "smoke:agent-workspace": "node scripts/smoke-agent-workspace.cjs",
+    "smoke:servicenow-phase-a": "node scripts/smoke-servicenow-phase-a-paste.cjs",
+    "smoke:servicenow-runtime": "node scripts/smoke-servicenow-runtime-helpers.cjs",
+    "smoke:servicenow-exporter": "node scripts/smoke-servicenow-exporter.cjs",
     "smoke:mara-observation": "node scripts/smoke-mara-observation.cjs",
     "smoke:mara-live-state": "node scripts/smoke-mara-live-state.cjs",
-    "smoke:agent-workspace": "node scripts/smoke-agent-workspace.cjs",
     "smoke:frontend-errors": "node scripts/smoke-frontend-errors.cjs"
   },
   "dependencies": {
