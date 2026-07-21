@@ -1207,8 +1207,13 @@ function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWork
   const latestErrorDetails = ireErrorDetails(latestError?.details);
   const targetCi = workbench.execution?.target_ci;
   const targetLabel = targetCi?.display_value ?? playback?.targetCiName ?? shortId(targetCi?.sys_id ?? playback?.targetCiSysId);
+  const evidenceItems = humanizeStringList(workbench.simulation?.evidence);
+  const errorItems = humanizeStringList(latestErrorDetails);
+  const summarySource = workbench.verification?.verification_summary ?? (lifecycle === "verification_failed" ? playback?.reason : undefined);
+  const summary = summarySource ? humanizeText(summarySource) : undefined;
+  const errorMessage = latestError ? humanizeText(latestError.message) : undefined;
   return <div className="ire-results">
-    {latestError && <div className="ire-error"><Icon name="x" size={15} />{friendlyIreError(latestError.code, latestError.message)}</div>}
+    {latestError && <div className="ire-error"><Icon name="x" size={15} />{friendlyIreError(latestError.code, errorMessage?.readable ?? latestError.message)}</div>}
     <div className="ire-result-grid">
       <ResultMetric label="State" value={ireLifecycleLabel(lifecycle)} />
       <ResultMetric label="Simulation" value={workbench.simulation?.status ?? (playback?.simulationCorrelation ? "recorded" : "not run")} />
@@ -1222,10 +1227,66 @@ function IreResultPanel({ workbench, lifecycle, playback }: { workbench: IreWork
       <code>execution {shortId(workbench.execution?.success ? workbench.execution.execution_correlation_id : playback?.executionCorrelation)}</code>
       <code>target {targetLabel}</code>
     </div>
-    {workbench.simulation?.evidence?.length ? <ul className="ire-evidence">{workbench.simulation.evidence.map(item => <li key={item}>{item}</li>)}</ul> : null}
-    {latestErrorDetails.length ? <ul className="ire-evidence error-details">{latestErrorDetails.map(item => <li key={item}>{item}</li>)}</ul> : null}
-    {(workbench.verification?.verification_summary || (lifecycle === "verification_failed" ? playback?.reason : undefined)) && <p className="verification-summary">{workbench.verification?.verification_summary ?? playback?.reason}</p>}
+    {evidenceItems.readable.length > 0 && <ul className="ire-evidence">
+      {evidenceItems.readable.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+    </ul>}
+    {errorItems.readable.length > 0 && <ul className="ire-evidence error-details">
+      {errorItems.readable.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+    </ul>}
+    {summary && <p className="verification-summary">{summary.readable}</p>}
+    {(evidenceItems.raw || errorItems.raw || summary?.raw || (errorMessage && errorMessage.raw)) && <details className="activity-technical ire-technical">
+      <summary>Technical evidence</summary>
+      <pre>{[
+        evidenceItems.raw && `evidence:\n${evidenceItems.raw}`,
+        errorItems.raw && `error details:\n${errorItems.raw}`,
+        errorMessage?.raw && `error message:\n${errorMessage.raw}`,
+        summary?.raw && `summary:\n${summary.raw}`,
+      ].filter(Boolean).join("\n\n")}</pre>
+    </details>}
   </div>;
+}
+
+function humanizeText(value: string): { readable: string; raw?: string } {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return { readable: "—" };
+  if (looksStructuredPayload(trimmed)) {
+    return {
+      readable: "Structured payload received. Open technical evidence to inspect the source data.",
+      raw: prettifyPayload(trimmed),
+    };
+  }
+  return { readable: trimmed.replace(/\s+/g, " ") };
+}
+
+function humanizeStringList(values?: string[]): { readable: string[]; raw?: string } {
+  if (!values?.length) return { readable: [] };
+  const readable: string[] = [];
+  const rawParts: string[] = [];
+  for (const value of values) {
+    const trimmed = (value ?? "").toString().trim();
+    if (!trimmed) continue;
+    if (looksStructuredPayload(trimmed)) {
+      rawParts.push(prettifyPayload(trimmed));
+    } else {
+      readable.push(trimmed.replace(/\s+/g, " "));
+    }
+  }
+  if (readable.length === 0 && rawParts.length > 0) {
+    readable.push("Structured payload received. Open technical evidence to inspect the source data.");
+  }
+  return { readable, raw: rawParts.length ? rawParts.join("\n") : undefined };
+}
+
+function looksStructuredPayload(value: string): boolean {
+  return /^\s*[{[]/.test(value) || value.length > 240;
+}
+
+function prettifyPayload(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
 
 function ResultMetric({ label, value }: { label: string; value: string | undefined }) {

@@ -339,7 +339,7 @@ function MaraLotusSvg({ state }: { state: MaraVisualState }) {
   const error = state === "error";
   const inspecting = state === "inspecting";
   const petalScale = sleeping ? 0.78 : blooming ? 1.05 : 1;
-  const outerPetals = blooming ? 0.98 : sleeping ? 0.62 : 0.85;
+  const outerPetals = blooming ? 1 : sleeping ? 0.7 : 0.9;
 
   return (
     <svg
@@ -351,23 +351,27 @@ function MaraLotusSvg({ state }: { state: MaraVisualState }) {
     >
       <defs>
         <radialGradient id="mara-halo" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="var(--lime)" stopOpacity="0.28" />
-          <stop offset="60%" stopColor="var(--lime)" stopOpacity="0.06" />
-          <stop offset="100%" stopColor="var(--lime)" stopOpacity="0" />
+          <stop offset="0%" stopColor="#ffb3d9" stopOpacity="0.35" />
+          <stop offset="60%" stopColor="#ff5aa8" stopOpacity="0.08" />
+          <stop offset="100%" stopColor="#ff5aa8" stopOpacity="0" />
         </radialGradient>
         <linearGradient id="mara-petal-outer" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#7fc46b" />
-          <stop offset="100%" stopColor="#3d7a44" />
+          <stop offset="0%" stopColor="#ffc4de" />
+          <stop offset="100%" stopColor="#d64084" />
         </linearGradient>
         <linearGradient id="mara-petal-inner" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#c7f34d" />
-          <stop offset="100%" stopColor="#59c58b" />
+          <stop offset="0%" stopColor="#ffe1ee" />
+          <stop offset="100%" stopColor="#f472b6" />
         </linearGradient>
-        <radialGradient id="mara-core" cx="50%" cy="45%" r="55%">
-          <stop offset="0%" stopColor="#f6ffcf" />
-          <stop offset="60%" stopColor="var(--lime)" />
-          <stop offset="100%" stopColor="#4d8f36" />
+        <radialGradient id="mara-core" cx="50%" cy="42%" r="58%">
+          <stop offset="0%" stopColor="#fff2f7" />
+          <stop offset="60%" stopColor="#ffd3e5" />
+          <stop offset="100%" stopColor="#f472b6" />
         </radialGradient>
+        <linearGradient id="mara-notebook" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#fff8e5" />
+          <stop offset="100%" stopColor="#f7d774" />
+        </linearGradient>
       </defs>
 
       <circle cx="48" cy="48" r="46" fill="url(#mara-halo)" className="mara-halo-ring" />
@@ -383,18 +387,20 @@ function MaraLotusSvg({ state }: { state: MaraVisualState }) {
 
       <g
         className="mara-outer-petals"
-        transform={`translate(48 52) scale(${petalScale}) translate(-48 -52)`}
+        transform={`translate(48 46) scale(${petalScale}) translate(-48 -46)`}
         style={{ opacity: outerPetals }}
       >
         {[0, 60, 120, 180, 240, 300].map(angle => (
           <ellipse
             key={angle}
             cx="48"
-            cy="20"
+            cy="18"
             rx="9"
-            ry="20"
+            ry="21"
             fill="url(#mara-petal-outer)"
-            transform={`rotate(${angle} 48 52)`}
+            stroke="#a8215e"
+            strokeWidth="0.7"
+            transform={`rotate(${angle} 48 46)`}
             className="mara-petal-outer-shape"
           />
         ))}
@@ -402,58 +408,117 @@ function MaraLotusSvg({ state }: { state: MaraVisualState }) {
 
       <g
         className="mara-inner-petals"
-        transform={`translate(48 52) scale(${petalScale}) translate(-48 -52)`}
+        transform={`translate(48 46) scale(${petalScale}) translate(-48 -46)`}
       >
         {[30, 90, 150, 210, 270, 330].map(angle => (
           <ellipse
             key={angle}
             cx="48"
-            cy="30"
+            cy="27"
             rx="6.5"
             ry="15"
             fill="url(#mara-petal-inner)"
-            transform={`rotate(${angle} 48 52)`}
+            stroke="#c73f83"
+            strokeWidth="0.5"
+            transform={`rotate(${angle} 48 46)`}
             className="mara-petal-inner-shape"
           />
         ))}
       </g>
 
-      <g className="mara-arms" aria-hidden="true">
-        <ellipse cx="18" cy="60" rx="6" ry="3" fill="#4d8f36" transform="rotate(-25 18 60)" />
-        <ellipse cx="78" cy="60" rx="6" ry="3" fill="#4d8f36" transform="rotate(25 78 60)" />
-      </g>
+      {/* Face core */}
+      <circle cx="48" cy="46" r="15" fill="url(#mara-core)" className="mara-core" stroke="#c73f83" strokeWidth="0.7" />
 
-      <circle cx="48" cy="52" r="14" fill="url(#mara-core)" className="mara-core" />
+      {/* Cheeks */}
+      {!sleeping && !error && <g className="mara-cheeks" aria-hidden="true">
+        <ellipse cx="37" cy="52" rx="2.2" ry="1.3" fill="#ff8ab8" opacity="0.7" />
+        <ellipse cx="59" cy="52" rx="2.2" ry="1.3" fill="#ff8ab8" opacity="0.7" />
+      </g>}
 
+      {/* Square nerd glasses */}
       <g
         className={`mara-glasses ${sleeping || error ? "mara-glasses-tilted" : ""}`}
-        transform={awaiting || warning ? "rotate(-4 48 51)" : error ? "rotate(6 48 51)" : undefined}
+        transform={awaiting || warning ? "rotate(-4 48 45)" : error ? "rotate(6 48 45)" : undefined}
       >
-        <circle cx="41" cy="51" r="5.4" fill="rgba(10, 12, 11, 0.55)" stroke="#e6eede" strokeWidth="1.2" />
-        <circle cx="55" cy="51" r="5.4" fill="rgba(10, 12, 11, 0.55)" stroke="#e6eede" strokeWidth="1.2" />
-        <path d="M46.4 51h3.2" stroke="#e6eede" strokeWidth="1.2" strokeLinecap="round" />
-        <path d="M35.6 51h-1.4" stroke="#e6eede" strokeWidth="1.2" strokeLinecap="round" />
-        <path d="M60.4 51h1.4" stroke="#e6eede" strokeWidth="1.2" strokeLinecap="round" />
+        {/* Bridge */}
+        <path d="M45.5 45.5h5" stroke="#11150e" strokeWidth="1.6" strokeLinecap="round" />
+        {/* Temples */}
+        <path d="M35 45.5h-2.5" stroke="#11150e" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M61 45.5h2.5" stroke="#11150e" strokeWidth="1.4" strokeLinecap="round" />
+        {/* Left square lens */}
+        <rect x="35" y="41" width="10.5" height="9" rx="0.6"
+          fill="rgba(255, 255, 255, 0.35)"
+          stroke="#11150e" strokeWidth="1.7"
+          strokeLinejoin="miter" />
+        {/* Right square lens */}
+        <rect x="50.5" y="41" width="10.5" height="9" rx="0.6"
+          fill="rgba(255, 255, 255, 0.35)"
+          stroke="#11150e" strokeWidth="1.7"
+          strokeLinejoin="miter" />
+        {/* Lens shine */}
+        <path d="M36.3 42.4l3.2 3.2" stroke="#ffffff" strokeWidth="0.9" strokeLinecap="round" opacity="0.8" />
+        <path d="M51.8 42.4l3.2 3.2" stroke="#ffffff" strokeWidth="0.9" strokeLinecap="round" opacity="0.8" />
       </g>
 
+      {/* Eyes behind lenses */}
       {sleeping ? (
         <g className="mara-eyes-closed">
-          <path d="M38 51.5c1.5 1 4.5 1 6 0" stroke="#11150e" strokeWidth="1.2" strokeLinecap="round" fill="none" />
-          <path d="M52 51.5c1.5 1 4.5 1 6 0" stroke="#11150e" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+          <path d="M37.5 46c1.5 1 4.5 1 6 0" stroke="#11150e" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+          <path d="M52.5 46c1.5 1 4.5 1 6 0" stroke="#11150e" strokeWidth="1.2" strokeLinecap="round" fill="none" />
         </g>
       ) : (
         <g className="mara-eyes">
-          <circle cx="41" cy={warning || awaiting ? "50" : "51"} r="1.6" fill="#11150e" />
-          <circle cx="55" cy={warning || awaiting ? "50" : "51"} r="1.6" fill="#11150e" />
-          <circle cx="41.7" cy="50.3" r="0.55" fill="#f6ffcf" />
-          <circle cx="55.7" cy="50.3" r="0.55" fill="#f6ffcf" />
+          <circle cx="40.3" cy={warning || awaiting ? "45" : "45.5"} r="1.5" fill="#11150e" />
+          <circle cx="55.7" cy={warning || awaiting ? "45" : "45.5"} r="1.5" fill="#11150e" />
+          <circle cx="40.8" cy="45" r="0.55" fill="#ffffff" />
+          <circle cx="56.2" cy="45" r="0.55" fill="#ffffff" />
         </g>
       )}
 
-      <circle
-        cx="48"
-        cy="48"
-        r="44"
+      {/* Smile */}
+      {!error && !sleeping && (
+        <path
+          d={awaiting || warning
+            ? "M44 55.5c1.5 0.8 6.5 0.8 8 0"
+            : blooming
+              ? "M42.5 55c2 2 9 2 11 0"
+              : "M43.5 55.2c1.8 1.4 7 1.4 9 0"}
+          stroke="#a8215e" strokeWidth="1.3" strokeLinecap="round" fill="none"
+        />
+      )}
+      {error && <path d="M43.5 57c2-1.4 7-1.4 9 0" stroke="#a8215e" strokeWidth="1.3" strokeLinecap="round" fill="none" />}
+
+      {/* Arms holding notebook */}
+      <g className="mara-arms" aria-hidden="true">
+        <path d="M32 60c3 4 8 6 13 6" stroke="#d64084" strokeWidth="3.2" strokeLinecap="round" fill="none" />
+        <path d="M64 60c-3 4-8 6-13 6" stroke="#d64084" strokeWidth="3.2" strokeLinecap="round" fill="none" />
+      </g>
+
+      {/* Notebook */}
+      <g className="mara-notebook" aria-hidden="true">
+        <rect x="33" y="63" width="30" height="20" rx="1.4"
+          fill="url(#mara-notebook)" stroke="#11150e" strokeWidth="1.4" />
+        {/* Spiral binding */}
+        <g stroke="#11150e" strokeWidth="1.1" strokeLinecap="round">
+          <path d="M36 62.5v3" />
+          <path d="M41 62.5v3" />
+          <path d="M46 62.5v3" />
+          <path d="M51 62.5v3" />
+          <path d="M56 62.5v3" />
+          <path d="M60 62.5v3" />
+        </g>
+        {/* Ruled lines */}
+        <g stroke="#c07a1a" strokeWidth="0.7" strokeLinecap="round" opacity="0.75">
+          <path d="M36 71h24" />
+          <path d="M36 75h24" />
+          <path d="M36 79h18" />
+        </g>
+        {/* Little pencil tip */}
+        <path d="M63 73l3 -1.5v3z" fill="#11150e" />
+      </g>
+
+      <rect
+        x="4" y="4" width="88" height="88" rx="44"
         fill="none"
         strokeWidth="1.6"
         className={`mara-status-ring mara-status-ring-${state.replace("_", "-")}`}
