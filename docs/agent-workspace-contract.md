@@ -23,6 +23,9 @@ inside the detail field:
   "strategy_id": "normalize_known_class_alias",
   "simulation_correlation_id": "ks-simulate-...",
   "simulation_fingerprint": "hash",
+  "mapping_version": "class-alias-v1",
+  "retry_count": 1,
+  "max_retries": 1,
   "health_impact": 2
 }
 ~~~

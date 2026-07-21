@@ -32,7 +32,9 @@ DotwalkersFailureStrategyService.prototype = {
 		var group = this.group(failure);
 		var sourceClass = this._str(failure && (failure.source_class || failure.proposed_class));
 		var mappedClass = DotwalkersFailureStrategyService.CLASS_ALIASES[sourceClass.toLowerCase()];
-		if (parseInt(retryCount, 10) >= 1) return this._blocked(group, 'Retry limit reached');
+		var currentRetry = parseInt(retryCount, 10);
+		if (isNaN(currentRetry)) currentRetry = 0;
+		if (currentRetry >= 1) return this._blocked(group, 'Retry limit reached');
 		if (!mappedClass) return this._blocked(group, 'No allowlisted deterministic strategy');
 		return {
 			signature: group.signature,
@@ -40,10 +42,20 @@ DotwalkersFailureStrategyService.prototype = {
 			status: 'selected',
 			strategy_id: 'normalize_known_class_alias',
 			mapping_version: DotwalkersFailureStrategyService.MAPPING_VERSION,
+			retry_count: currentRetry + 1,
 			source_class: sourceClass,
 			target_class: mappedClass,
 			max_retries: 1
 		};
+	},
+
+	reconstruct: function (evidence) {
+		evidence = evidence || {};
+		if (this._str(evidence.strategy_id) !== 'normalize_known_class_alias') throw new Error('Unsupported persisted retry strategy');
+		if (this._str(evidence.mapping_version) !== DotwalkersFailureStrategyService.MAPPING_VERSION) throw new Error('Persisted mapping version is stale');
+		var expected = this.decide({ source_class: evidence.source_class }, 0);
+		if (expected.status !== 'selected' || expected.target_class !== this._str(evidence.target_class)) throw new Error('Persisted class mapping does not match the server allowlist');
+		return expected;
 	},
 
 	fingerprintMaterial: function (decision) {

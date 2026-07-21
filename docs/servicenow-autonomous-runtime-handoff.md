@@ -1,44 +1,61 @@
 # ServiceNow Autonomous Runtime Handoff
 
-This handoff keeps ServiceNow authoritative for identity, ownership, orchestration, IRE payload rebuild, simulation, approval, execution, verification, idempotency, concurrency, and durable evidence. Keystone remains a read-only projection and identifier-only action surface.
+The full scope export confirms that the deployed ServiceNow application already
+contains the IRE resources, payload and simulation services, Mara event handoff,
+Event Ledger writer, and health route. Keystone stores tested in-place patch
+sources for those same records; it does not define a parallel runtime.
 
-## Deploy Script Includes
+Use `docs/servicenow-autonomous-runtime-integration.md` for the in-place patch
+list and `docs/lifecycle-acceptance-report.md` for acceptance classifications.
 
-- Deploy `DotwalkersAgentEventDetailService` and `DotwalkersFailureStrategyService` as scoped Script Includes.
-- Wire `DotwalkersAgentEventDetailService.build(...)` into the existing Event Ledger writer so `detail` stores compact `keystone.agent.v1` JSON without adding `event_type` choices.
-- Wire `DotwalkersFailureStrategyService.decide(...)` into the shared IRE lifecycle service before simulation retry. Include `strategy_id`, `mapping_version`, `retry_count`, `max_retries`, and `simulation_fingerprint` in lifecycle detail.
+## Source-Controlled Records
 
-## Bounded Mara Loop
+- `servicenow/DotwalkersAgentEventDetailService.js`
+- `servicenow/DotwalkersFailureStrategyService.js`
+- `servicenow/DotwalkersAgentSupport.phase-a.js`
+- `servicenow/DotwalkersIrePayloadService.phase-b3.js`
+- `servicenow/DotwalkersIreSimulationService.phase-b3.js`
+- `servicenow/ire_simulate.phase-b3.js`
+- `servicenow/DotwalkersPhaseATests.phase-a.js`
+- `servicenow/DotwalkersPhaseB3ATests.phase-b3.js`
+- `servicenow/DotwalkersPhaseB3BTests.phase-b3.js`
 
-Implement the single-record loop inside ServiceNow:
+The first helper creates compact, allowlisted `AgentEventDetailV1` evidence. The
+second owns deterministic work grouping, the single class-alias retry strategy,
+mapping version, one-retry limit, reconstruction, and fingerprint material.
+The helpers themselves write no records. The patched support and simulation
+services continue using the existing authorized finding and Event Ledger paths;
+simulation never commits a CMDB record.
 
-1. Observe the migration run, staged CI, findings, reviews, and latest ledger entries.
-2. Decide the next safe action using ServiceNow evidence and deterministic policy first.
-3. Validate authenticated user, role, run ownership, staged-record ownership, allowed class, allowed attributes, source identity, and current fingerprint.
-4. Use only server-side tools to simulate or execute through IRE; the browser supplies identifiers and correlation metadata only.
-5. Record compact Event Ledger detail with sequence ordering, strategy/fingerprint/correlation metadata, target CI sys_id after execution, and health metrics only when verified.
-6. Reread the exact ServiceNow records and stop after one action unless a single approved resume is required.
+## Patch Existing ServiceNow Records
 
-## Approval Resume
+- Wire compact detail into the existing `DotwalkersAgentSupport.log` path.
+- Extend the existing `DotwalkersIrePayloadService`; retain confidence,
+  reference-resolution, allowlist, and payload-building behavior.
+- Make `DotwalkersIreSimulationService` the shared simulation/fingerprint
+  authority for `ire_simulate` and `ire_execute`.
+- Bind `ire_approve` to one staged CI plus fingerprint and queue the existing
+  `x_kest_dotwalkers.mara.requested` event with a validated resume token.
+- Extend the Mara Script Action and `DotwalkersMaraAgent` for one bounded
+  Execute plus immediate exact-correlation Verify.
+- Extend the existing health read path with persisted projected/verified data.
 
-- Approval authorizes exactly one staged CI at exactly one successful simulation fingerprint.
-- After approval, ServiceNow may automatically resume Mara once for that staged CI only.
-- Execution idempotency must derive from `migration_run`, `staged_ci`, `simulation_fingerprint`, and action name.
-- Reject execution on stale fingerprint, mismatched staged CI, missing approval, invalid target sys_id, duplicate execution, missing ownership, or policy failure.
-- Verification must read back the CI tied to the exact `execution_correlation_id`; do not verify an older execution for the same staged record.
+Preserve deployed role, run-linkage, identifier-only, idempotency, concurrency,
+approval, and verification controls. Add no schema or Event Ledger choices,
+keep `/api/cmdb/*` compatibility, and make no direct `cmdb_ci*` or
+`cmdb_rel_ci` writes.
 
-## Health And Relationships
+## Validation Gate
 
-- Return `baseline_score`, `verified_score`, `projected_score`, `dimension_scores`, and `work_group_impacts` only from real ServiceNow evidence.
-- Simulation may increase readiness and projected health, but must not increase verified health.
-- Verified health may increase only after exact execution-correlation verification.
-- Relationship readiness is read-only until both staged endpoints have verified production CI evidence. Do not promote relationships or write `cmdb_rel_ci` in this demo slice.
+Current server-side status:
 
-## Remaining Deployment Work
+- Phase B3A: 23/23
+- Phase B3B: 41/41
 
-- Deploy both helper services and connect them to the shared IRE lifecycle service.
-- Prove strategy reconstruction and simulation/execution fingerprint parity.
-- Prove automatic single-record resume after approval.
-- Prove one retry maximum and deterministic class-alias retry behavior.
-- Prove exact execution-correlation verification and refresh playback from Event Ledger.
-- Preserve the no-direct-write boundary for `cmdb_ci*` and `cmdb_rel_ci`.
+Local validation includes smoke, acceptance report mode, lint, TypeScript, and
+build. It sends no Approve, Execute, Verify, or approval-triggering request.
+
+Live validation begins only after this explicit confirmation:
+
+**Approve staged CI `<sys_id>` at simulation fingerprint `<fingerprint>` and
+allow its automatic single Execute plus Verify continuation.**

@@ -24,6 +24,7 @@ export type AgentEventDetailV1 = {
   status: "started" | "completed" | "failed" | "blocked" | "approval_required";
   summary: string;
   staged_ci_id?: string;
+  migration_run_id?: string;
   finding_id?: string;
   strategy_id?: string;
   correlation_id?: string;
@@ -31,6 +32,10 @@ export type AgentEventDetailV1 = {
   execution_correlation_id?: string;
   simulation_fingerprint?: string;
   mapping_version?: string;
+  idempotency_key?: string;
+  work_group_signature?: string;
+  operation?: string;
+  simulation_matched_ci?: string;
   retry_count?: number;
   max_retries?: number;
   target_ci_sys_id?: string;

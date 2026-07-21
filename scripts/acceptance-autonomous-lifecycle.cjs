@@ -91,6 +91,10 @@ async function main() {
   ];
 
   const failures = checks.filter(item => item.status === "fail");
+  const classifiedChecks = checks.map(item => ({
+    ...item,
+    classification: acceptanceClassification(item),
+  }));
   console.log(JSON.stringify({
     base: options.base,
     run: options.run,
@@ -103,12 +107,24 @@ async function main() {
       relationships: relationships.length,
       groups: snapshot.groups.length,
     },
-    checks,
+    checks: classifiedChecks,
   }, null, 2));
 
-  if (failures.length) {
+  if (failures.length && !options.report) {
     throw new Error(`Autonomous lifecycle acceptance failed ${failures.length} check(s): ${failures.map(item => item.id).join(", ")}`);
   }
+}
+
+function acceptanceClassification(item) {
+  const staticChecks = new Set([
+    "read-only",
+    "work-grouping",
+    "identifier-only-execute",
+    "refresh-reconstruction",
+  ]);
+  if (item.status === "unverifiable") return "UNAVAILABLE";
+  if (item.status === "fail" || item.status === "warn") return "FAIL";
+  return staticChecks.has(item.id) ? "STATIC PASS" : "PASS";
 }
 
 async function get(resource) {
@@ -320,6 +336,7 @@ function parseArgs(argv) {
     if (arg === "--base") options.base = argv[++index];
     else if (arg === "--run") options.run = argv[++index];
     else if (arg === "--staged-ci") options.stagedCi = argv[++index];
+    else if (arg === "--report") options.report = true;
     else if (arg === "--execute") options.execute = true;
     else if (arg === "--approve") options.approve = true;
     else if (arg === "--auto-execute") options.autoExecute = true;
