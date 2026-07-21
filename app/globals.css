@@ -1764,3 +1764,341 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .journey-chapter.active .journey-chapter-node { animation: none; }
   .journey-chapter-caret { transition: none; }
 }
+
+/* ============================================================================
+   FACTORY FLOOR — operations-center aesthetic layered on top of the dashboard.
+   The PRD calls this an "AI engineering workspace" / "CMDB migration operations
+   center", not a dashboard. These rules only add visuals; nothing here changes
+   layout, semantics, or behaviour. All decorations use ::before/::after so the
+   underlying DOM is untouched.
+   ========================================================================= */
+
+:root {
+  --factory-steel: #14181f;
+  --factory-steel-2: #1a1f28;
+  --factory-rivet: rgba(199, 243, 77, .35);
+  --factory-rivet-shadow: rgba(0, 0, 0, .6);
+  --factory-hazard-a: #ffb800;
+  --factory-hazard-b: #0a0c0b;
+  --factory-grid: rgba(199, 243, 77, .028);
+  --factory-grid-strong: rgba(199, 243, 77, .06);
+}
+
+/* Warehouse grid backdrop — subtle 40px crosshatch + a soft radial vignette
+   from the top-right so the app feels like a lit shop floor rather than a
+   flat page. */
+.app-shell {
+  background:
+    radial-gradient(circle at 78% -10%, rgba(199, 243, 77, .07), transparent 32%),
+    linear-gradient(var(--factory-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--factory-grid) 1px, transparent 1px),
+    linear-gradient(var(--factory-grid-strong) 1px, transparent 1px),
+    linear-gradient(90deg, var(--factory-grid-strong) 1px, transparent 1px),
+    var(--bg);
+  background-size:
+    auto,
+    40px 40px,
+    40px 40px,
+    200px 200px,
+    200px 200px;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
+  position: relative;
+}
+
+/* Diagonal scanline sheen behind everything — very low opacity so it just
+   adds "surface texture" without competing with content. */
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0px,
+    transparent 3px,
+    rgba(239, 241, 233, .012) 3px,
+    rgba(239, 241, 233, .012) 4px
+  );
+  z-index: 1;
+}
+
+/* Panel = shop-floor equipment plate. Add corner rivets and a brushed-steel
+   inner ring. Rivets are pseudo-elements so no DOM change. */
+.panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .015), transparent 20%),
+    var(--surface);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .025),
+    inset 0 -1px 0 rgba(0, 0, 0, .35),
+    0 1px 0 rgba(0, 0, 0, .35);
+}
+.panel::before,
+.panel::after {
+  content: "";
+  position: absolute;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(199, 243, 77, .55), rgba(89, 100, 72, .8) 55%, #0a0c0b 85%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .5), inset 0 0 0 .5px rgba(255, 255, 255, .18);
+  pointer-events: none;
+  z-index: 2;
+}
+.panel::before { top: 6px;  left: 6px; }
+.panel::after  { top: 6px;  right: 6px; }
+
+/* Two more rivets in the bottom corners via a mid-tier pseudo trick: use
+   the .panel-heading's ::before/::after wouldn't cover this, so just extend
+   the panel with a second decoration via outline shape on ::marker isn't
+   supported. Instead, add a top rivet strip only — keeping it visually
+   consistent with the top-only corner brackets used throughout the app. */
+
+/* Section-index chip = bay plate with etched depth */
+.section-index {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 34px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  background:
+    linear-gradient(180deg, #1c2119, #0f130e);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    inset 0 -1px 0 rgba(0, 0, 0, .5),
+    0 1px 0 rgba(0, 0, 0, .3);
+  color: var(--lime);
+  font: 10px/1 var(--mono);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  text-shadow: 0 0 6px rgba(199, 243, 77, .35);
+  border-radius: 1px;
+}
+.section-index::before {
+  content: "BAY";
+  display: block;
+  position: absolute;
+  top: -9px;
+  left: 3px;
+  font: 7px/1 var(--mono);
+  letter-spacing: .22em;
+  color: var(--faint);
+  background: var(--surface);
+  padding: 0 3px;
+}
+
+/* Panel heading = machine label — corner tick brackets on both sides. */
+.panel-heading {
+  position: relative;
+}
+.panel-heading > div:first-child::before {
+  content: "";
+  position: absolute;
+  top: 50%; left: -14px;
+  width: 8px; height: 8px;
+  border-left: 1.5px solid var(--lime);
+  border-top: 1.5px solid var(--lime);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity .2s ease;
+}
+.panel:hover .panel-heading > div:first-child::before { opacity: .5; }
+
+/* KPI values = machine readout */
+.kpi strong,
+.workbench-counts strong,
+.factory-header .factory-run-tag {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px rgba(199, 243, 77, .18);
+}
+
+/* Pilot lights = enhance existing status dots with an inner glow ring. */
+.api-dot.live,
+.api-dot.partial,
+.source-dot.servicenow_ledger,
+.source-dot.servicenow_records,
+.source-dot.live_action,
+.mara-status-dot.mara-status-blooming,
+.mara-status-dot.mara-status-inspecting {
+  position: relative;
+}
+.api-dot.live::after,
+.api-dot.partial::after,
+.source-dot.servicenow_ledger::after,
+.source-dot.servicenow_records::after,
+.source-dot.live_action::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  opacity: .3;
+  pointer-events: none;
+  animation: pilot-ring 2.2s ease-in-out infinite;
+}
+@keyframes pilot-ring {
+  0%, 100% { transform: scale(1); opacity: .35; }
+  50% { transform: scale(1.35); opacity: 0; }
+}
+
+/* Hazard-stripe accent — apply to any surface that gates human authorization.
+   Kept as a top-edge stripe so it reads as "warning: gate ahead" without
+   overwhelming the content. */
+.ci-evidence-card.ci-scope-strategy-error,
+.journey-pause,
+.approval-scope-card,
+.workspace-empty {
+  position: relative;
+}
+.ci-evidence-card.ci-scope-strategy-error::before,
+.journey-pause::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      var(--factory-hazard-a) 0 10px,
+      var(--factory-hazard-b) 10px 20px
+    );
+  z-index: 3;
+}
+
+/* Approval workspace = high-stakes bay. Layered inset glow so the panel
+   itself feels 'lit under a warning lamp'. */
+.approval-list-panel {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .025),
+    inset 0 -1px 0 rgba(0, 0, 0, .35),
+    inset 3px 0 var(--factory-hazard-a),
+    0 1px 0 rgba(0, 0, 0, .35);
+}
+
+/* Factory header = control-panel readout */
+.factory-header {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .02), transparent 30%),
+    linear-gradient(90deg, transparent, rgba(199, 243, 77, .04) 50%, transparent),
+    var(--surface);
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .04),
+    inset 0 -1px 0 rgba(0, 0, 0, .4);
+}
+.factory-header::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 60%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--lime), transparent);
+  opacity: .5;
+}
+.factory-header::after {
+  content: "";
+  position: absolute;
+  bottom: -1px; right: 0;
+  width: 40%;
+  height: 2px;
+  background: linear-gradient(-90deg, var(--green), transparent);
+  opacity: .5;
+}
+.factory-run-tag {
+  position: relative;
+  padding: 3px 8px 3px 18px;
+  background: #0a0d0a;
+  border: 1px solid var(--line-strong);
+  box-shadow: inset 0 0 0 1px rgba(199, 243, 77, .08), 0 0 12px rgba(199, 243, 77, .06);
+  color: var(--lime);
+  text-shadow: 0 0 6px rgba(199, 243, 77, .3);
+}
+.factory-run-tag::before {
+  content: "";
+  position: absolute;
+  left: 6px; top: 50%;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: var(--lime);
+  box-shadow: 0 0 8px rgba(199, 243, 77, .8);
+  animation: pilot-ring 2.4s ease-in-out infinite;
+}
+
+/* Buttons look more like industrial toggles — beveled edges + machine-hum
+   hover glow. Kept subtle so existing hierarchy is preserved. */
+.primary-button,
+.ghost-button {
+  position: relative;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    inset 0 -1px 0 rgba(0, 0, 0, .45);
+  transition: box-shadow .18s ease, transform .1s ease;
+}
+.primary-button:not(:disabled):hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    inset 0 -1px 0 rgba(0, 0, 0, .45),
+    0 0 14px rgba(199, 243, 77, .28);
+}
+.primary-button:not(:disabled):active,
+.ghost-button:not(:disabled):active { transform: translateY(1px); }
+
+/* Workbench counts = gauge cluster */
+.workbench-counts {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .015), transparent 40%),
+    #0c0f0c;
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .04),
+    inset 0 -1px 0 rgba(0, 0, 0, .5);
+}
+.workbench-counts > div { position: relative; }
+.workbench-counts > div:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 20%; right: 0;
+  width: 1px; height: 60%;
+  background: linear-gradient(180deg, transparent, var(--line-strong), transparent);
+}
+
+/* Governance card = safety placard */
+.governance-card {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(199, 243, 77, .04), transparent 40%),
+    #11150e;
+}
+.governance-card::after {
+  content: "SAFETY GOVERNED";
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  font: 7px/1 var(--mono);
+  letter-spacing: .22em;
+  color: rgba(199, 243, 77, .35);
+}
+
+/* Journey chapter node — machine bay marker with inner rivet */
+.journey-chapter-node {
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255, 255, 255, .08), transparent 40%),
+    linear-gradient(180deg, #1c2119, #0f130e);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .06),
+    inset 0 -1px 0 rgba(0, 0, 0, .5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .api-dot.live::after,
+  .api-dot.partial::after,
+  .source-dot.servicenow_ledger::after,
+  .source-dot.servicenow_records::after,
+  .source-dot.live_action::after,
+  .factory-run-tag::before { animation: none; }
+}

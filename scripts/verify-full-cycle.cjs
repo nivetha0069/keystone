@@ -22,6 +22,8 @@
 // on any hard assertion; prints a compact per-step report either way.
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { chromium } = require("@playwright/test");
 
 const BASE = process.env.KEYSTONE_URL || "http://localhost:3000";
@@ -189,6 +191,89 @@ async function readVisibleSnapshot(page) {
   const runSummaryVisible = (await runSummary.count()) > 0;
   const runSummaryText = runSummaryVisible ? await runSummary.first().innerText().catch(() => "") : "";
 
+  // 6. Exercise the Simulate button on the Remediate page. This drives
+  // POST /api/cmdb/ire/simulate through the real proxy and lets us
+  // observe whether the panel updates correctly (either "Live IRE
+  // response" or a strategy/execution failure card).
+  let simulateOutcome = { attempted: false, status: "skipped", cardText: "", apiState: "?" };
+  // Poll: give the dashboard a full refresh cycle before deciding Simulate is
+  // stuck disabled. loadData(runId) runs on mount and the 8s poller re-runs
+  // it — this loop just waits long enough for the button's `disabled`
+  // attribute to settle rather than checking on the first render.
+  const allSimulate = page.locator("button:has-text(\"Simulate\")");
+  const totalSim = await allSimulate.count();
+  // Prefer the Simulate button inside the IRE action footer (Remediate CI panel).
+  const scopedSim = page.locator(".ire-action-grid button:has-text(\"Simulate\")").first();
+  const simulateBtn = (await scopedSim.count()) > 0 ? scopedSim : allSimulate.first();
+  const hasSimulate = totalSim > 0;
+  console.log(`\n[Simulate] locator scan — total buttons containing "Simulate": ${totalSim}`);
+  if (hasSimulate) {
+    simulateOutcome.attempted = true;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const stillDisabled = await simulateBtn.isDisabled().catch(() => true);
+      if (!stillDisabled) break;
+      await page.waitForTimeout(2000);
+    }
+    simulateOutcome.apiState = await page.locator(".sidebar-bottom strong").first().innerText().catch(() => "unknown");
+    const disabled = await simulateBtn.isDisabled().catch(() => true);
+    // Diagnostic: how many CIs did loadData actually populate + what does
+    // the selected staged CI card in the header show?
+    const stagedCount = await page.locator(".staged-queue-panel .panel-stat").innerText().catch(() => "?");
+    const selectedName = await page.locator(".selected-ci-copy h3").innerText().catch(() => "?");
+    simulateOutcome.diag = `stagedInQueuePanel=${stagedCount}  selectedCiHeader=${selectedName}`;
+    if (disabled) {
+      simulateOutcome.status = `disabled after wait · apiState="${simulateOutcome.apiState}" · ${simulateOutcome.diag}`;
+    } else {
+      console.log("\n[Remediate] clicking Simulate…");
+      const [simRes] = await Promise.all([
+        page.waitForResponse(res => res.url().includes("/api/cmdb/ire/simulate"), { timeout: 15_000 }).catch(() => null),
+        simulateBtn.click(),
+      ]);
+      simulateOutcome.status = simRes ? `HTTP ${simRes.status()}` : "no response captured";
+      await page.waitForTimeout(2500);
+      const card = page.locator(".ci-evidence-card").first();
+      if ((await card.count()) > 0) simulateOutcome.cardText = (await card.innerText().catch(() => "")).slice(0, 200).replace(/\n/g, " · ");
+    }
+  }
+
+  // 7. Capture a Mara mascot screenshot for visual review.
+  const shotDir = path.dirname(path.resolve(__dirname, "..", "test-results", "mara.png"));
+  fs.mkdirSync(shotDir, { recursive: true });
+  const shotPath = path.resolve(__dirname, "..", "test-results", "mara.png");
+  // Move Mara to a fixed on-screen location, wait a beat for the SVG to
+  // paint, then screenshot a padded region around her so the full green
+  // glow (which extends beyond the toggle's box) is captured.
+  await page.evaluate(() => {
+    const el = document.querySelector(".mara-companion");
+    if (el instanceof HTMLElement) {
+      el.style.left = "600px";
+      el.style.top = "260px";
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    }
+  });
+  await page.waitForTimeout(1200);
+  const maraToggle = page.locator(".mara-companion .mara-toggle").first();
+  if ((await maraToggle.count()) > 0) {
+    const box = await maraToggle.boundingBox();
+    if (box) {
+      const pad = 60;
+      const viewport = page.viewportSize() || { width: 1280, height: 720 };
+      await page.screenshot({
+        path: shotPath,
+        clip: {
+          x: Math.max(0, box.x - pad),
+          y: Math.max(0, box.y - pad),
+          width: Math.min(viewport.width, box.width + pad * 2),
+          height: Math.min(viewport.height, box.height + pad * 2),
+        },
+      }).catch(err => console.log("  screenshot failed:", err.message));
+      console.log(`\n[Mara] mascot screenshot → ${shotPath}  (${box.x|0},${box.y|0}  ${box.width|0}x${box.height|0})`);
+    } else {
+      console.log("\n[Mara] no bounding box (mascot off-screen?)");
+    }
+  }
+
   await browser.close();
 
   // ---------- Report ----------
@@ -201,6 +286,8 @@ async function readVisibleSnapshot(page) {
   }
   console.log(`  Remediate.CIPanel     card=${ciPanelText ? "yes" : "no"}  strategyCard=${strategyCardVisible}  observationLeak=${observationLeak}`);
   console.log(`  Remediate.RunSummary  visible=${runSummaryVisible}  labelledScope=${/RUN-WIDE/i.test(runSummaryText)}`);
+  console.log(`  Simulate button       attempted=${simulateOutcome.attempted}  ${simulateOutcome.status}`);
+  if (simulateOutcome.cardText) console.log(`    card after click: ${simulateOutcome.cardText}`);
   console.log(`\n  console.errors: ${consoleErrors.length}`);
   for (const e of consoleErrors.slice(0, 5)) console.log(`    [${e.type}] ${e.text.slice(0, 140)}`);
   console.log(`  /api/cmdb 5xx:  ${cmdbBad.length}`);
