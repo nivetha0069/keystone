@@ -1,6 +1,6 @@
 // Smoke tests for the CI-scoping fix in the Remediate page.
 //
-// Covers the five explicit acceptance cases from the ticket:
+// Covers the CI-scoping and ledger-freshness acceptance cases from the ticket:
 //   1. A global (run-level) Mara observation event is NOT selected as
 //      CI-specific IRE evidence.
 //   2. A matching staged-CI IRE simulation event IS selected.
@@ -154,6 +154,41 @@ function event(overrides) {
   const queue = workQueue.deriveRemediationWorkQueue({ cis: [CI], timeline: [sim] });
   assert.equal(queue.items[0].latestEvent?.id, "EV-metadata", "metadata token must match even when recordName differs");
   console.log("  ✓ staged_ci_id metadata token also matches");
+}
+
+// ---------- 2c. Newer creation time beats a stale higher sequence ----------
+{
+  const legacy = event({
+    id: "EV-legacy-seq-57",
+    seq: 57,
+    time: "2026-07-20 16:40:15",
+    source: "IRE",
+    recordName: CI.stagedCiId,
+    reasoning: "Simulation incomplete finding_id=old-finding simulation_correlation_id=ks-simulate-old simulation_fingerprint=c4a9cea548f29e5122a1b59f97e81da9",
+  });
+  const canonical = event({
+    id: "EV-canonical-seq-3",
+    seq: 3,
+    time: "2026-07-21 10:01:02",
+    source: "IRE",
+    recordName: CI.stagedCiId,
+    reasoning: "Simulation completed finding_id=new-finding simulation_correlation_id=ks-simulate-new simulation_fingerprint=8E080D7595B72AB11893B32EFDBEC60A215E0C33C47F83F0106384AB07CCE67D",
+  });
+  const queue = workQueue.deriveRemediationWorkQueue({ cis: [CI], timeline: [canonical, legacy] });
+  const item = queue.items[0];
+  assert.equal(item.latestEvent?.id, canonical.id, "newer canonical evidence must beat a stale higher sequence");
+  assert.equal(item.simulationCorrelation, "ks-simulate-new");
+  assert.equal(item.simulationFingerprint, "8E080D7595B72AB11893B32EFDBEC60A215E0C33C47F83F0106384AB07CCE67D");
+  assert.deepEqual(
+    workQueue.sortTimelineByFreshness([canonical, legacy]).map(item => item.id),
+    [legacy.id, canonical.id],
+  );
+  const dashSrc = fs.readFileSync(path.join(repoRoot, "app/cmdb-dashboard.tsx"), "utf8");
+  assert.ok(
+    /sortTimelineByFreshness\(timeline\s*\.filter/.test(dashSrc),
+    "selected activity must use creation-time freshness ordering",
+  );
+  console.log("  ✓ creation time selects canonical evidence over a stale higher sequence");
 }
 
 // ---------- 3. Missing CI simulation → empty-state string ----------

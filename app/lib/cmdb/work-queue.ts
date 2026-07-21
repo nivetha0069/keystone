@@ -259,8 +259,32 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * ServiceNow ledger sequence values are useful as a tie-breaker, but older
+ * records can have much larger sequence numbers than newly written evidence.
+ * Creation time therefore owns freshness whenever it is available.
+ */
+export function sortTimelineByFreshness(events: TimelineEvent[]) {
+  return [...events].sort(compareTimelineFreshness);
+}
+
+function compareTimelineFreshness(left: TimelineEvent, right: TimelineEvent) {
+  const leftTime = timelineTimestamp(left.time);
+  const rightTime = timelineTimestamp(right.time);
+  if (leftTime !== null && rightTime !== null && leftTime !== rightTime) return leftTime - rightTime;
+  if (leftTime !== null && rightTime === null) return 1;
+  if (leftTime === null && rightTime !== null) return -1;
+  if (left.seq !== right.seq) return left.seq - right.seq;
+  return left.id.localeCompare(right.id);
+}
+
+function timelineTimestamp(value: string) {
+  const parsed = Date.parse((value || "").trim().replace(" ", "T"));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) {
-  return timeline.filter(event => isCiScopedTimelineEvent(event, ci));
+  return sortTimelineByFreshness(timeline.filter(event => isCiScopedTimelineEvent(event, ci)));
 }
 
 function relatedFindings(ci: ConfigurationItem, findings: RemediationFinding[]) {

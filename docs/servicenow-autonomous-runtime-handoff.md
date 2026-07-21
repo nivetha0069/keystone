@@ -56,8 +56,12 @@ Current server-side status:
 
 - Phase B3A: 23/23
 - Phase B3B: 41/41
-- Phase C: 36 tests prepared in a separate test-only Script Include; not yet
-  installed or run in ServiceNow
+- Phase C: 36/36 in the separate test-only Script Include
+
+The Phase C baseline is installed and a fresh GET-only export matched all six
+deployed sources. A corrective ledger-sequence and UI-freshness patch is now
+source-controlled but is not yet redeployed. The installed Phase C test record
+has sys_id `2a2cc9589316cf10410e383efaba102f`.
 
 Local validation includes smoke, acceptance report mode, lint, TypeScript, and
 build. It sends no Approve, Execute, Verify, or approval-triggering request.

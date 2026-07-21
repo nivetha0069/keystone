@@ -1,6 +1,6 @@
 /**
  * Test-only Phase C suite. Install as sys_script_include
- * c7b8e46ae735937162613280abfcd1b4 and run from Scripts - Background.
+ * 2a2cc9589316cf10410e383efaba102f and run from Scripts - Background.
  */
 var DotwalkersPhaseCTests = Class.create();
 
@@ -301,9 +301,33 @@ DotwalkersPhaseCTests.prototype = {
 
     testNoGlobalPatchOrCrossScopeRead: function() {
         var tables = [];
+        var calls = [];
         var svc = this._service();
-        svc._newRecord = function(table) { tables.push(table); return {}; };
-        this._assert(tables.length === 0 && !svc.hasOwnProperty('GlideRecord'), 'instance dependencies only');
+        svc._newRecord = function(table) {
+            tables.push(table);
+            return {
+                addQuery: function(field, value) { calls.push(['query', field, value]); },
+                orderByDesc: function(field) { calls.push(['order', field]); },
+                setLimit: function(value) { calls.push(['limit', value]); },
+                query: function() { calls.push(['run']); },
+                next: function() { return true; },
+                getValue: function(field) {
+                    calls.push(['value', field]);
+                    return '61';
+                }
+            };
+        };
+        this._assert(svc._nextSequence(this.RUN) === 62, 'sequence continues from latest ledger record');
+        this._assert(tables.length === 1 && tables[0] === svc.TABLES.ledger, 'ledger table only');
+        this._assert(JSON.stringify(calls) === JSON.stringify([
+            ['query', 'migration_run', this.RUN],
+            ['order', 'sequence'],
+            ['order', 'sys_created_on'],
+            ['limit', 1],
+            ['run'],
+            ['value', 'sequence']
+        ]), 'record-backed sequence lookup');
+        this._assert(!svc.hasOwnProperty('GlideRecord'), 'instance dependencies only');
     },
 
     _service: function() {

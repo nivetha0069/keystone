@@ -1961,18 +1961,23 @@ DotwalkersIreSimulationService.prototype = {
             return this._sequenceCache[runId];
         }
 
-        var aggregate = new GlideAggregate(this.TABLES.ledger);
+        // Read the highest persisted sequence as a record value. In the
+        // scoped application, GlideAggregate MAX(sequence) can return an
+        // empty value for this field and restart the run at sequence 1.
+        // Ordering the ledger itself preserves the existing display sequence
+        // while Phase C's deterministic sys_ids remain the atomic claims.
+        var latest = this._newRecord(this.TABLES.ledger);
 
-        aggregate.addQuery('migration_run', runId);
-        aggregate.addAggregate('MAX', 'sequence');
-        aggregate.query();
+        latest.addQuery('migration_run', runId);
+        latest.orderByDesc('sequence');
+        latest.orderByDesc('sys_created_on');
+        latest.setLimit(1);
+        latest.query();
 
         var maximum = 0;
 
-        if (aggregate.next()) {
-            maximum = this._integer(
-                aggregate.getAggregate('MAX', 'sequence')
-            );
+        if (latest.next()) {
+            maximum = this._integer(latest.getValue('sequence'));
         }
 
         this._sequenceCache[runId] = maximum + 1;

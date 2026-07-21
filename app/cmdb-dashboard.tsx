@@ -33,6 +33,7 @@ import {
 import {
   deriveRemediationWorkQueue,
   isMaraObservationEvent,
+  sortTimelineByFreshness,
   type WorkQueueBucket,
   type WorkQueueItem,
   type WorkQueueItemSource,
@@ -1022,11 +1023,11 @@ function RemediateView(props: {
     selectedQueueItem.finding?.id &&
     selectedQueueItem.review?.id
   );
-  const selectedActivity = selectedCi ? timeline
+  const selectedActivity = selectedCi ? sortTimelineByFreshness(timeline
     .filter(event => {
       const haystack = `${event.recordName} ${event.reasoning} ${event.name}`.toLowerCase();
       return haystack.includes(selectedCi.name.toLowerCase()) || haystack.includes(selectedCi.id.toLowerCase());
-    })
+    }))
     .slice(-5)
     : [];
 

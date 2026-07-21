@@ -49,16 +49,18 @@ adapter. They invoked no live approval, Execute, Verify, event queue, or CMDB
 write action. The table above remains the dated pre-Phase-B3 read-only baseline
 until report mode is run again against refreshed lifecycle evidence.
 
-## Phase C Build-Only Status
+## Phase C Installed Build Status
 
-Phase C is source-controlled but deliberately not installed or live-validated.
-The separate `DotwalkersPhaseCTests.run()` suite registers 36 focused tests;
-`DotwalkersPhaseB3BTests.run()` remains byte-for-byte unchanged at 41 tests.
-Local Phase C smoke validation checks deterministic primary-key claims, exact
-parsed ledger comparisons, identifier-only approval plumbing, fixed decision
-values, preparation-only Mara behavior, and the no-live-action boundary.
+Phase C was installed in place on 2026-07-21. The separate
+`DotwalkersPhaseCTests.run()` suite passed 36/36 in ServiceNow;
+`DotwalkersPhaseB3BTests.run()` remained byte-for-byte unchanged and passed
+41/41. A fresh GET-only export then matched all six deployed Phase C source
+records exactly. No live approval, event queue, Execute, Verify, or CMDB write
+was sent.
 
-Remaining live acceptance work is unchanged: refresh the GET-only lifecycle
-report after deployment, run 23/23 B3A, exactly 41/41 B3B, and 36/36 Phase C,
-then obtain explicit action-time confirmation before one approval is allowed to
-continue into the later Execute-plus-Verify slice.
+The export also exposed historical ledger sequence values that can outrank
+newer canonical simulation evidence in the UI. The source-controlled
+corrective patch reads the highest sequence from the ordered ledger and sorts
+UI evidence by `sys_created_on` freshness. This corrective patch still needs
+in-place deployment and read-only verification. Explicit action-time
+confirmation remains required before any approval.

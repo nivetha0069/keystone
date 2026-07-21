@@ -36,6 +36,10 @@ assert.match(simulation, /approval_resume_prepared/);
 assert.match(simulation, /approval_resume_failed/);
 assert.match(simulation, /MARA_EVENT_QUEUE_FAILED/);
 assert.match(simulation, /TOKEN_NOT_QUEUED/);
+const nextSequence = simulation.slice(simulation.indexOf("_nextSequence: function"), simulation.indexOf("_parseObject: function"));
+assert.match(nextSequence, /this\._newRecord\(this\.TABLES\.ledger\)/);
+assert.match(nextSequence, /orderByDesc\('sequence'\)/);
+assert.equal(nextSequence.includes("new GlideAggregate"), false, "sequence lookup must read the ordered ledger record");
 assert.match(detail, /review_decision_id/);
 assert.match(detail, /policy_approved === false/);
 

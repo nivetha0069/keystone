@@ -100,8 +100,7 @@ names in compact detail when there is no matching existing choice.
 - Thin `ire_verify` adapter: 13/13
 - Phase B3A simulation service: 23/23
 - Phase B3B `ire_simulate` adapter and service contract: 41/41
-- Phase C approval binding and Mara preparation: 36 tests registered for the
-  later server-side deployment gate (build-only; not installed or run live)
+- Phase C approval binding and Mara preparation: 36/36 in ServiceNow
 
 No test sent a live Approve, Execute, Verify, approval-triggering event, or CMDB
 write request.
@@ -122,7 +121,7 @@ Required confirmation:
 **Approve staged CI `<sys_id>` at simulation fingerprint `<fingerprint>` and
 allow its automatic single Execute plus Verify continuation.**
 
-## Phase C Deployment Manifest (Do Not Install Yet)
+## Phase C Deployment Manifest
 
 | Table | Record | sys_id |
 |---|---|---|
@@ -131,8 +130,13 @@ allow its automatic single Execute plus Verify continuation.**
 | `sys_ws_operation` | `ire_approve` | `8a0393d9b4b9473da9ca706d46f40f22` |
 | `sysevent_script_action` | `Run Dotwalkers Mara` | `895b3eeb2bc6071060aefba6b891bfa1` |
 | `sys_script_include` | `DotwalkersMaraAgent` | `7a36feeb2b86071060aefba6b891bfb4` |
-| `sys_script_include` | `DotwalkersPhaseCTests` (new, test-only) | `c7b8e46ae735937162613280abfcd1b4` |
+| `sys_script_include` | `DotwalkersPhaseCTests` (test-only) | `2a2cc9589316cf10410e383efaba102f` |
 | `sysevent_register` | `x_kest_dotwalkers.mara.requested` (verify only) | `f51b36eb2bc6071060aefba6b891bf30` |
+
+The Phase C baseline above was installed in place on 2026-07-21 and a fresh
+GET-only export matched all six deployed source records exactly. The subsequent
+ledger-sequence corrective patch to `DotwalkersIreSimulationService` remains a
+source-controlled redeployment; it does not authorize a live approval.
 
 `approval_recorded`, `approval_handoff_queued`,
 `approval_handoff_retry_claimed`, `approval_handoff_failed`,
