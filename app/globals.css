@@ -1195,3 +1195,163 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 @media (max-width: 900px) {
   .mara-companion { bottom: 88px; }
 }
+
+/* ---------- Remediate workbench: 3-column responsive layout ---------- */
+
+/* Give the Remediate page breathing room under the sticky topbar and above
+   the shared PageNavigation. */
+.page { padding-top: 26px; padding-bottom: 44px; }
+
+/* Work queue buckets: fewer columns per row at laptop widths so numbers and
+   descriptions never crowd. */
+.work-queue-panel .queue-buckets { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+@media (max-width: 1600px) {
+  .work-queue-panel .queue-buckets { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .queue-bucket { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+@media (max-width: 1100px) {
+  .work-queue-panel .queue-buckets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .work-queue-panel .queue-buckets { grid-template-columns: 1fr; }
+}
+
+/* Guarantee bucket text wraps safely without pushing the grid wider. */
+.queue-bucket, .queue-bucket * { min-width: 0; overflow-wrap: anywhere; }
+.queue-bucket-top strong { word-break: break-word; }
+
+/* Remediation flow strip already patched earlier; force wrap here too. */
+.remediation-flow { grid-template-columns: 1fr; display: flex; flex-wrap: wrap; }
+
+/* New 3-column workbench layout: CI list | selected + actions | activity. */
+.workbench-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 34fr) minmax(0, 30fr) minmax(0, 36fr);
+  gap: 14px;
+  margin-top: 20px;
+  align-items: stretch;
+}
+.workbench-layout > .panel { min-width: 0; display: flex; flex-direction: column; }
+.staged-queue-panel, .ire-console-panel, .activity-panel { overflow: hidden; }
+
+/* Sticky panel headers so they stay visible while each column scrolls. */
+.panel-heading.sticky {
+  position: sticky; top: 0; z-index: 2; background: rgba(17, 20, 16, .95);
+  backdrop-filter: blur(6px); border-bottom: 1px solid var(--line);
+}
+
+/* Column 1: CI list scrolls independently. */
+.staged-queue-panel .staged-queue {
+  max-height: calc(100vh - 260px); overflow-y: auto; min-height: 340px;
+}
+
+/* Column 2: selected + rationale scrolls, action footer is sticky at the bottom. */
+.ire-console-panel { position: relative; }
+.ire-console-panel .ire-console {
+  min-width: 0; padding: 16px; overflow-y: auto;
+  max-height: calc(100vh - 320px); min-height: 340px;
+}
+.ire-action-footer {
+  position: sticky; bottom: 0; z-index: 2; padding: 12px 16px;
+  background: rgba(17, 20, 16, .95); border-top: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.ire-action-footer .ire-action-grid { margin: 0; }
+
+/* Column 3: activity scrolls. */
+.activity-panel .activity-feed {
+  max-height: calc(100vh - 260px); overflow-y: auto; min-height: 340px;
+}
+
+/* Selected CI card: reserve enough width for the name/class/source line. */
+.ire-console-panel .selected-ci-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px; padding: 14px;
+}
+.ire-console-panel .selected-ci-card .selected-ci-copy { min-width: 0; }
+.ire-console-panel .selected-ci-card .selected-ci-copy h3 {
+  margin: 6px 0 4px; font-size: 22px; line-height: 1.15;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.ire-console-panel .selected-ci-card .selected-ci-copy p { overflow-wrap: anywhere; }
+.ire-console-panel .selected-ci-meta {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-left: 0; border-top: 1px solid var(--line); padding-top: 10px;
+}
+.ire-console-panel .selected-ci-meta strong { overflow-wrap: anywhere; white-space: normal; }
+
+/* Readable summary counts row. */
+.workbench-counts {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px;
+  margin: 12px 0; background: var(--line); border: 1px solid var(--line);
+}
+.workbench-counts > div {
+  padding: 10px 12px; background: #0d100d; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.workbench-counts small { color: var(--faint); font: 8.5px var(--mono); letter-spacing: .1em; }
+.workbench-counts strong { color: var(--ink); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.workbench-counts-latest strong { color: var(--lime); font-size: 12px; }
+
+/* IRE action buttons: no overlap. Wrap at narrow widths, keep disabled clear. */
+.ire-action-grid {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 0;
+}
+.ire-action-grid button {
+  flex: 1 1 130px; min-width: 110px; max-width: 100%;
+  height: 40px; padding: 0 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ire-action-grid button[disabled] { opacity: .55; cursor: not-allowed; }
+
+/* Queue evidence — wrap long codes safely. */
+.queue-evidence code { overflow-wrap: anywhere; white-space: normal; }
+.ire-result-grid strong { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.correlation-list code { overflow-wrap: anywhere; }
+
+/* Activity feed sanitizer. */
+.activity-feed .activity-technical {
+  margin-top: 8px; padding: 8px 10px; background: rgba(199, 243, 77, .03);
+  border: 1px dashed var(--line);
+}
+.activity-feed .activity-technical > summary {
+  cursor: pointer; color: var(--faint); font: 8.5px var(--mono); letter-spacing: .09em;
+}
+.activity-feed .activity-technical > pre {
+  margin: 8px 0 0; padding: 8px; max-height: 220px; overflow: auto;
+  color: var(--muted); font: 9.5px/1.5 var(--mono);
+  background: #0d100d; border: 1px solid var(--line);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.activity-feed p { overflow-wrap: anywhere; }
+
+/* Responsive: switch to 2-up (list + selected) with activity full-width below. */
+@media (max-width: 1450px) {
+  .workbench-layout {
+    grid-template-columns: minmax(0, 40fr) minmax(0, 60fr);
+    grid-template-areas: "queue console" "activity activity";
+  }
+  .staged-queue-panel { grid-area: queue; }
+  .ire-console-panel { grid-area: console; }
+  .activity-panel { grid-area: activity; }
+  .activity-panel .activity-feed { max-height: 520px; }
+  .ire-console-panel .ire-console,
+  .staged-queue-panel .staged-queue { max-height: 540px; }
+}
+
+/* Mobile: single column. */
+@media (max-width: 900px) {
+  .workbench-layout {
+    grid-template-columns: 1fr;
+    grid-template-areas: "queue" "console" "activity";
+  }
+  .ire-console-panel .selected-ci-meta { grid-template-columns: 1fr 1fr 1fr; }
+  .workbench-counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .page { padding-left: 14px; padding-right: 14px; padding-bottom: 130px; }
+}
+
+/* Keep Mara clear of the action footer and evidence area. */
+@media (min-width: 901px) {
+  .mara-companion { right: 20px; bottom: 20px; }
+  .mara-companion.mara-open { max-width: 320px; }
+}

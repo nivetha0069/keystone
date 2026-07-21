@@ -39,6 +39,7 @@ import {
   type WorkQueueBucket,
   type WorkQueueItem,
   type WorkQueueItemSource,
+  type WorkQueueSummary,
 } from "./lib/cmdb/work-queue";
 
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
@@ -1007,32 +1008,134 @@ function RemediateView(props: {
       {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
     </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding)}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
     <section className="workbench-layout">
-      <div className="panel staged-workbench">
-        <div className="panel-heading"><div><span className="section-index">03</span><div><h2>IRE lifecycle</h2><p>Browser requests contain only staged record identifiers and correlation metadata.</p></div></div><span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span></div>
-        <div className="workbench-body">
-          <div className="staged-queue">
-            {queue.items.map(item => <button key={item.id} className={selectedCi?.id === item.id ? "staged-row selected" : "staged-row"} onClick={() => setSelectedCiId(item.id)}><span className={`ci-icon status-${item.ci.status}`}><Icon name="database" size={14} /></span><span><strong>{item.ci.name}</strong><small>{item.stagedCiId} / {ireLifecycleLabel(item.lifecycle)}</small></span><OperationPill value={item.ci.operation} /></button>)}
-            {!stagedCis.length && <div className="workbench-empty"><Icon name="database" size={22} /><strong>No staged CIs loaded</strong><p>Load an active migration run before using IRE actions.</p></div>}
-          </div>
-          <div className="ire-console">
-            <div className="selected-ci-card"><div><span className="eyebrow accent">SELECTED STAGED CI</span><h3>{selectedCi?.name ?? "No record selected"}</h3><p>{selectedCi ? `${selectedCi.className} / ${selectedCi.source} / ${selectedCi.ip}` : "Choose a staged CI to start simulation."}</p></div><div className="selected-ci-meta"><div><small>RUN</small><strong>{activeRunId ? activeRunId.slice(0, 8) : "none"}</strong></div><div><small>STAGED CI</small><strong>{selectedCi ? (selectedCi.stagedCiId || selectedCi.id).slice(0, 8) : "none"}</strong></div><div><small>CONFIDENCE</small><strong>{selectedCi ? `${Math.round(selectedCi.confidence * 100)}%` : "none"}</strong></div></div></div>
-            {selectedQueueItem && <div className="queue-evidence"><div><span className={`source-dot ${selectedQueueItem.source}`} /><strong>{sourceLabel(selectedQueueItem.source)}</strong><p>{selectedQueueItem.reason}</p></div><div>{selectedQueueItem.evidence.map(item => <code key={item}>{item}</code>)}</div></div>}
-            <div className="ire-action-grid">
-              <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating..." : "Simulate"}</button>
-              <button className="ghost-button" title="Authorizes one IRE execution for this staged CI and simulation fingerprint." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving..." : "Approve once"}</button>
-              <button className="ghost-button danger" disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("rejected")}><Icon name="x" size={15} /> Reject</button>
-              <button className="primary-button" title="Advanced recovery control" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || lifecycle !== "approved_for_execution" || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing..." : "Manual execute"}</button>
-              <button className="ghost-button" disabled={!liveRunReady || !executionCorrelation || lifecycle !== "executed_pending_verification" || Boolean(pendingAction)} onClick={() => void runIreAction("verify", { execution_correlation_id: executionCorrelation ?? "" })}><Icon name="check" size={15} /> {pendingAction === "verify" ? "Verifying..." : "Verify"}</button>
+      <div className="panel staged-queue-panel">
+        <div className="panel-heading compact sticky">
+          <div><span className="section-index">03</span><div><h2>Staged CIs</h2><p>Ordered by lifecycle bucket.</p></div></div>
+          <span className="panel-stat">{stagedCis.length}</span>
+        </div>
+        <div className="staged-queue">
+          {queue.items.map(item => <button key={item.id} className={selectedCi?.id === item.id ? "staged-row selected" : "staged-row"} onClick={() => setSelectedCiId(item.id)}>
+            <span className={`ci-icon status-${item.ci.status}`}><Icon name="database" size={14} /></span>
+            <span><strong>{item.ci.name}</strong><small>{item.stagedCiId} / {ireLifecycleLabel(item.lifecycle)}</small></span>
+            <OperationPill value={item.ci.operation} />
+          </button>)}
+          {!stagedCis.length && <div className="workbench-empty"><Icon name="database" size={22} /><strong>No staged CIs loaded</strong><p>Load an active migration run before using IRE actions.</p></div>}
+        </div>
+      </div>
+
+      <div className="panel ire-console-panel">
+        <div className="panel-heading compact sticky">
+          <div><span className="section-index">04</span><div><h2>IRE lifecycle</h2><p>One staged record at a time.</p></div></div>
+          <span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span>
+        </div>
+        <div className="ire-console">
+          <div className="selected-ci-card">
+            <div className="selected-ci-copy">
+              <span className="eyebrow accent">SELECTED STAGED CI</span>
+              <h3>{selectedCi?.name ?? "No record selected"}</h3>
+              <p>{selectedCi ? `${selectedCi.className} · ${selectedCi.source} · ${selectedCi.ip}` : "Choose a staged CI to start simulation."}</p>
             </div>
-            {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
-            <label className="approval-rationale"><span>APPROVAL RATIONALE</span><textarea value={rationale} onChange={event => setRationale(event.target.value)} /></label>
-            <IreResultPanel workbench={workbench} lifecycle={lifecycle} playback={selectedQueueItem} />
+            <div className="selected-ci-meta">
+              <div><small>RUN</small><strong title={activeRunId}>{activeRunId ? activeRunId.slice(0, 8) : "none"}</strong></div>
+              <div><small>STAGED CI</small><strong title={selectedCi?.stagedCiId || selectedCi?.id}>{selectedCi ? (selectedCi.stagedCiId || selectedCi.id).slice(0, 8) : "none"}</strong></div>
+              <div><small>CONFIDENCE</small><strong>{selectedCi ? `${Math.round(selectedCi.confidence * 100)}%` : "none"}</strong></div>
+            </div>
+          </div>
+
+          <WorkbenchCountsRow queue={queue} lifecycle={lifecycle} />
+
+          {selectedQueueItem && <div className="queue-evidence">
+            <div>
+              <span className={`source-dot ${selectedQueueItem.source}`} />
+              <strong>{sourceLabel(selectedQueueItem.source)}</strong>
+              <p>{selectedQueueItem.reason}</p>
+            </div>
+            <div>{selectedQueueItem.evidence.slice(0, 6).map(item => <code key={item}>{item}</code>)}</div>
+          </div>}
+
+          {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
+          <label className="approval-rationale"><span>APPROVAL RATIONALE</span><textarea value={rationale} onChange={event => setRationale(event.target.value)} /></label>
+          <IreResultPanel workbench={workbench} lifecycle={lifecycle} playback={selectedQueueItem} />
+        </div>
+        <div className="ire-action-footer">
+          <div className="ire-action-grid">
+            <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating…" : "Simulate"}</button>
+            <button className="ghost-button" title="Authorizes one IRE execution for this staged CI and simulation fingerprint." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("approved")}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving…" : "Approve"}</button>
+            <button className="ghost-button danger" disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={() => approve("rejected")}><Icon name="x" size={15} /> Reject</button>
+            <button className="primary-button" title="Advanced recovery control" disabled={!liveRunReady || !approved || rejected || !simulationCorrelation || lifecycle !== "approved_for_execution" || Boolean(pendingAction)} onClick={() => void runIreAction("execute", { simulation_correlation_id: simulationCorrelation ?? "" })}><Icon name="shield" size={15} /> {pendingAction === "execute" ? "Executing…" : "Execute"}</button>
+            <button className="ghost-button" disabled={!liveRunReady || !executionCorrelation || lifecycle !== "executed_pending_verification" || Boolean(pendingAction)} onClick={() => void runIreAction("verify", { execution_correlation_id: executionCorrelation ?? "" })}><Icon name="check" size={15} /> {pendingAction === "verify" ? "Verifying…" : "Verify"}</button>
           </div>
         </div>
       </div>
-      <aside className="panel activity-panel"><div className="panel-heading compact"><div><span className="section-index">04</span><div><h2>Lifecycle activity</h2><p>Derived from action results and Event Ledger playback.</p></div></div></div><div className="activity-feed">{activityRows(workbench, selectedActivity).map(row => <article key={row.id} className={row.tone}><small>{row.label}</small><strong>{row.title}</strong><p>{row.detail}</p></article>)}</div></aside>
+
+      <aside className="panel activity-panel">
+        <div className="panel-heading compact sticky">
+          <div><span className="section-index">05</span><div><h2>Lifecycle activity</h2><p>Derived from action results and Event Ledger playback.</p></div></div>
+        </div>
+        <div className="activity-feed">
+          {activityRows(workbench, selectedActivity).map(row => <ActivityFeedRow key={row.id} row={row} />)}
+        </div>
+      </aside>
     </section>
   </div>;
+}
+
+function WorkbenchCountsRow({ queue, lifecycle }: { queue: WorkQueueSummary; lifecycle: IreLifecycleState }) {
+  const counts = {
+    ready: queue.items.filter(item => item.bucket === "ready_to_simulate").length,
+    approval: queue.items.filter(item => item.bucket === "needs_approval").length,
+    verify: queue.items.filter(item => item.bucket === "needs_verification").length,
+    verified: queue.items.filter(item => item.bucket === "verified").length,
+    blocked: queue.items.filter(item => item.bucket === "blocked" || item.bucket === "simulation_failed").length,
+  };
+  return <div className="workbench-counts">
+    <div><small>READY</small><strong>{counts.ready}</strong></div>
+    <div><small>APPROVAL</small><strong>{counts.approval}</strong></div>
+    <div><small>VERIFY</small><strong>{counts.verify}</strong></div>
+    <div><small>VERIFIED</small><strong>{counts.verified}</strong></div>
+    <div><small>BLOCKED</small><strong>{counts.blocked}</strong></div>
+    <div className="workbench-counts-latest"><small>LATEST</small><strong>{ireLifecycleLabel(lifecycle)}</strong></div>
+  </div>;
+}
+
+function ActivityFeedRow({ row }: { row: { id: string; label: string; title: string; detail: string; tone: string } }) {
+  const { readable, technical } = splitActivityDetail(row.detail);
+  return <article className={row.tone}>
+    <small>{row.label}</small>
+    <strong>{row.title}</strong>
+    <p>{readable}</p>
+    {technical && <details className="activity-technical">
+      <summary>Technical evidence</summary>
+      <pre>{technical}</pre>
+    </details>}
+  </article>;
+}
+
+function splitActivityDetail(detail: string): { readable: string; technical?: string } {
+  const trimmed = (detail || "").trim();
+  if (!trimmed) return { readable: "—" };
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    // Full-body JSON → hide behind Technical evidence, show a short summary.
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const readable = typeof parsed.summary === "string" ? parsed.summary
+        : typeof parsed.message === "string" ? parsed.message
+        : typeof parsed.action === "string" ? `Action: ${parsed.action}`
+        : "Structured event recorded.";
+      return { readable, technical: JSON.stringify(parsed, null, 2) };
+    } catch {
+      return { readable: "Raw JSON payload recorded.", technical: trimmed };
+    }
+  }
+  // Mixed text + inline JSON — strip embedded braces into technical.
+  const braceStart = trimmed.indexOf("{");
+  if (braceStart > 0 && trimmed.trimEnd().endsWith("}")) {
+    return {
+      readable: trimmed.slice(0, braceStart).trim().replace(/[|:,]\s*$/, ""),
+      technical: trimmed.slice(braceStart).trim(),
+    };
+  }
+  return { readable: trimmed };
 }
 
 function WorkQueueBucketCard({ bucket, selectedId, onSelect }: { bucket: WorkQueueBucket; selectedId?: string; onSelect: (id: string) => void }) {
