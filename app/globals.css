@@ -833,7 +833,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 /* Mara — CMDB Modernization companion mascot */
 .mara-companion { position: fixed; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; pointer-events: none; font-family: inherit; }
 .mara-companion > * { pointer-events: auto; }
-.mara-toggle { width: 84px; height: 84px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; display: grid; place-items: center; filter: drop-shadow(0 8px 22px rgba(0, 0, 0, .5)); transition: transform .2s ease; }
+.mara-toggle { width: 108px; height: 108px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; display: grid; place-items: center; filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .55)); transition: transform .2s ease; }
 .mara-toggle:hover { transform: translateY(-2px); }
 .mara-toggle:focus-visible { outline: 2px solid var(--lime); outline-offset: 4px; }
 .mara-svg { width: 100%; height: 100%; display: block; overflow: visible; animation: mara-float 5.5s ease-in-out infinite; }
@@ -932,7 +932,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 
 @media (max-width: 700px) {
   .mara-companion { right: 12px; bottom: 12px; gap: 8px; max-width: calc(100vw - 24px); }
-  .mara-toggle { width: 62px; height: 62px; }
+  .mara-toggle { width: 78px; height: 78px; }
   .mara-bubble { width: min(272px, calc(100vw - 24px)); max-width: min(272px, calc(100vw - 24px)); max-height: calc(100vh - 100px); padding: 11px 12px 10px; }
   .mara-insights { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); gap: 4px; }
   .mara-insight { padding: 4px 6px; }
