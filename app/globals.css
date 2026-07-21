@@ -1767,6 +1767,25 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .journey-chapter-caret { transition: none; }
 }
 
+/* Dataset identity — the "which dataset am I looking at?" chip in the top bar. */
+.dataset-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.dataset-identity .eyebrow { font: 9px var(--mono); letter-spacing: .16em; color: var(--muted); text-transform: uppercase; display: block; }
+.dataset-identity strong { display: block; font-size: 15px; font-weight: 600; color: var(--ink); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dataset-identity.dataset-active { padding: 4px 8px 4px 4px; border: 1px solid var(--line); background: linear-gradient(90deg, rgba(199, 243, 77, .04), transparent); border-radius: 2px; }
+.dataset-identity-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dataset-source-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line-strong); background: #0a0d0a; box-shadow: inset 0 1px 0 rgba(255,255,255,.04), inset 0 -1px 0 rgba(0,0,0,.5); border-radius: 2px; }
+.dataset-source-glyph { font-size: 14px; line-height: 1; }
+.dataset-source-name { font: 10px var(--mono); letter-spacing: .12em; color: var(--lime); text-transform: uppercase; }
+.dataset-identity-meta { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.dataset-number { padding: 2px 6px; border: 1px solid var(--line-strong); background: rgba(199, 243, 77, .06); color: var(--lime); font: 9.5px var(--mono); letter-spacing: .1em; }
+.dataset-sys-id { padding: 2px 6px; border: 1px dashed var(--line); color: var(--muted); font: 9.5px var(--mono); letter-spacing: .1em; }
+.dataset-identity.dataset-import { padding-left: 4px; }
+.dataset-identity.dataset-import strong { color: var(--lime); }
+@media (max-width: 900px) {
+  .dataset-identity strong { max-width: 200px; }
+  .dataset-source-name, .dataset-number, .dataset-sys-id { font-size: 9px; }
+}
+
 /* Source adapter picker — sits inside the paste-mode intake column. */
 .adapter-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; margin-top: 12px; padding: 12px; background: #0d100d; border: 1px solid var(--line); }
 .adapter-picker > label { display: flex; flex-direction: column; gap: 4px; }

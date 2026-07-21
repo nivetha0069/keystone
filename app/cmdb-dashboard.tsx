@@ -659,7 +659,16 @@ export function CmdbDashboard() {
       </nav>
       <div className="sidebar-rule" />
       <div className="governance-card"><span className="shield"><Icon name="shield" size={17} /></span><div><small>GOVERNANCE LOCK</small><strong>IRE is the only write path</strong><p>Every CMDB mutation is reconciled, attributed, and logged.</p></div></div>
-      <div className="sidebar-bottom"><div className={`api-dot ${apiState}`} /><div><strong>{apiState === "live" ? "Live API" : apiState === "partial" ? "Partial API" : apiState === "connecting" ? "Connecting" : apiState === "error" ? "API error" : "Demo snapshot"}</strong><small>Last sync {lastSync}</small></div><button onClick={() => void loadData(activeRunId)} aria-label="Refresh data" title="Refresh data"><Icon name="refresh" size={16} /></button></div>
+      <div className="sidebar-bottom">
+        <div className={`api-dot ${apiState}`} />
+        <div>
+          <strong>{apiState === "live" ? "Live API" : apiState === "partial" ? "Partial API" : apiState === "connecting" ? "Connecting" : apiState === "error" ? "API error" : "No active run"}</strong>
+          <small>{activeRunId
+            ? `${runRecord?.summary?.trim() || activeRunLabel || "Dataset"} · ${(runRecord?.sourceSystem || "?").toLowerCase()}`
+            : `Last sync ${lastSync}`}</small>
+        </div>
+        <button onClick={() => void loadData(activeRunId)} aria-label="Refresh data" title="Refresh data"><Icon name="refresh" size={16} /></button>
+      </div>
     </aside>
 
     <main className="main-content">
@@ -682,7 +691,12 @@ export function CmdbDashboard() {
           >
             <Icon name="menu" size={18} />
           </button>
-          <div><span className="eyebrow">{section === "import" ? "DATA INTAKE" : "MODERNIZATION RUN"}</span><strong>{section === "import" ? "NEW MIGRATION RUN" : activeRunLabel || "ALL MIGRATION RUNS"}</strong></div>
+          <DatasetIdentity
+            section={section}
+            activeRunLabel={activeRunLabel}
+            activeRunId={activeRunId}
+            runRecord={runRecord}
+          />
         </div>
         <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><a className="ghost-button" href={activeRunId ? `/ai-usage?run=${encodeURIComponent(activeRunId)}` : "/ai-usage"}><Icon name="spark" size={15} /> AI Usage</a><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
@@ -1290,6 +1304,73 @@ function RunSummarySection({ timeline, queue }: { timeline: TimelineEvent[]; que
       <pre>{rawJson}</pre>
     </details>}
   </div>;
+}
+
+/**
+ * Dataset identity chip that lives in the top bar. Answers the "which
+ * dataset am I looking at?" question in a single glance — source system,
+ * user's run name, ServiceNow run number, and short sys_id. Everything
+ * except the eyebrow label is pulled from the real /run response; no
+ * invented text.
+ */
+function DatasetIdentity(props: {
+  section: Section;
+  activeRunLabel: string;
+  activeRunId: string;
+  runRecord: MaraRunRecord | null;
+}) {
+  const { section, activeRunLabel, activeRunId, runRecord } = props;
+  if (section === "import") {
+    return <div className="dataset-identity dataset-import">
+      <span className="eyebrow">DATA INTAKE</span>
+      <strong>NEW MIGRATION RUN</strong>
+    </div>;
+  }
+  if (!activeRunId) {
+    return <div className="dataset-identity dataset-none">
+      <span className="eyebrow">MODERNIZATION RUN</span>
+      <strong>ALL MIGRATION RUNS</strong>
+    </div>;
+  }
+  const displayName = runRecord?.summary?.trim() || activeRunLabel || "Untitled dataset";
+  const sourceSystem = runRecord?.sourceSystem?.trim() || "unknown";
+  const runNumber = runRecord?.number?.trim() || "";
+  const shortId = activeRunId.slice(0, 8).toUpperCase();
+  const sourceGlyph = sourceSystemGlyph(sourceSystem);
+  return <div className="dataset-identity dataset-active">
+    <span className="dataset-source-badge" title={`Source system: ${sourceSystem}`}>
+      <span className="dataset-source-glyph" aria-hidden="true">{sourceGlyph}</span>
+      <span className="dataset-source-name">{sourceSystemLabel(sourceSystem)}</span>
+    </span>
+    <div className="dataset-identity-copy">
+      <span className="eyebrow">DATASET · {sourceSystem.toUpperCase()}</span>
+      <strong title={displayName}>{displayName}</strong>
+    </div>
+    <div className="dataset-identity-meta">
+      {runNumber && <span className="dataset-number" title="ServiceNow run number">{runNumber}</span>}
+      <span className="dataset-sys-id" title={activeRunId}>{shortId}</span>
+    </div>
+  </div>;
+}
+
+function sourceSystemGlyph(source: string) {
+  switch (source.toLowerCase()) {
+    case "file": return "📁";
+    case "url": return "🌐";
+    case "paste": return "✎";
+    case "api": return "⇄";
+    default: return "◈";
+  }
+}
+
+function sourceSystemLabel(source: string) {
+  switch (source.toLowerCase()) {
+    case "file": return "File upload";
+    case "url": return "URL fetch";
+    case "paste": return "Pasted payload";
+    case "api": return "API push";
+    default: return source || "Unknown source";
+  }
 }
 
 // The named agents that operate on staged records. Order controls how they
