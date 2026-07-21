@@ -795,6 +795,8 @@ function ComprehendView(props: {
       <Kpi label="Staged relationships" value={(resourceState.relationships === "live" ? relationships.length : health.relationshipCount).toLocaleString()} delta={proposedEdgeDelta} tone="coral" icon="spark" />
     </section>
 
+    <WorkerRoster timeline={timeline} />
+
     <section className="panel playback-panel" id="event-ledger">
       <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Event Ledger playback</h2><p>Replay the ordered ServiceNow audit trail without collapsing agent actions.</p></div></div><div className="playback-controls"><span>{playing ? "PLAYING" : totalEvents ? `EVENT ${activeStep + 1} / ${totalEvents}` : "NO EVENTS"}</span><button className="play-button" disabled={!totalEvents} onClick={startPlayback}><Icon name={playing ? "pause" : "play"} size={16} />{playing ? "Pause" : activeStep >= totalEvents - 1 && totalEvents ? "Replay" : "Play run"}</button></div></div>
       <div className="stepper">
@@ -1166,26 +1168,38 @@ function SelectedCiIreEvidence(props: {
   const { selectedCi, selectedQueueItem, workbench } = props;
   if (!selectedCi) return null;
 
-  // Precedence: real CI-scoped response → strategy failure → legitimate
-  // non-live source (ledger/records/derived) → empty state. A run-level
-  // Mara observation is never eligible here.
+  // Precedence: classify simulation failures FIRST so a strategy/config
+  // error surfaces the dedicated card even though the workbench still
+  // holds a failure response. Then real successful CI-scoped response,
+  // then legitimate non-live source, then empty state. A run-level Mara
+  // observation is never eligible here.
+  const failure = classifySimulationFailure(workbench, selectedCi);
+  if (failure.kind === "strategy") {
+    return <StrategyFailureCard failure={failure} selectedCi={selectedCi} />;
+  }
+
   const hasResponse = hasCiSpecificIreResponse(workbench);
   if (hasResponse) {
-    return <div className="ci-evidence-card ci-scope-live">
+    // Preserve the exact backend message when the simulation failed but
+    // wasn't a strategy failure — classify as an execution failure and
+    // paint the card red rather than pretending it succeeded.
+    const isExecutionFailure = failure.kind === "execution";
+    return <div className={`ci-evidence-card ${isExecutionFailure ? "ci-scope-execution-error" : "ci-scope-live"}`}>
       <div className="ci-evidence-head">
-        <span className="ci-evidence-scope">CI-SPECIFIC · SELECTED STAGED CI</span>
-        <strong>Live IRE response</strong>
+        <span className="ci-evidence-scope">
+          {isExecutionFailure ? "CI-SPECIFIC · IRE EXECUTION FAILURE" : "CI-SPECIFIC · SELECTED STAGED CI"}
+        </span>
+        <strong>{isExecutionFailure ? "Simulation failed" : "Live IRE response"}</strong>
       </div>
-      <p className="ci-evidence-message">{selectedQueueItem?.reason || "ServiceNow returned an IRE response for this staged CI."}</p>
+      <p className="ci-evidence-message">
+        {isExecutionFailure
+          ? failure.message
+          : selectedQueueItem?.reason || "ServiceNow returned an IRE response for this staged CI."}
+      </p>
       <div className="ci-evidence-chips">
         {selectedQueueItem?.evidence.slice(0, 6).map((item, index) => <code key={`${item}-${index}`}>{item}</code>)}
       </div>
     </div>;
-  }
-
-  const failure = classifySimulationFailure(workbench, selectedCi);
-  if (failure.kind === "strategy") {
-    return <StrategyFailureCard failure={failure} selectedCi={selectedCi} />;
   }
 
   // Non-Mara ledger evidence (real per-CI event that isn't a live workbench
@@ -1276,6 +1290,112 @@ function RunSummarySection({ timeline, queue }: { timeline: TimelineEvent[]; que
       <pre>{rawJson}</pre>
     </details>}
   </div>;
+}
+
+// The named agents that operate on staged records. Order controls how they
+// render in the roster — foreman first, then the specialist workers, then
+// the machinist. Non-listed actors are still shown but at the tail.
+const KNOWN_WORKERS: Array<{
+  name: string;
+  role: string;
+  station: string;
+  glyph: string;
+}> = [
+  { name: "Mara",   role: "Foreman",     station: "Run oversight",       glyph: "M" },
+  { name: "Router", role: "Intake",      station: "Import staging",      glyph: "R" },
+  { name: "Atlas",  role: "Classifier",  station: "Class proposal",      glyph: "A" },
+  { name: "Scout",  role: "Duplicates",  station: "Duplicate scan",      glyph: "S" },
+  { name: "Weaver", role: "Relations",   station: "Relationship weave",  glyph: "W" },
+  { name: "Sentry", role: "Gatekeeper",  station: "Confidence gate",     glyph: "G" },
+  { name: "Ledger", role: "Recorder",    station: "Event ledger",        glyph: "L" },
+  { name: "IRE",    role: "Machinist",   station: "Reconcile + execute", glyph: "I" },
+];
+
+/**
+ * Roster strip: one card per agent that actually contributed to this run.
+ * Attribution is real — an agent only appears if timeline events cite it.
+ * Each card carries the worker's role, station, latest observed tool call,
+ * and event count. Sourced purely from the ServiceNow event ledger.
+ */
+function WorkerRoster({ timeline }: { timeline: TimelineEvent[] }) {
+  const byActor = new Map<string, { count: number; latest?: TimelineEvent }>();
+  for (const event of timeline) {
+    const actor = (event.source || "").trim();
+    if (!actor) continue;
+    const entry = byActor.get(actor) ?? { count: 0, latest: undefined };
+    entry.count++;
+    if (!entry.latest || event.seq >= entry.latest.seq) entry.latest = event;
+    byActor.set(actor, entry);
+  }
+  if (byActor.size === 0) {
+    return <section className="worker-roster empty">
+      <div className="worker-roster-head">
+        <span className="section-index">02</span>
+        <div><h2>Agent roster</h2><p>Named workers appear here when their tool calls hit the Event Ledger.</p></div>
+      </div>
+      <p className="worker-roster-empty">No agents have signed in for this run yet.</p>
+    </section>;
+  }
+  const cards: Array<{ name: string; role: string; station: string; glyph: string; count: number; latest?: TimelineEvent; unknown?: boolean }> = [];
+  const seen = new Set<string>();
+  for (const worker of KNOWN_WORKERS) {
+    const entry = [...byActor.entries()].find(([actor]) => actor.toLowerCase() === worker.name.toLowerCase());
+    if (entry) {
+      cards.push({ ...worker, count: entry[1].count, latest: entry[1].latest });
+      seen.add(entry[0].toLowerCase());
+    }
+  }
+  for (const [actor, entry] of byActor) {
+    if (seen.has(actor.toLowerCase())) continue;
+    cards.push({
+      name: actor,
+      role: "External",
+      station: "Ad-hoc contributor",
+      glyph: actor[0]?.toUpperCase() || "?",
+      count: entry.count,
+      latest: entry.latest,
+      unknown: true,
+    });
+  }
+  return <section className="worker-roster">
+    <div className="worker-roster-head">
+      <span className="section-index">02</span>
+      <div><h2>Agent roster</h2><p>Named workers on the floor for this run. Only agents that emitted ledger events appear.</p></div>
+    </div>
+    <ul className="worker-roster-grid">
+      {cards.map(card => <WorkerCard key={card.name} card={card} />)}
+    </ul>
+  </section>;
+}
+
+function WorkerCard({ card }: { card: { name: string; role: string; station: string; glyph: string; count: number; latest?: TimelineEvent; unknown?: boolean } }) {
+  const latest = card.latest;
+  const toneClass = latest?.status === "error" ? "warn"
+    : latest?.status === "active" ? "active"
+    : latest?.status === "complete" ? "good"
+    : "muted";
+  const rawDetail = (latest?.reasoning || "").trim();
+  // Never leak Mara observation JSON blobs; show a stock line for those.
+  const looksStructured = /^\s*[{[]|Observation\s*:/i.test(rawDetail);
+  const cleanDetail = looksStructured
+    ? "Structured observation recorded — open the ledger for source."
+    : rawDetail.replace(/\s+/g, " ").slice(0, 140) || "No tool call recorded.";
+  return <li className={`worker-card worker-${toneClass}${card.unknown ? " worker-unknown" : ""}`}>
+    <div className="worker-avatar" aria-hidden="true">{card.glyph}</div>
+    <div className="worker-body">
+      <div className="worker-name-row">
+        <strong>{card.name}</strong>
+        <span className="worker-role">{card.role}</span>
+      </div>
+      <small className="worker-station">STATION · {card.station}</small>
+      <p className="worker-tool">{cleanDetail}</p>
+      <div className="worker-meta">
+        <span className={`worker-pilot worker-pilot-${toneClass}`} aria-hidden="true" />
+        <span>{card.count} tool call{card.count === 1 ? "" : "s"}</span>
+        {latest && <span className="worker-latest">last: {latest.name}</span>}
+      </div>
+    </div>
+  </li>;
 }
 
 function WorkbenchCountsRow({ queue, lifecycle }: { queue: WorkQueueSummary; lifecycle: IreLifecycleState }) {

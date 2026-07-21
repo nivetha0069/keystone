@@ -7,7 +7,9 @@ const fs = require("node:fs");
 const { chromium } = require("@playwright/test");
 
 const BASE = process.env.KEYSTONE_URL || "http://localhost:3000";
-const RUN = "e0ac4df32b82871060aefba6b891bf5b";
+// The run the user was staring at when they hit the strategy failure —
+// Exchange Online on cmdb_ci_service, 10 CIs, one BLOCKED bucket.
+const RUN = process.env.KEYSTONE_RUN_ID || "e67a61802b528b1060aefba6b891bfd1";
 
 (async () => {
   const outDir = path.resolve(__dirname, "..", "test-results", "factory");
@@ -30,6 +32,28 @@ const RUN = "e0ac4df32b82871060aefba6b891bf5b";
     const shot = path.join(outDir, `${section}.png`);
     await page.screenshot({ path: shot, fullPage: false });
     console.log(`  ${section} → ${shot}`);
+  }
+
+  // On Remediate, click the blocked-bucket item (Exchange Online failed
+  // with the strategy error) to prove the StrategyFailureCard renders.
+  const blockedRow = page.locator(".queue-bucket.blocked .queue-preview button, .queue-bucket.simulation_failed .queue-preview button").first();
+  if ((await blockedRow.count()) > 0) {
+    await blockedRow.click().catch(() => {});
+    await page.waitForTimeout(3000);
+    const sim = page.locator(".ire-action-grid button:has-text(\"Simulate\")").first();
+    if ((await sim.count()) > 0 && !(await sim.isDisabled().catch(() => true))) {
+      const [res] = await Promise.all([
+        page.waitForResponse(r => r.url().includes("/api/cmdb/ire/simulate"), { timeout: 15_000 }).catch(() => null),
+        sim.click(),
+      ]);
+      console.log(`  Simulate on blocked CI → ${res ? res.status() : "no response"}`);
+      await page.waitForTimeout(3000);
+    }
+    const shot = path.join(outDir, "remediate-strategy-failure.png");
+    await page.screenshot({ path: shot, fullPage: false });
+    console.log(`  strategy-failure card → ${shot}`);
+  } else {
+    console.log("  (no blocked bucket to exercise)");
   }
 
   // Also grab a fresh Mara screenshot at the new size, tucked on-screen.

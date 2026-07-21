@@ -460,6 +460,8 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .ci-evidence-card { margin-top: 12px; padding: 12px 13px; background: #0d100d; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .ci-evidence-card.ci-scope-live { border-color: rgba(89, 197, 139, .35); box-shadow: inset 3px 0 var(--green); }
 .ci-evidence-card.ci-scope-strategy-error { border-color: rgba(255, 101, 66, .38); box-shadow: inset 3px 0 var(--coral); }
+.ci-evidence-card.ci-scope-execution-error { border-color: rgba(232, 178, 61, .42); box-shadow: inset 3px 0 var(--amber); }
+.ci-evidence-card.ci-scope-execution-error .ci-evidence-scope { color: var(--amber); }
 .ci-evidence-card.ci-scope-empty { border-style: dashed; }
 .ci-evidence-head { display: flex; flex-direction: column; gap: 3px; }
 .ci-evidence-scope { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
@@ -1764,6 +1766,38 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .journey-chapter.active .journey-chapter-node { animation: none; }
   .journey-chapter-caret { transition: none; }
 }
+
+/* Worker roster — real named agents (Router / Atlas / Scout / Weaver /
+   Sentry / Ledger / Mara / IRE) that emitted events for this run. Sourced
+   from event.source, never invented. */
+.worker-roster { margin: 20px 0; padding: 16px 18px; background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 30%), var(--surface); border: 1px solid var(--line); position: relative; }
+.worker-roster::before, .worker-roster::after { content: ""; position: absolute; width: 4px; height: 4px; border-radius: 50%; top: 6px; background: radial-gradient(circle at 30% 30%, rgba(199, 243, 77, .55), rgba(89, 100, 72, .8) 55%, #0a0c0b 85%); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5); }
+.worker-roster::before { left: 6px; } .worker-roster::after { right: 6px; }
+.worker-roster.empty { padding: 12px 16px; }
+.worker-roster-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.worker-roster-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.worker-roster-head p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+.worker-roster-empty { margin: 8px 0 0; color: var(--faint); font-size: 12px; font-style: italic; }
+.worker-roster-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.worker-card { display: grid; grid-template-columns: 44px 1fr; gap: 12px; padding: 12px 13px; background: #0d100d; border: 1px solid var(--line); position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,.03), inset 0 -1px 0 rgba(0,0,0,.4); transition: border-color .18s ease, box-shadow .18s ease; }
+.worker-card:hover { border-color: var(--line-strong); box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.4), 0 0 12px rgba(199, 243, 77, .08); }
+.worker-card.worker-active { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.4), inset 3px 0 var(--lime); }
+.worker-card.worker-good { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.4), inset 3px 0 var(--green); }
+.worker-card.worker-warn { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.4), inset 3px 0 var(--coral); }
+.worker-card.worker-unknown { border-style: dashed; }
+.worker-avatar { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--line-strong); background: linear-gradient(180deg, #1c2119, #0f130e); box-shadow: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.5); color: var(--lime); font: 600 15px var(--mono); letter-spacing: .05em; text-shadow: 0 0 8px rgba(199, 243, 77, .45); border-radius: 3px; }
+.worker-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.worker-name-row { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.worker-name-row strong { font-size: 13px; font-weight: 600; }
+.worker-role { font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--faint); }
+.worker-station { font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.worker-tool { margin: 4px 0 4px; color: var(--muted); font-size: 11px; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.worker-meta { display: flex; align-items: center; gap: 10px; font: 9.5px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+.worker-pilot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.worker-pilot-active { background: var(--lime); box-shadow: 0 0 8px rgba(199, 243, 77, .8); }
+.worker-pilot-good { background: var(--green); box-shadow: 0 0 8px rgba(89, 197, 139, .7); }
+.worker-pilot-warn { background: var(--coral); box-shadow: 0 0 8px rgba(255, 101, 66, .55); }
+.worker-latest { color: var(--muted); }
 
 /* ============================================================================
    FACTORY FLOOR — operations-center aesthetic layered on top of the dashboard.

@@ -172,6 +172,27 @@ function event(overrides) {
   console.log("  ✓ missing CI simulation shows the empty-state string");
 }
 
+// ---------- 3b. Strategy failure takes precedence over hasResponse (bug fix) ----------
+{
+  // Workbench holds a failing simulation with a strategy error. Even though
+  // hasCiSpecificIreResponse is true, the dashboard must render the
+  // StrategyFailureCard — NOT the "Live IRE response" card. Verified via
+  // classification precedence in the dashboard source.
+  const dashSrc = fs.readFileSync(path.join(repoRoot, "app/cmdb-dashboard.tsx"), "utf8");
+  const evidenceFn = dashSrc.slice(dashSrc.indexOf("function SelectedCiIreEvidence"));
+  const strategyCheckIdx = evidenceFn.indexOf("failure.kind === \"strategy\"");
+  const hasResponseCheckIdx = evidenceFn.indexOf("if (hasResponse)");
+  assert.ok(strategyCheckIdx > 0 && hasResponseCheckIdx > 0, "both branches must exist");
+  assert.ok(strategyCheckIdx < hasResponseCheckIdx,
+    "strategy failure classification must come BEFORE the hasResponse branch, otherwise the StrategyFailureCard is unreachable when a failing simulation is on the workbench");
+  // Also assert the execution-failure branch inside hasResponse: a
+  // non-strategy failure must render a red execution-error card, not
+  // pretend "Live IRE response" succeeded.
+  assert.ok(/ci-scope-execution-error/.test(dashSrc), "execution-failure variant must exist");
+  assert.ok(/isExecutionFailure/.test(dashSrc), "execution-failure branch must set the class from the classifier");
+  console.log("  ✓ strategy failure takes precedence over hasResponse branch");
+}
+
 // ---------- 4. Strategy failure classifies correctly + preserves message ----------
 {
   const workbench = {
@@ -190,6 +211,20 @@ function event(overrides) {
   assert.equal(cls.message, "No supported deterministic remediation strategy exists for this class alias.");
   assert.equal(cls.className, "cmdb_ci_service");
   assert.equal(cls.strategy, "unavailable");
+
+  // Regression: the exact wording the live backend returned on 2026-07-21
+  // ("No supported deterministic strategy for this class alias") — no
+  // "remediation" word. Must still classify as strategy.
+  const live = evidence.classifySimulationFailure({
+    simulation: {
+      success: false,
+      action: "simulate",
+      state: "simulation_failed",
+      error: { code: "IRE_FAILED", message: "No supported deterministic strategy for this class alias" },
+    },
+  }, CI);
+  assert.equal(live.kind, "strategy", "must catch the live-backend wording, not just the canonical one");
+  assert.equal(live.strategy, "unavailable");
 
   // A non-strategy failure classifies as execution and preserves the raw msg.
   const exec = evidence.classifySimulationFailure({
