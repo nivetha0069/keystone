@@ -193,6 +193,44 @@ function event(overrides) {
 
 // ---------- 3. Missing CI simulation → empty-state string ----------
 {
+  const oldFinding = { id: "oldfindingoldfindingoldfinding01", number: "OLD", stagedCiId: CI.stagedCiId };
+  const currentFinding = { id: "33333333333333333333333333333333", number: "CURRENT", stagedCiId: CI.stagedCiId };
+  const oldReview = { id: "oldreviewoldreviewoldreviewoldrev", findingId: oldFinding.id, decision: "approved" };
+  const currentReview = { id: "44444444444444444444444444444444", findingId: currentFinding.id, decision: "deferred" };
+  const simulation = event({
+    id: "EV-current-simulation",
+    seq: 65,
+    time: "2026-07-21 10:22:03",
+    source: "Remediate",
+    recordName: "Remediate",
+    reasoning: `Simulation completed | staged_ci_id=${CI.stagedCiId} finding_id=${currentFinding.id} simulation_correlation_id=ks-simulate-current simulation_fingerprint=${"A1".repeat(32)}`,
+  });
+  const marker = event({
+    id: "EV-current-review",
+    seq: 66,
+    time: "2026-07-21 10:23:00",
+    source: "Remediate",
+    recordName: "Remediate",
+    reasoning: JSON.stringify({
+      action: "approval_review_deferred",
+      staged_ci_id: CI.stagedCiId,
+      finding_id: currentFinding.id,
+      review_decision_id: currentReview.id,
+      simulation_correlation_id: "ks-simulate-current",
+      simulation_fingerprint: "A1".repeat(32),
+    }),
+  });
+  const queue = workQueue.deriveRemediationWorkQueue({
+    cis: [CI], timeline: [simulation, marker], findings: [oldFinding, currentFinding], reviews: [oldReview, currentReview],
+  });
+  assert.equal(queue.items[0].finding?.id, currentFinding.id, "latest marker must select exact finding");
+  assert.equal(queue.items[0].review?.id, currentReview.id, "latest marker must select exact deferred review");
+  assert.notEqual(queue.items[0].lifecycle, "approved_for_execution", "historical approved review must not leak into current binding");
+  console.log("  ✓ proposal marker selects the exact current finding and deferred review");
+}
+
+// ---------- 3. Missing CI simulation → empty-state string ----------
+{
   const emptyWorkbench = {};
   assert.equal(evidence.hasCiSpecificIreResponse(emptyWorkbench), false);
   assert.equal(evidence.hasCiSpecificIreResponse(null), false);

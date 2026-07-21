@@ -573,17 +573,35 @@ export function CmdbDashboard() {
     setSection("evidence");
   }
 
-  async function submitRemediation(fix: HealthFix, ci?: ConfigurationItem, finding?: RemediationFinding) {
+  async function submitRemediation(
+    fix: HealthFix,
+    ci?: ConfigurationItem,
+    finding?: RemediationFinding,
+    simulation?: { correlation?: string; fingerprint?: string },
+  ) {
     setQueuedFix(fix); setActionMessage("Preparing governed proposal…");
     try {
       const stagedCiId = ci?.stagedCiId || ci?.id || "";
-      const correlationId = "ks-proposal-" + Date.now();
-      const identifierBody = /^[0-9a-f]{32}$/i.test(activeRunId) && /^[0-9a-f]{32}$/i.test(stagedCiId)
-        ? { migration_run_id: activeRunId, staged_ci_id: stagedCiId, finding_id: finding?.id, correlation_id: correlationId, idempotency_key: "keystone:proposal:" + activeRunId + ":" + stagedCiId }
-        : { fixId: fix.id, tool: fix.tool };
+      const findingId = finding?.id || "";
+      if (!/^[0-9a-f]{32}$/i.test(activeRunId) || !/^[0-9a-f]{32}$/i.test(stagedCiId) ||
+          !/^[0-9a-f]{32}$/i.test(findingId) || !simulation?.correlation ||
+          !/^[0-9a-f]{64}$/i.test(simulation.fingerprint ?? "")) {
+        throw new Error("Current simulation binding is incomplete");
+      }
+      const correlationId = `ks-proposal:${simulation.correlation}`;
+      const identifierBody = {
+        migration_run_id: activeRunId,
+        staged_ci_id: stagedCiId,
+        finding_id: findingId,
+        correlation_id: correlationId,
+        idempotency_key: `keystone:proposal:${activeRunId}:${stagedCiId}:${simulation.correlation}`,
+        simulation_correlation_id: simulation.correlation,
+        simulation_fingerprint: simulation.fingerprint,
+      };
       const response = await fetch("/api/cmdb/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(identifierBody) });
       if (!response.ok) throw new Error("not configured");
-      setActionMessage("Proposal accepted. IRE validation is now queued.");
+      await loadData(activeRunId);
+      setActionMessage("Proposal recorded. The exact simulation is awaiting approval.");
     } catch {
       setActionMessage("Demo proposal ready. Connect the remediation endpoint to queue it through IRE.");
     }
@@ -997,7 +1015,12 @@ function RemediateView(props: {
   initialStagedCiId?: string;
   actionMessage: string;
   onSelect: (fix: HealthFix) => void;
-  onSubmit: (fix: HealthFix, ci?: ConfigurationItem, finding?: RemediationFinding) => void;
+  onSubmit: (
+    fix: HealthFix,
+    ci?: ConfigurationItem,
+    finding?: RemediationFinding,
+    simulation?: { correlation?: string; fingerprint?: string },
+  ) => void;
 }) {
   const { health, cis, timeline, findings, reviews, activeRunId, apiState, queuedFix, initialStagedCiId, actionMessage, onSelect, onSubmit } = props;
   const selected = queuedFix || health.fixes[0];
@@ -1110,7 +1133,7 @@ function RemediateView(props: {
     </section>
     <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">02</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
       {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
-    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding)}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
+    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding, { correlation: simulationCorrelation, fingerprint: selectedQueueItem?.simulationFingerprint })}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Execution below sends identifiers only. ServiceNow owns payload rebuild, approval, freshness, locks, and verification.</small></aside></section>
     <section className="workbench-layout">
       <div className="panel staged-queue-panel">
         <div className="panel-heading compact sticky">

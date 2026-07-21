@@ -34,12 +34,13 @@ export.
    `servicenow/DotwalkersPhaseB3BTests.phase-b3.js`
    Preserve the installed server-side regression suites.
 8. `servicenow/ire_approve.phase-c.js`,
+   `servicenow/remediate.phase-c.js`,
    `servicenow/run_dotwalkers_mara.phase-c.js`, and
    `servicenow/DotwalkersMaraAgent.phase-c.js`
    Are complete in-place Phase C patch sources for exact approval binding,
    recoverable handoff, token claiming, and preparation-only Mara resume.
 9. `servicenow/DotwalkersPhaseCTests.phase-c.js`
-   Is the separate 36-test, test-only Script Include. Phase B3B remains
+   Is the separate 48-test, test-only Script Include. Phase B3B remains
    byte-for-byte unchanged at 41 registrations.
 
 The Phase B3 payload supersedes the earlier Phase A payload source. Keep only
@@ -53,6 +54,7 @@ the Phase B3 payload in deployment handoffs to avoid duplicate class sources.
 | `DotwalkersIrePayloadService` | Confidence threshold, allowlists, source identity, reference resolution, and server-built payload | Include server-owned strategy ID, mapping version, source class, and target class in canonical fingerprint material. Do not replace the service. |
 | `DotwalkersIreSimulationService` | Validation, simulation, findings, and payload-service calls | Make this the single simulation/fingerprint authority. Apply `DotwalkersFailureStrategyService.decide` once for eligible alias failures and persist its evidence. |
 | `ire_simulate` | Authentication, role/run linkage, identifier filtering, and response contract | Delegate canonical payload/fingerprint work to the simulation service; retire its local fingerprint only after parity tests pass. |
+| `remediate` | Existing POST resource, authentication, and ACL authorization | Replace the legacy `{fixId, tool}` writer with an identifier-only adapter over deterministic deferred-review binding. |
 | `ire_execute` | Approval, duplicate, idempotency, concurrency, stale-data, and IRE-only mutation checks | Reconstruct the strategy and recompute through the same simulation service. Reject stale mapping, target, approval, action, or fingerprint evidence. |
 | `ire_approve` | Authorization, target review, and approval evidence | Bind approval to one staged CI and fingerprint, then queue `x_kest_dotwalkers.mara.requested` with a compact resume token in `parm2`. |
 | Mara Script Action | Existing event and background execution | Validate `parm2` and call the existing Mara agent in approval-resume mode. Ignore malformed, stale, or repeated tokens. |
@@ -101,6 +103,8 @@ names in compact detail when there is no matching existing choice.
 - Phase B3A simulation service: 23/23
 - Phase B3B `ire_simulate` adapter and service contract: 41/41
 - Phase C approval binding and Mara preparation: 36/36 in ServiceNow
+- Phase C.1 deferred-review binding: 48 tests expected after deployment; the
+  original 36 remain registered and unchanged in behavior
 
 No test sent a live Approve, Execute, Verify, approval-triggering event, or CMDB
 write request.
@@ -113,8 +117,9 @@ write request.
    fingerprint parity, one retry, approval binding, one-record resume, duplicate
    blocking, and exact-correlation verification.
 3. Run `npm.cmd run acceptance:lifecycle:report` before any live action.
-4. Obtain explicit action-time confirmation, approve one staged CI, observe one
-   resume/Execute/Verify, and rerun report mode.
+4. Obtain explicit action-time confirmation, record one deferred proposal, and
+   verify its exact review/ledger binding through GET-only evidence. Live
+   approval remains a later separate gate.
 
 Required confirmation:
 
@@ -127,6 +132,7 @@ allow its automatic single Execute plus Verify continuation.**
 |---|---|---|
 | `sys_script_include` | `DotwalkersAgentEventDetailService` | `1b4cb6842b52cb1060aefba6b891bf78` |
 | `sys_script_include` | `DotwalkersIreSimulationService` | `cf883837938e8710410e383efaba104e` |
+| `sys_ws_operation` | `remediate` | `7bc8ac4793ca4790410e383efaba10cc` |
 | `sys_ws_operation` | `ire_approve` | `8a0393d9b4b9473da9ca706d46f40f22` |
 | `sysevent_script_action` | `Run Dotwalkers Mara` | `895b3eeb2bc6071060aefba6b891bfa1` |
 | `sys_script_include` | `DotwalkersMaraAgent` | `7a36feeb2b86071060aefba6b891bfb4` |
@@ -135,10 +141,12 @@ allow its automatic single Execute plus Verify continuation.**
 
 The Phase C baseline above was installed in place on 2026-07-21 and a fresh
 GET-only export matched all six deployed source records exactly. The subsequent
-ledger-sequence corrective patch to `DotwalkersIreSimulationService` remains a
-source-controlled redeployment; it does not authorize a live approval.
+ledger-sequence corrective patch was installed and verified with new sequences
+64/65. The Phase C.1 `/remediate`, service, and expanded 48-test patch remains
+source-controlled only; it does not authorize a live proposal or approval.
 
 `approval_recorded`, `approval_handoff_queued`,
+`approval_review_deferred`,
 `approval_handoff_retry_claimed`, `approval_handoff_failed`,
 `approval_resume_claimed`, `approval_resume_prepared`, and
 `approval_resume_failed` are compact `detail.action` values. They are not new

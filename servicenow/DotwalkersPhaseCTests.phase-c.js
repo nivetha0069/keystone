@@ -51,7 +51,19 @@ DotwalkersPhaseCTests.prototype = {
             'testPreparationFailureTerminal',
             'testMaraPreparationIdentifierOnly',
             'testNoExecuteVerifyOrCmdbWrite',
-            'testNoGlobalPatchOrCrossScopeRead'
+            'testNoGlobalPatchOrCrossScopeRead',
+            'testProposalExactIdentifierRequest',
+            'testProposalUnknownFieldRejected',
+            'testProposalLegacyFingerprintRejected',
+            'testProposalRoleAndOwnershipRejected',
+            'testProposalLatestSimulationAndFingerprintRequired',
+            'testProposalAtomicReviewOneWinner',
+            'testProposalExactReplayReusesReview',
+            'testProposalConflictingRetryRejected',
+            'testProposalTerminalReviewPreserved',
+            'testProposalLedgerFailureRetryable',
+            'testProposalEvidenceCompactAndNoLiveActions',
+            'testApprovalRequiresBoundDeferredMarker'
         ];
         var passed = 0;
         var failures = [];
@@ -330,6 +342,114 @@ DotwalkersPhaseCTests.prototype = {
         this._assert(!svc.hasOwnProperty('GlideRecord'), 'instance dependencies only');
     },
 
+    testProposalExactIdentifierRequest: function() {
+        var normalized = this._service()._validateProposalRequest(this._proposalRequest());
+        this._assert(Object.keys(normalized).length === 8 && normalized.mode === 'proposal', 'exact proposal fields');
+    },
+
+    testProposalUnknownFieldRejected: function() {
+        var request = this._proposalRequest();
+        request.rationale = 'browser text';
+        this._assertThrows(function() { new DotwalkersIreSimulationService()._validateProposalRequest(request); });
+    },
+
+    testProposalLegacyFingerprintRejected: function() {
+        var request = this._proposalRequest();
+        request.simulation_fingerprint = new Array(33).join('B');
+        this._assertThrows(function() { new DotwalkersIreSimulationService()._validateProposalRequest(request); });
+    },
+
+    testProposalRoleAndOwnershipRejected: function() {
+        var svc = this._service();
+        svc._validateCaller = function() { var e = new Error('role'); e.error_code = 'FORBIDDEN'; throw e; };
+        this._assert(svc.recordProposal(this._proposalRequest()).http_status === 403, 'role rejected');
+        svc = this._service();
+        svc._validateCaller = function() {};
+        svc._resolveProposalBinding = function() { throw this._bindingError(403, 'RUN_OWNERSHIP_REJECTED', 'sanitized'); };
+        this._assert(svc.recordProposal(this._proposalRequest()).code === 'RUN_OWNERSHIP_REJECTED', 'ownership rejected');
+    },
+
+    testProposalLatestSimulationAndFingerprintRequired: function() {
+        var svc = this._proposalResolutionService(true);
+        var binding = svc._resolveProposalBinding(this._proposalRequest());
+        this._assert(binding.simulation_fingerprint === this.FP && binding.review_decision_id === svc._proposalReviewId(binding), 'exact latest simulation');
+        var stale = this._proposalRequest();
+        stale.simulation_correlation_id = 'ks-simulate-stale';
+        this._assertThrows(function() { svc._resolveProposalBinding(stale); });
+    },
+
+    testProposalAtomicReviewOneWinner: function() {
+        var env = this._ledgerEnvironment();
+        var binding = this._proposalBinding();
+        var one = env.service()._ensureDeferredReview(binding);
+        var two = env.service()._ensureDeferredReview(binding);
+        this._assert(one.won && !two.won, 'one deterministic review winner');
+    },
+
+    testProposalExactReplayReusesReview: function() {
+        var env = this._ledgerEnvironment();
+        var binding = this._proposalBinding();
+        env.service()._ensureDeferredReview(binding);
+        env.service()._insertProposalEvent(binding);
+        var review = env.service()._ensureDeferredReview(binding);
+        var marker = env.service()._insertProposalEvent(binding);
+        this._assert(!review.won && !marker.won && env.service()._proposalSuccess(binding, true).idempotent_replay, 'exact replay');
+    },
+
+    testProposalConflictingRetryRejected: function() {
+        var env = this._ledgerEnvironment();
+        var binding = this._proposalBinding();
+        env.service()._insertProposalEvent(binding);
+        binding.correlation_id = 'ks-proposal-conflict';
+        this._assertThrows(function() { env.service()._insertProposalEvent(binding); });
+    },
+
+    testProposalTerminalReviewPreserved: function() {
+        var binding = this._proposalBinding();
+        var svc = this._service();
+        svc._newRecord = function() {
+            return {
+                initialize: function() {}, setNewGuidValue: function() {}, setValue: function() {},
+                isValidField: function() { return true; }, insert: function() { throw new Error('duplicate'); },
+                get: function() { return true; },
+                getValue: function(field) {
+                    var values = { migration_run: binding.migration_run_id, finding: binding.finding_id, team_prefix: svc.TEAM, decision: 'approved', policy_approved: '0', decided_by: svc._currentUserId() };
+                    return values[field] || '';
+                }
+            };
+        };
+        this._assertThrows(function() { svc._ensureDeferredReview(binding); });
+    },
+
+    testProposalLedgerFailureRetryable: function() {
+        var svc = this._service();
+        var binding = this._proposalBinding();
+        svc._validateCaller = function() {};
+        svc._resolveProposalBinding = function() { return binding; };
+        svc._ensureDeferredReview = function() { return { won: false }; };
+        svc._insertProposalEvent = function() { var e = new Error('raw ledger failure'); e.error_code = 'PROPOSAL_EVIDENCE_FAILED'; throw e; };
+        var result = svc.recordProposal(this._proposalRequest());
+        this._assert(result.http_status === 503 && result.retryable && JSON.stringify(result).indexOf('raw ledger') < 0, 'sanitized retry');
+    },
+
+    testProposalEvidenceCompactAndNoLiveActions: function() {
+        var binding = this._proposalBinding();
+        var detail = this._service()._proposalDetail(binding);
+        var text = JSON.stringify(detail);
+        this._assert(detail.decision === 'deferred' && detail.decision_source === 'deterministic' && detail.policy_approved === false, 'fixed deferred values');
+        this._assert(!/payload|prompt|credential|rationale|class_mapping|source_row/i.test(text), 'compact proposal evidence');
+        this._assert(!/identifyCI|createOrUpdateCI|eventQueue|execute|verify/i.test(text), 'no live actions');
+    },
+
+    testApprovalRequiresBoundDeferredMarker: function() {
+        var svc = this._proposalResolutionService(false);
+        var request = this._requestFromProposal(svc);
+        this._assertThrows(function() { svc._resolveApprovalBinding(request, true); });
+        svc = this._proposalResolutionService(true);
+        request = this._requestFromProposal(svc);
+        this._assert(svc._resolveApprovalBinding(request, true).review_decision_id === request.review_decision_id, 'bound marker accepted');
+    },
+
     _service: function() {
         var svc = new DotwalkersIreSimulationService();
         svc._sha256 = function(value) { return new GlideDigest().getSHA256Hex(String(value)).toLowerCase(); };
@@ -346,6 +466,103 @@ DotwalkersPhaseCTests.prototype = {
             idempotency_key: 'approve:phase-c:one',
             simulation_correlation_id: 'ks-simulate-phase-c',
             simulation_fingerprint: this.FP
+        };
+    },
+
+    _proposalRequest: function() {
+        return {
+            migration_run_id: this.RUN,
+            staged_ci_id: this.CI,
+            finding_id: this.FINDING,
+            correlation_id: 'ks-proposal-phase-c',
+            idempotency_key: 'proposal:phase-c:one',
+            simulation_correlation_id: 'ks-simulate-phase-c',
+            simulation_fingerprint: this.FP,
+            mode: 'proposal'
+        };
+    },
+
+    _proposalBinding: function() {
+        var svc = this._service();
+        var binding = this._proposalRequest();
+        delete binding.mode;
+        binding.decision = 'deferred';
+        binding.decision_source = 'deterministic';
+        binding.policy_approved = false;
+        binding.review_decision_id = svc._proposalReviewId(binding);
+        binding.proposal_event_id = svc._proposalEventId(binding);
+        binding.run_record = {
+            getValue: function() { return 'awaiting_approval'; },
+            setValue: function() {},
+            update: function() { return 'run'; }
+        };
+        return binding;
+    },
+
+    _proposalResolutionService: function(includeMarker) {
+        var self = this;
+        var svc = this._service();
+        function record(values) {
+            return {
+                get: function() { return true; },
+                getValue: function(field) { return values[field] === undefined ? '' : values[field]; },
+                setValue: function(field, value) { values[field] = value; },
+                update: function() { return 'updated'; }
+            };
+        }
+        svc._newRecord = function(table) {
+            if (table === svc.TABLES.run) return record({ team_prefix: svc.TEAM, state: 'simulated' });
+            if (table === svc.TABLES.stagedCi) return record({ migration_run: self.RUN, team_prefix: svc.TEAM });
+            if (table === svc.TABLES.finding) return record({ migration_run: self.RUN, staged_ci: self.CI, team_prefix: svc.TEAM, recommendation: svc.PROPOSAL_PREFIX + 'test' });
+            if (table === svc.TABLES.review) return record({ migration_run: self.RUN, finding: self.FINDING, team_prefix: svc.TEAM, decision: 'deferred', policy_approved: false, decided_by: '' });
+            return record({});
+        };
+        svc._latestCompletedSimulation = function() {
+            return {
+                action: 'ire_simulation_completed',
+                migration_run_id: self.RUN,
+                staged_ci_id: self.CI,
+                finding_id: self.FINDING,
+                simulation_correlation_id: 'ks-simulate-phase-c',
+                simulation_fingerprint: self.FP,
+                operation: 'UPDATE',
+                simulation_matched_ci: '66666666666666666666666666666666'
+            };
+        };
+        svc._newPayloadService = function() {
+            return {
+                build: function() { return {}; },
+                buildFromPersistedStrategy: function() { return {}; },
+                fingerprintSimulation: function() { return self.FP; }
+            };
+        };
+        svc._getEvent = function(eventId) {
+            if (!includeMarker) return null;
+            var binding = self._proposalBinding();
+            if (eventId !== binding.proposal_event_id) return null;
+            return {
+                sys_id: binding.proposal_event_id,
+                event_type: 'approved',
+                migration_run_id: binding.migration_run_id,
+                actor: svc.ACTOR,
+                team_prefix: svc.TEAM,
+                detail: svc._proposalDetail(binding)
+            };
+        };
+        return svc;
+    },
+
+    _requestFromProposal: function(svc) {
+        var proposal = this._proposalBinding();
+        return {
+            migration_run_id: proposal.migration_run_id,
+            staged_ci_id: proposal.staged_ci_id,
+            finding_id: proposal.finding_id,
+            review_decision_id: svc._proposalReviewId(proposal),
+            correlation_id: 'ks-approve-phase-c-bound',
+            idempotency_key: 'approve:phase-c:bound',
+            simulation_correlation_id: proposal.simulation_correlation_id,
+            simulation_fingerprint: proposal.simulation_fingerprint
         };
     },
 

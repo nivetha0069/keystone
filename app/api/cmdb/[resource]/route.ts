@@ -103,35 +103,36 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   const rawStagedCiId = incoming.staged_ci_id ?? incoming.stagedCiId;
   const migrationRunId = identifier(rawRunId);
   const stagedCiId = identifier(rawStagedCiId);
-  // Legacy {fixId, tool} shape is retained only when the caller sent no
-  // ServiceNow IDs at all. If IDs were sent but failed the 32-hex check,
-  // fail loudly so the caller sees the validation problem instead of the
-  // backend rejecting a mismatched legacy payload.
-  const attemptedIreShape = rawRunId !== undefined || rawStagedCiId !== undefined;
-  if (attemptedIreShape && (!migrationRunId || !stagedCiId)) {
+  const findingId = identifier(incoming.finding_id);
+  const correlationId = token(incoming.correlation_id);
+  const idempotencyKey = token(incoming.idempotency_key);
+  const simulationCorrelationId = token(incoming.simulation_correlation_id);
+  const simulationFingerprint = fingerprint(incoming.simulation_fingerprint);
+  if (!migrationRunId || !stagedCiId || !findingId || !correlationId || !idempotencyKey ||
+      !simulationCorrelationId || !simulationFingerprint) {
     const missing: string[] = [];
     if (!migrationRunId) missing.push("migration_run_id");
     if (!stagedCiId) missing.push("staged_ci_id");
+    if (!findingId) missing.push("finding_id");
+    if (!correlationId) missing.push("correlation_id");
+    if (!idempotencyKey) missing.push("idempotency_key");
+    if (!simulationCorrelationId) missing.push("simulation_correlation_id");
+    if (!simulationFingerprint) missing.push("simulation_fingerprint");
     return Response.json({
-      error: "Invalid remediate request: migration_run_id and staged_ci_id must be 32-character lowercase hex.",
+      error: "Invalid remediate request: exact proposal identifiers and canonical simulation evidence are required.",
       missing,
     }, { status: 400 });
   }
-  const body = JSON.stringify(migrationRunId && stagedCiId
-    ? {
-        migration_run_id: migrationRunId,
-        staged_ci_id: stagedCiId,
-        ...(identifier(incoming.finding_id) ? { finding_id: identifier(incoming.finding_id) } : {}),
-        ...(token(incoming.correlation_id) ? { correlation_id: token(incoming.correlation_id) } : {}),
-        ...(token(incoming.idempotency_key) ? { idempotency_key: token(incoming.idempotency_key) } : {}),
-        mode: "proposal",
-      }
-    : {
-        fixId: incoming.fixId,
-        tool: incoming.tool,
-        route: "IRE",
-        mode: "proposal",
-      });
+  const body = JSON.stringify({
+    migration_run_id: migrationRunId,
+    staged_ci_id: stagedCiId,
+    finding_id: findingId,
+    correlation_id: correlationId,
+    idempotency_key: idempotencyKey,
+    simulation_correlation_id: simulationCorrelationId,
+    simulation_fingerprint: simulationFingerprint,
+    mode: "proposal",
+  });
   const authorization = authorizationHeader();
   try {
     const response = await fetch(url, {
@@ -157,4 +158,9 @@ function identifier(value: unknown) {
 function token(value: unknown) {
   const candidate = typeof value === "string" ? value.trim() : "";
   return /^[a-zA-Z0-9:._-]{1,180}$/.test(candidate) ? candidate : "";
+}
+
+function fingerprint(value: unknown) {
+  const candidate = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return /^[0-9A-F]{64}$/.test(candidate) ? candidate : "";
 }

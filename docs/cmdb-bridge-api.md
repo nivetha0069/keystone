@@ -137,10 +137,16 @@ Additional fields:
 - `/ire/execute`: `simulation_correlation_id` only.
 - `/ire/verify`: `execution_correlation_id` only.
 
-The preferred `/remediate` contract contains `migration_run_id`,
-`staged_ci_id`, optional `finding_id`, `correlation_id`, and
-`idempotency_key`. Browser-supplied class names, mappings, CMDB values, and
-payloads are discarded.
+The `/remediate` contract contains exactly `migration_run_id`, `staged_ci_id`,
+`finding_id`, `correlation_id`, `idempotency_key`,
+`simulation_correlation_id`, and the canonical 64-character
+`simulation_fingerprint`; the gateway appends server-owned `mode=proposal`.
+Legacy `{fixId, tool}` and browser-supplied decisions, rationale, class names,
+mappings, CMDB values, strategies, operations, and payloads are rejected.
+
+ServiceNow rereads the latest completed simulation and authoritative payload,
+then returns the deterministic `review_decision_id`. An exact retry reuses that
+deferred review; it never creates another review or approval event.
 
 ## Health progression
 

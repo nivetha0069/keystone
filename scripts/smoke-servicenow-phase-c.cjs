@@ -9,10 +9,13 @@ const read = file => fs.readFileSync(path.join(root, file), "utf8");
 const simulation = read("servicenow/DotwalkersIreSimulationService.phase-b3.js");
 const detail = read("servicenow/DotwalkersAgentEventDetailService.js");
 const approve = read("servicenow/ire_approve.phase-c.js");
+const remediate = read("servicenow/remediate.phase-c.js");
 const mara = read("servicenow/DotwalkersMaraAgent.phase-c.js");
 const action = read("servicenow/run_dotwalkers_mara.phase-c.js");
 const phaseC = read("servicenow/DotwalkersPhaseCTests.phase-c.js");
 const b3b = read("servicenow/DotwalkersPhaseB3BTests.phase-b3.js");
+const gateway = read("app/api/cmdb/[resource]/route.ts");
+const dashboard = read("app/cmdb-dashboard.tsx");
 
 function registrations(source) {
   const match = source.match(/var tests = \[([\s\S]*?)\];/);
@@ -22,7 +25,7 @@ function registrations(source) {
 
 assert.equal(crypto.createHash("sha256").update(b3b).digest("hex").toUpperCase(), "FCE49EE8B2D922E3064E1BB5300178334FB7AF0BC96B968292BE283BA6DAA940");
 assert.equal(registrations(b3b).length, 41, "B3B must remain exactly 41 tests");
-assert.equal(registrations(phaseC).length, 36, "Phase C must register exactly 36 tests");
+assert.equal(registrations(phaseC).length, 48, "Phase C must register exactly 48 tests");
 
 assert.match(simulation, /APPROVAL_FIELDS = \{/);
 assert.match(simulation, /setNewGuidValue\(eventId\)/);
@@ -47,6 +50,21 @@ assert.match(approve, /new DotwalkersIreSimulationService\(\)\.approve\(body\)/)
 for (const forbidden of ["GlideRecord", "identifyCI", "createOrUpdateCI", "eventQueue", "rationale", "request.body.data.decision"]) {
   assert.equal(approve.includes(forbidden), false, `ire_approve adapter contains ${forbidden}`);
 }
+
+assert.match(remediate, /new DotwalkersIreSimulationService\(\)\.recordProposal\(body\)/);
+for (const forbidden of ["GlideRecord", "identifyCI", "createOrUpdateCI", "eventQueue", "rationale", "request.body.data.decision"]) {
+  assert.equal(remediate.includes(forbidden), false, `remediate adapter contains ${forbidden}`);
+}
+assert.match(simulation, /approval_review_deferred/);
+assert.match(simulation, /setNewGuidValue\(binding\.review_decision_id\)/);
+assert.match(simulation, /_proposalDetailMatches/);
+for (const field of ["migration_run_id", "staged_ci_id", "finding_id", "correlation_id", "idempotency_key", "simulation_correlation_id", "simulation_fingerprint"]) {
+  assert.ok(gateway.includes(field), `remediate gateway missing ${field}`);
+}
+assert.equal(gateway.includes("fixId"), false, "legacy fixId remediate shape must be removed");
+assert.equal(gateway.includes("tool: incoming.tool"), false, "legacy tool remediate shape must be removed");
+assert.match(dashboard, /await loadData\(activeRunId\)/);
+assert.match(dashboard, /simulation_correlation_id: simulation\.correlation/);
 
 assert.match(action, /event\.parm2/);
 assert.match(action, /validateAndClaimApprovalResume/);
@@ -107,6 +125,6 @@ for (const [name, source] of [
   ["DotwalkersPhaseCTests.phase-c.js", phaseC],
 ]) vm.runInContext(source, context, { filename: name });
 const localResult = new context.DotwalkersPhaseCTests().run();
-assert.deepEqual({ passed: localResult.passed, failed: localResult.failed, total: localResult.total }, { passed: 36, failed: 0, total: 36 }, localResult.failures.join("\n"));
+assert.deepEqual({ passed: localResult.passed, failed: localResult.failed, total: localResult.total }, { passed: 48, failed: 0, total: 48 }, localResult.failures.join("\n"));
 
-console.log("ServiceNow Phase C smoke checks passed (B3B 41 unchanged; Phase C 36/36 locally).");
+console.log("ServiceNow Phase C smoke checks passed (B3B 41 unchanged; Phase C 48/48 locally).");

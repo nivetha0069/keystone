@@ -58,9 +58,11 @@ Phase C was installed in place on 2026-07-21. The separate
 records exactly. No live approval, event queue, Execute, Verify, or CMDB write
 was sent.
 
-The export also exposed historical ledger sequence values that can outrank
-newer canonical simulation evidence in the UI. The source-controlled
-corrective patch reads the highest sequence from the ordered ledger and sorts
-UI evidence by `sys_created_on` freshness. This corrective patch still needs
-in-place deployment and read-only verification. Explicit action-time
-confirmation remains required before any approval.
+The ledger-sequence correction was subsequently installed and verified: a new
+simulation wrote started/completed sequences 64/65 and a GET-only reread found
+the canonical 64-character fingerprint as the newest evidence. Phase C.1 is
+now source-controlled to bind that simulation to one deterministic deferred
+review through the existing Record proposal path. Its expanded 48-test suite
+and `/remediate` patch are build-only until the next deployment gate. Explicit
+action-time confirmation remains required before recording the proposal or any
+approval.

@@ -87,9 +87,15 @@ export function deriveRemediationWorkQueue(input: {
       const matchingEvents = matchingLedgerEvents(ci, input.timeline);
       const ledgerLifecycle = lifecycleFromLedger(matchingEvents);
       const actionLifecycle = lifecycleFromWorkbench(workbench, input.pending?.ciId === ci.id ? input.pending.action : null);
+      const playback = playbackIdentifiers(matchingEvents);
       const findings = relatedFindings(ci, input.findings ?? []);
-      const reviews = relatedReviews(findings, input.reviews ?? []);
-      const review = reviews.at(-1);
+      const finding = playback.findingId
+        ? findings.find(item => item.id === playback.findingId)
+        : findings.at(-1);
+      const reviews = relatedReviews(finding ? [finding] : findings, input.reviews ?? []);
+      const review = playback.reviewDecisionId
+        ? reviews.find(item => item.id === playback.reviewDecisionId)
+        : reviews.at(-1);
       const reviewLifecycle = review?.decision === "approved"
         ? "approved_for_execution"
         : review?.decision === "rejected"
@@ -102,8 +108,6 @@ export function deriveRemediationWorkQueue(input: {
       );
       const bucket = bucketForLifecycle(lifecycle, approvalRejected);
       const latestEvent = matchingEvents.at(-1);
-      const playback = playbackIdentifiers(matchingEvents);
-      const finding = findings.at(-1);
       const healthFix = relatedHealthFix(ci, input.healthFixes ?? []);
       const source: WorkQueueItem["source"] = actionLifecycle
         ? "live_action"
@@ -249,7 +253,7 @@ export function isCiScopedTimelineEvent(event: TimelineEvent, ci: ConfigurationI
   const reasoning = event.reasoning || "";
   const stagedCiId = ci.stagedCiId || ci.id;
   if (stagedCiId) {
-    const pattern = new RegExp(`\\b(staged_ci_id|target_ci_sys_id|ci_sys_id)\\s*=\\s*${escapeRegex(stagedCiId)}\\b`, "i");
+    const pattern = new RegExp(`(?:\\b(staged_ci_id|target_ci_sys_id|ci_sys_id)\\s*=\\s*|"(?:staged_ci_id|target_ci_sys_id|ci_sys_id)"\\s*:\\s*")${escapeRegex(stagedCiId)}\\b`, "i");
     if (pattern.test(reasoning)) return true;
   }
   return false;
@@ -308,6 +312,8 @@ function playbackIdentifiers(events: TimelineEvent[]) {
   return {
     simulationCorrelation: lastMetadataValue(text, "simulation_correlation_id") ?? lastSimulationCorrelation(text),
     simulationFingerprint: lastMetadataValue(text, "simulation_fingerprint"),
+    findingId: lastMetadataValue(text, "finding_id"),
+    reviewDecisionId: lastMetadataValue(text, "review_decision_id"),
     executionCorrelation: lastMetadataValue(text, "execution_correlation_id"),
     targetCiSysId: lastMetadataValue(text, "target_ci_sys_id"),
     targetCiName: lastMetadataValue(text, "actual_name") ?? lastMetadataValue(text, "target_ci_name"),
@@ -315,7 +321,9 @@ function playbackIdentifiers(events: TimelineEvent[]) {
 }
 
 function lastMetadataValue(text: string, key: string) {
-  return [...text.matchAll(new RegExp(`\\b${key}=([^\\s|]+)`, "g"))].at(-1)?.[1];
+  return [...text.matchAll(new RegExp(`(?:\\b${key}=([^\\s|]+)|"${key}"\\s*:\\s*"([^"}]+)")`, "g"))]
+    .map(match => match[1] ?? match[2])
+    .at(-1);
 }
 
 function lastSimulationCorrelation(text: string) {

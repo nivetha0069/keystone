@@ -44,6 +44,17 @@ DotwalkersIreSimulationService.prototype = {
             simulation_fingerprint: true
         };
 
+        this.PROPOSAL_FIELDS = {
+            migration_run_id: true,
+            staged_ci_id: true,
+            finding_id: true,
+            correlation_id: true,
+            idempotency_key: true,
+            simulation_correlation_id: true,
+            simulation_fingerprint: true,
+            mode: true
+        };
+
         this.ERROR_CODE_MAP = {
             INVALID_REQUEST: { http_status: 400, message: 'Invalid simulation request' },
             UNAUTHORIZED: { http_status: 401, message: 'Authentication required' },
@@ -826,6 +837,387 @@ DotwalkersIreSimulationService.prototype = {
     },
 
     /**
+     * Records the explicit, server-owned deferred review that binds the
+     * latest completed simulation to the later Phase C approval request.
+     */
+    recordProposal: function(request) {
+        var normalized;
+
+        try {
+            normalized = this._validateProposalRequest(request);
+            this._validateCaller();
+        } catch (validationError) {
+            return this._proposalError(
+                validationError && validationError.error_code === 'UNAUTHORIZED' ? 401 :
+                    validationError && validationError.error_code === 'FORBIDDEN' ? 403 : 400,
+                validationError && validationError.error_code ? validationError.error_code : 'INVALID_REQUEST',
+                validationError && validationError.error_code === 'UNAUTHORIZED' ? 'Authentication required' :
+                    validationError && validationError.error_code === 'FORBIDDEN' ? 'Insufficient permissions' :
+                        'Invalid proposal request',
+                normalized,
+                false
+            );
+        }
+
+        var binding;
+        try {
+            binding = this._resolveProposalBinding(normalized);
+        } catch (bindingError) {
+            return this._proposalError(
+                bindingError.http_status || 409,
+                bindingError.error_code || 'PROPOSAL_BINDING_REJECTED',
+                bindingError.public_message || 'Proposal binding was rejected',
+                normalized,
+                false
+            );
+        }
+
+        var reviewClaim;
+        try {
+            reviewClaim = this._ensureDeferredReview(binding);
+        } catch (reviewError) {
+            return this._proposalError(
+                reviewError.http_status || 503,
+                reviewError.error_code || 'PROPOSAL_REVIEW_FAILED',
+                reviewError.public_message || 'Deferred review could not be persisted',
+                binding,
+                reviewError.retryable === true
+            );
+        }
+
+        var markerClaim;
+        try {
+            markerClaim = this._insertProposalEvent(binding);
+        } catch (markerError) {
+            return this._proposalError(
+                markerError && markerError.error_code === 'PROPOSAL_CONFLICT' ? 409 : 503,
+                markerError && markerError.error_code ? markerError.error_code : 'PROPOSAL_EVIDENCE_FAILED',
+                markerError && markerError.error_code === 'PROPOSAL_CONFLICT' ?
+                    'Proposal binding conflicts with existing evidence' :
+                    'Deferred review was recorded but its evidence must be retried',
+                binding,
+                !markerError || markerError.error_code !== 'PROPOSAL_CONFLICT'
+            );
+        }
+
+        try {
+            this._setRunAwaitingApproval(binding.run_record);
+        } catch (runError) {
+            return this._proposalError(
+                503,
+                'PROPOSAL_RUN_STATE_FAILED',
+                'Deferred review was recorded but the run state must be retried',
+                binding,
+                true
+            );
+        }
+
+        return this._proposalSuccess(
+            binding,
+            !reviewClaim.won && !markerClaim.won
+        );
+    },
+
+    _validateProposalRequest: function(request) {
+        if (!request || typeof request !== 'object' ||
+            Object.prototype.toString.call(request) === '[object Array]') {
+            throw new Error('Proposal request must be an object');
+        }
+
+        var keys = Object.keys(request);
+        for (var i = 0; i < keys.length; i++) {
+            if (!this.PROPOSAL_FIELDS[keys[i]]) {
+                throw new Error('Unknown proposal request field');
+            }
+        }
+
+        if (this._text(request.mode) !== 'proposal') {
+            throw new Error('Proposal mode is required');
+        }
+
+        var fingerprint = this._text(request.simulation_fingerprint).toUpperCase();
+        if (/^[0-9A-F]{32}$/.test(fingerprint)) {
+            var legacyError = new Error('Legacy fingerprint rejected');
+            legacyError.error_code = 'LEGACY_FINGERPRINT';
+            throw legacyError;
+        }
+        if (!/^[0-9A-F]{64}$/.test(fingerprint)) {
+            throw new Error('simulation_fingerprint must be canonical SHA-256');
+        }
+
+        return {
+            migration_run_id: this._requireSysId(request.migration_run_id, 'migration_run_id').toLowerCase(),
+            staged_ci_id: this._requireSysId(request.staged_ci_id, 'staged_ci_id').toLowerCase(),
+            finding_id: this._requireSysId(request.finding_id, 'finding_id').toLowerCase(),
+            correlation_id: this._requireToken(request.correlation_id, 'correlation_id', 160),
+            idempotency_key: this._requireToken(request.idempotency_key, 'idempotency_key', 240),
+            simulation_correlation_id: this._requireToken(request.simulation_correlation_id, 'simulation_correlation_id', 240),
+            simulation_fingerprint: fingerprint,
+            mode: 'proposal'
+        };
+    },
+
+    _resolveProposalBinding: function(request) {
+        var run = this._newRecord(this.TABLES.run);
+        if (!run.get(request.migration_run_id)) {
+            throw this._bindingError(404, 'RUN_NOT_FOUND', 'Migration run not found');
+        }
+        if (this._text(run.getValue('team_prefix')) !== this.TEAM) {
+            throw this._bindingError(403, 'RUN_OWNERSHIP_REJECTED', 'Migration run is not authorized');
+        }
+
+        var runState = this._text(run.getValue('state'));
+        if (runState !== 'simulated' && runState !== 'awaiting_approval') {
+            throw this._bindingError(409, 'RUN_STATE_INVALID', 'Migration run state does not allow a proposal');
+        }
+
+        var staged = this._newRecord(this.TABLES.stagedCi);
+        if (!staged.get(request.staged_ci_id)) {
+            throw this._bindingError(404, 'STAGED_CI_NOT_FOUND', 'Staged CI record not found');
+        }
+        if (this._text(staged.getValue('migration_run')).toLowerCase() !== request.migration_run_id ||
+            (this._text(staged.getValue('team_prefix')) && this._text(staged.getValue('team_prefix')) !== this.TEAM)) {
+            throw this._bindingError(403, 'STAGED_CI_OWNERSHIP_REJECTED', 'Staged CI is not authorized for this run');
+        }
+
+        var finding = this._newRecord(this.TABLES.finding);
+        if (!finding.get(request.finding_id)) {
+            throw this._bindingError(404, 'FINDING_NOT_FOUND', 'Proposal finding not found');
+        }
+        if (this._text(finding.getValue('migration_run')).toLowerCase() !== request.migration_run_id ||
+            this._text(finding.getValue('staged_ci')).toLowerCase() !== request.staged_ci_id ||
+            (this._text(finding.getValue('team_prefix')) && this._text(finding.getValue('team_prefix')) !== this.TEAM) ||
+            this._text(finding.getValue('recommendation')).indexOf(this.PROPOSAL_PREFIX) !== 0) {
+            throw this._bindingError(409, 'FINDING_MISMATCH', 'Finding does not identify the simulated proposal');
+        }
+
+        var simulation = this._latestCompletedSimulation(request);
+        if (!simulation || this._text(simulation.finding_id).toLowerCase() !== request.finding_id) {
+            throw this._bindingError(409, 'SIMULATION_MISSING', 'Completed simulation evidence was not found');
+        }
+        if (this._text(simulation.simulation_correlation_id) !== request.simulation_correlation_id ||
+            this._text(simulation.simulation_fingerprint).toUpperCase() !== request.simulation_fingerprint) {
+            throw this._bindingError(409, 'STALE_SIMULATION', 'Proposal does not reference the latest completed simulation');
+        }
+
+        var payloadService = this._newPayloadService();
+        var strategy = this._strategyFromSimulation(simulation);
+        var bundle = strategy ?
+            payloadService.buildFromPersistedStrategy(request.migration_run_id, request.staged_ci_id, strategy) :
+            payloadService.build(request.migration_run_id, request.staged_ci_id);
+        var recomputed = this._text(payloadService.fingerprintSimulation(
+            bundle,
+            this._text(simulation.operation),
+            this._text(simulation.simulation_matched_ci),
+            strategy
+        )).toUpperCase();
+
+        if (!/^[0-9A-F]{64}$/.test(recomputed) || recomputed !== request.simulation_fingerprint) {
+            throw this._bindingError(409, 'FINGERPRINT_MISMATCH', 'Persisted simulation fingerprint is stale or mismatched');
+        }
+
+        var binding = {
+            migration_run_id: request.migration_run_id,
+            staged_ci_id: request.staged_ci_id,
+            finding_id: request.finding_id,
+            correlation_id: request.correlation_id,
+            idempotency_key: request.idempotency_key,
+            simulation_correlation_id: request.simulation_correlation_id,
+            simulation_fingerprint: recomputed,
+            decision: 'deferred',
+            decision_source: 'deterministic',
+            policy_approved: false,
+            run_record: run
+        };
+        binding.review_decision_id = this._proposalReviewId(binding);
+        binding.proposal_event_id = this._proposalEventId(binding);
+        return binding;
+    },
+
+    _proposalReviewId: function(binding) {
+        return this._claimId('approval-review', [
+            binding.migration_run_id,
+            binding.staged_ci_id,
+            binding.finding_id,
+            binding.simulation_correlation_id,
+            binding.simulation_fingerprint
+        ]);
+    },
+
+    _proposalEventId: function(binding) {
+        return this._claimId('approval-review-deferred', [
+            binding.migration_run_id,
+            binding.staged_ci_id,
+            binding.finding_id,
+            binding.review_decision_id,
+            binding.simulation_correlation_id,
+            binding.simulation_fingerprint
+        ]);
+    },
+
+    _ensureDeferredReview: function(binding) {
+        var review = this._newRecord(this.TABLES.review);
+        var inserted = '';
+
+        try {
+            review.initialize();
+            review.setNewGuidValue(binding.review_decision_id);
+            review.setValue('migration_run', binding.migration_run_id);
+            review.setValue('finding', binding.finding_id);
+            review.setValue('decision', 'deferred');
+            review.setValue('rationale', 'Awaiting explicit approval for the current completed IRE simulation.');
+            review.setValue('policy_approved', false);
+            review.setValue('decided_by', '');
+            if (review.isValidField('team_prefix')) review.setValue('team_prefix', this.TEAM);
+            inserted = this._text(review.insert()).toLowerCase();
+        } catch (ignoredDuplicate) {
+            inserted = '';
+        }
+
+        if (inserted === binding.review_decision_id) {
+            return { won: true, sys_id: binding.review_decision_id };
+        }
+
+        var existing = this._newRecord(this.TABLES.review);
+        if (!existing.get(binding.review_decision_id)) {
+            var persistError = this._bindingError(503, 'PROPOSAL_REVIEW_FAILED', 'Deferred review could not be persisted');
+            persistError.retryable = true;
+            throw persistError;
+        }
+
+        if (this._text(existing.getValue('migration_run')).toLowerCase() !== binding.migration_run_id ||
+            this._text(existing.getValue('finding')).toLowerCase() !== binding.finding_id ||
+            (this._text(existing.getValue('team_prefix')) && this._text(existing.getValue('team_prefix')) !== this.TEAM)) {
+            throw this._bindingError(409, 'PROPOSAL_CONFLICT', 'Deferred review conflicts with existing evidence');
+        }
+        if (this._text(existing.getValue('decision')) !== 'deferred' ||
+            existing.getValue('policy_approved') === true || this._text(existing.getValue('policy_approved')) === '1' ||
+            this._text(existing.getValue('decided_by'))) {
+            throw this._bindingError(409, 'REVIEW_STATE_INVALID', 'Existing review is no longer deferred');
+        }
+
+        return { won: false, sys_id: binding.review_decision_id };
+    },
+
+    _proposalDetail: function(binding) {
+        return {
+            schema: 'keystone.agent.v1',
+            phase: 'remediate',
+            actor: this.ACTOR,
+            action: 'approval_review_deferred',
+            status: 'approval_required',
+            summary: 'Deferred review bound to completed IRE simulation',
+            decision_source: 'deterministic',
+            migration_run_id: binding.migration_run_id,
+            staged_ci_id: binding.staged_ci_id,
+            finding_id: binding.finding_id,
+            review_decision_id: binding.review_decision_id,
+            correlation_id: binding.correlation_id,
+            idempotency_key: binding.idempotency_key,
+            simulation_correlation_id: binding.simulation_correlation_id,
+            simulation_fingerprint: binding.simulation_fingerprint,
+            decision: 'deferred',
+            policy_approved: false
+        };
+    },
+
+    _proposalDetailMatches: function(detail, binding) {
+        if (!detail || typeof detail !== 'object') return false;
+        return this._text(detail.action) === 'approval_review_deferred' &&
+            this._text(detail.decision) === 'deferred' &&
+            this._text(detail.decision_source) === 'deterministic' &&
+            detail.policy_approved === false &&
+            this._text(detail.migration_run_id).toLowerCase() === binding.migration_run_id &&
+            this._text(detail.staged_ci_id).toLowerCase() === binding.staged_ci_id &&
+            this._text(detail.finding_id).toLowerCase() === binding.finding_id &&
+            this._text(detail.review_decision_id).toLowerCase() === binding.review_decision_id &&
+            this._text(detail.correlation_id) === binding.correlation_id &&
+            this._text(detail.idempotency_key) === binding.idempotency_key &&
+            this._text(detail.simulation_correlation_id) === binding.simulation_correlation_id &&
+            this._text(detail.simulation_fingerprint).toUpperCase() === binding.simulation_fingerprint;
+    },
+
+    _insertProposalEvent: function(binding) {
+        var detail = this._proposalDetail(binding);
+        var ledger = this._newRecord(this.TABLES.ledger);
+        var inserted = '';
+
+        try {
+            ledger.initialize();
+            ledger.setNewGuidValue(binding.proposal_event_id);
+            ledger.setValue('migration_run', binding.migration_run_id);
+            if (ledger.isValidField('team_prefix')) ledger.setValue('team_prefix', this.TEAM);
+            ledger.setValue('actor', this.ACTOR);
+            ledger.setValue('event_type', 'approved');
+            ledger.setValue('sequence', this._nextSequence(binding.migration_run_id));
+            ledger.setValue('detail', JSON.stringify(detail));
+            inserted = this._text(ledger.insert()).toLowerCase();
+        } catch (ignoredDuplicate) {
+            inserted = '';
+        }
+
+        if (inserted === binding.proposal_event_id) {
+            return { won: true, sys_id: binding.proposal_event_id, detail: detail };
+        }
+
+        var existing = this._getEvent(binding.proposal_event_id);
+        if (existing && existing.event_type === 'approved' &&
+            existing.migration_run_id === binding.migration_run_id &&
+            existing.actor === this.ACTOR && existing.team_prefix === this.TEAM &&
+            this._proposalDetailMatches(existing.detail, binding)) {
+            return { won: false, sys_id: binding.proposal_event_id, detail: existing.detail };
+        }
+
+        var conflict = new Error('Deterministic proposal evidence claim failed');
+        conflict.error_code = existing ? 'PROPOSAL_CONFLICT' : 'PROPOSAL_EVIDENCE_FAILED';
+        throw conflict;
+    },
+
+    _setRunAwaitingApproval: function(run) {
+        if (this._text(run.getValue('state')) === 'awaiting_approval') return;
+        run.setValue('state', 'awaiting_approval');
+        if (!run.update()) throw new Error('Run state update failed');
+    },
+
+    _proposalSuccess: function(binding, replay) {
+        return {
+            success: true,
+            http_status: replay ? 200 : 201,
+            state: 'awaiting_approval',
+            migration_run_id: binding.migration_run_id,
+            staged_ci_id: binding.staged_ci_id,
+            finding_id: binding.finding_id,
+            review_decision_id: binding.review_decision_id,
+            correlation_id: binding.correlation_id,
+            idempotency_key: binding.idempotency_key,
+            simulation_correlation_id: binding.simulation_correlation_id,
+            simulation_fingerprint: binding.simulation_fingerprint,
+            decision: 'deferred',
+            decision_source: 'deterministic',
+            policy_approved: false,
+            idempotent_replay: replay === true,
+            cmdb_committed: false
+        };
+    },
+
+    _proposalError: function(status, code, message, request, retryable) {
+        request = request || {};
+        return {
+            success: false,
+            http_status: status,
+            state: 'simulated_pending_approval',
+            code: code,
+            message: message,
+            retryable: retryable === true,
+            migration_run_id: request.migration_run_id || '',
+            staged_ci_id: request.staged_ci_id || '',
+            correlation_id: request.correlation_id || '',
+            idempotency_key: request.idempotency_key || '',
+            cmdb_committed: false
+        };
+    },
+
+    /**
      * Phase C approval entry point. The request is identifiers and correlation
      * metadata only. All executable and decision material is reread or assigned
      * on the server.
@@ -1102,6 +1494,46 @@ DotwalkersIreSimulationService.prototype = {
             throw this._bindingError(409, 'FINGERPRINT_MISMATCH', 'Persisted simulation fingerprint is stale or mismatched');
         }
 
+        var proposalBinding = {
+            migration_run_id: request.migration_run_id,
+            staged_ci_id: request.staged_ci_id,
+            finding_id: request.finding_id,
+            simulation_correlation_id: request.simulation_correlation_id,
+            simulation_fingerprint: recomputed
+        };
+        proposalBinding.review_decision_id = this._proposalReviewId(proposalBinding);
+        proposalBinding.proposal_event_id = this._proposalEventId(proposalBinding);
+
+        if (request.review_decision_id !== proposalBinding.review_decision_id) {
+            throw this._bindingError(409, 'REVIEW_BINDING_MISSING', 'Review is not bound to the current simulation');
+        }
+
+        var proposalMarker = this._getEvent(proposalBinding.proposal_event_id);
+        if (!proposalMarker || proposalMarker.event_type !== 'approved' ||
+            proposalMarker.migration_run_id !== request.migration_run_id ||
+            proposalMarker.actor !== this.ACTOR || proposalMarker.team_prefix !== this.TEAM) {
+            throw this._bindingError(409, 'REVIEW_BINDING_MISSING', 'Deferred review evidence was not found');
+        }
+
+        try {
+            proposalBinding.correlation_id = this._requireToken(
+                proposalMarker.detail.correlation_id,
+                'proposal correlation_id',
+                160
+            );
+            proposalBinding.idempotency_key = this._requireToken(
+                proposalMarker.detail.idempotency_key,
+                'proposal idempotency_key',
+                240
+            );
+        } catch (proposalTokenError) {
+            throw this._bindingError(409, 'REVIEW_BINDING_MISMATCH', 'Deferred review evidence is malformed');
+        }
+
+        if (!this._proposalDetailMatches(proposalMarker.detail, proposalBinding)) {
+            throw this._bindingError(409, 'REVIEW_BINDING_MISMATCH', 'Deferred review evidence does not match the current simulation');
+        }
+
         var decidedBy = decision === 'approved' ? this._text(review.getValue('decided_by')) : this._currentUserId();
         var binding = {
             migration_run_id: request.migration_run_id,
@@ -1148,8 +1580,8 @@ DotwalkersIreSimulationService.prototype = {
         ledger.addQuery('event_type', 'simulated');
         ledger.addQuery('actor', this.ACTOR);
         ledger.addQuery('detail', 'CONTAINS', request.staged_ci_id);
-        ledger.orderByDesc('sequence');
         ledger.orderByDesc('sys_created_on');
+        ledger.orderByDesc('sequence');
         ledger.setLimit(50);
         ledger.query();
 

@@ -20,6 +20,7 @@ list and `docs/lifecycle-acceptance-report.md` for acceptance classifications.
 - `servicenow/DotwalkersPhaseB3ATests.phase-b3.js`
 - `servicenow/DotwalkersPhaseB3BTests.phase-b3.js`
 - `servicenow/ire_approve.phase-c.js`
+- `servicenow/remediate.phase-c.js`
 - `servicenow/run_dotwalkers_mara.phase-c.js`
 - `servicenow/DotwalkersMaraAgent.phase-c.js`
 - `servicenow/DotwalkersPhaseCTests.phase-c.js`
@@ -58,10 +59,18 @@ Current server-side status:
 - Phase B3B: 41/41
 - Phase C: 36/36 in the separate test-only Script Include
 
-The Phase C baseline is installed and a fresh GET-only export matched all six
-deployed sources. A corrective ledger-sequence and UI-freshness patch is now
-source-controlled but is not yet redeployed. The installed Phase C test record
-has sys_id `2a2cc9589316cf10410e383efaba102f`.
+The Phase C baseline and ledger-sequence correction are installed. A fresh
+GET-only reread verified new simulation sequences 64/65 and the canonical
+fingerprint. Phase C.1 adds the explicit deterministic deferred-review binding
+and expands the same test record from 36 to 48 tests; that patch is not yet
+installed. The test record sys_id is `2a2cc9589316cf10410e383efaba102f`.
+
+Phase C.1 keeps Record proposal explicit. The existing `/remediate` resource
+accepts only run, staged CI, finding, proposal correlation/idempotency, and the
+current simulation correlation/fingerprint. It delegates to the existing
+simulation service, which atomically creates one deferred review and one
+compact `approval_review_deferred` marker before setting the run to
+`awaiting_approval`.
 
 Local validation includes smoke, acceptance report mode, lint, TypeScript, and
 build. It sends no Approve, Execute, Verify, or approval-triggering request.
