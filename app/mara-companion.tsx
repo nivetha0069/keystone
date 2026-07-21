@@ -21,17 +21,10 @@ import { useDraggableMascot } from "./lib/ui/use-draggable-mascot";
 const MUTE_STORAGE_KEY = "keystone.mara.muted";
 const AUTO_COLLAPSE_MS = 12000;
 
-// States that should proactively open the bubble when they arrive. Everything
-// else stays quietly in the mascot until the user opens it.
-const AUTO_OPEN_STATES = new Set<MaraLiveState>([
-  "awaiting_review",
-  "awaiting_approval",
-  "executing",
-  "verifying",
-  "completed",
-  "warning",
-  "error",
-]);
+// The bubble opens only when the user clicks Mara. We used to auto-open on
+// state transitions (approvals, warnings, completion) but that overflowed on
+// small viewports and forced users to hunt for the close control.
+const AUTO_OPEN_STATES = new Set<MaraLiveState>();
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
 type AnalysisState = "idle" | "starting" | "started" | "error";
