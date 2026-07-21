@@ -4,6 +4,13 @@ import { useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
 import { importedRunFromResponse, isSysId, stagedCountFromResponse, type ImportedRun } from "./lib/cmdb/run-id";
+import {
+  SourceAdapterError,
+  getSourceAdapter,
+  recommendAdapter,
+  sourceAdapters,
+  type SourceAdapterId,
+} from "./lib/cmdb/source-adapters";
 
 type ImportMode = "file" | "url" | "paste";
 type ImportStatus = "idle" | "staging" | "staged" | "empty" | "demo" | "error";
@@ -67,6 +74,37 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
   const [status, setStatus] = useState<ImportStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const [stagedRun, setStagedRun] = useState<ImportedRun | undefined>();
+  const [adapterChoice, setAdapterChoice] = useState<SourceAdapterId | "auto">("auto");
+
+  // Auto-detect adapter from pasted payload — never guess without user consent
+  // (they can still override the dropdown). Only meaningful for JSON pastes.
+  const adapterAutoRecommendation = useMemo(() => {
+    if (mode !== "paste" || !pasteValue.trim()) return null;
+    const trimmed = pasteValue.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return recommendAdapter(parsed);
+    } catch { return null; }
+  }, [mode, pasteValue]);
+  const effectiveAdapter = useMemo(() => {
+    if (adapterChoice === "auto") {
+      return adapterAutoRecommendation ?? getSourceAdapter("passthrough");
+    }
+    return getSourceAdapter(adapterChoice);
+  }, [adapterChoice, adapterAutoRecommendation]);
+
+  const adapterPreview = useMemo(() => {
+    if (mode !== "paste" || !pasteValue.trim() || effectiveAdapter.id === "passthrough") return null;
+    try {
+      const parsed = JSON.parse(pasteValue.trim());
+      const structured = effectiveAdapter.transform(parsed, { sourceName: sourceName.trim() || effectiveAdapter.label });
+      return { ok: true as const, cis: structured.cis.length, relationships: structured.relationships.length, sample: structured.cis.slice(0, 3), structured };
+    } catch (error) {
+      const message = error instanceof SourceAdapterError ? error.message : error instanceof Error ? error.message : "Could not parse pasted payload as JSON.";
+      return { ok: false as const, error: message };
+    }
+  }, [mode, pasteValue, effectiveAdapter, sourceName]);
 
   const previewColumns = useMemo(() => {
     const columns = new Set<string>();
@@ -177,7 +215,25 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
           }),
         });
       } else {
-        const payload = mode === "paste" ? buildStructuredStagingPayloadFromText(pasteValue, "auto", sourceName.trim()) || pasteValue : pasteValue;
+        // If the user pasted JSON AND an adapter (auto-detected or manual)
+        // knows the schema, run it and stage the deterministic transform
+        // instead of the raw payload. Adapter output is auditable: the
+        // ledger records the parser_version we emit here.
+        let payload: unknown = mode === "paste"
+          ? buildStructuredStagingPayloadFromText(pasteValue, "auto", sourceName.trim()) || pasteValue
+          : pasteValue;
+        let adapterUsed: SourceAdapterId | "none" = "none";
+        if (mode === "paste" && effectiveAdapter.id !== "passthrough") {
+          try {
+            const parsed = JSON.parse(pasteValue.trim());
+            const structured = effectiveAdapter.transform(parsed, { sourceName: sourceName.trim() || effectiveAdapter.label });
+            payload = structured;
+            adapterUsed = effectiveAdapter.id;
+          } catch (error) {
+            const message = error instanceof SourceAdapterError ? error.message : error instanceof Error ? error.message : String(error);
+            throw new Error(`Adapter ${effectiveAdapter.label} rejected the payload: ${message}`);
+          }
+        }
         response = await fetch("/api/cmdb/import", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -186,8 +242,9 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
             sourceName: sourceName.trim(),
             runName: runName.trim(),
             sourceUrl: mode === "url" ? sourceUrl.trim() : undefined,
-            format: mode === "paste" && pasteValue.trim().startsWith("<") ? "xml" : "auto",
+            format: mode === "paste" && pasteValue.trim().startsWith("<") ? "xml" : adapterUsed !== "none" ? "structured" : "auto",
             payload: mode === "paste" ? payload : undefined,
+            adapterId: adapterUsed !== "none" ? adapterUsed : undefined,
           }),
         });
       }
@@ -324,6 +381,38 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
 
           {mode === "paste" && <div className="paste-intake">
             <label><span>RAW JSON OR CSV</span><textarea value={pasteValue} onChange={event => inspectPaste(event.target.value)} placeholder={'hostname,ip,os_type\nsrv-prod-01,10.40.1.21,Linux Srv'} /></label>
+            <div className="adapter-picker">
+              <label>
+                <span>SOURCE ADAPTER</span>
+                <select value={adapterChoice} onChange={event => setAdapterChoice(event.target.value as SourceAdapterId | "auto")}>
+                  <option value="auto">Auto detect{adapterAutoRecommendation ? ` · ${adapterAutoRecommendation.label}` : " (falls back to passthrough)"}</option>
+                  {sourceAdapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
+                </select>
+              </label>
+              <div className="adapter-help">
+                <strong>{effectiveAdapter.label}</strong>
+                <span>{effectiveAdapter.description}</span>
+                <small>Produces: {effectiveAdapter.producesClass}</small>
+              </div>
+            </div>
+            {adapterPreview && adapterPreview.ok && <div className="adapter-preview">
+              <div className="adapter-preview-head">
+                <strong>Transform preview</strong>
+                <span>{adapterPreview.cis} CIs · {adapterPreview.relationships} relationships</span>
+              </div>
+              <ul>
+                {adapterPreview.sample.map(ci => <li key={ci.source_native_key}>
+                  <code>{ci.className}</code>
+                  <strong>{ci.name || ci.source_native_key}</strong>
+                  <span>{ci.ip_address || ci.host_name || ci.source_native_key}</span>
+                </li>)}
+                {adapterPreview.cis > adapterPreview.sample.length && <li className="adapter-preview-more">+{adapterPreview.cis - adapterPreview.sample.length} more…</li>}
+              </ul>
+            </div>}
+            {adapterPreview && !adapterPreview.ok && <div className="gateway-error">
+              <Icon name="alert" size={16} />
+              {adapterPreview.error}
+            </div>}
           </div>}
 
           {parseError && <div className="gateway-error"><Icon name="alert" size={16} />{parseError}</div>}
