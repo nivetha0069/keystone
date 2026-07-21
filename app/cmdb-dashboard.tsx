@@ -1098,44 +1098,201 @@ function WorkbenchCountsRow({ queue, lifecycle }: { queue: WorkQueueSummary; lif
   </div>;
 }
 
-function ActivityFeedRow({ row }: { row: { id: string; label: string; title: string; detail: string; tone: string } }) {
-  const { readable, technical } = splitActivityDetail(row.detail);
+function ActivityFeedRow({ row }: { row: ActivityRow }) {
+  const parsed = parseLedgerReasoning(row.detail);
+  const isMara = /mara/i.test(row.actor || "") && parsed.hasStructuredPayload;
+
+  if (isMara) return <MaraObservationBubble row={row} parsed={parsed} />;
+
   return <article className={row.tone}>
-    <small>{row.label}</small>
+    <small>{row.label}{row.actor ? ` · ${row.actor}` : ""}</small>
     <strong>{row.title}</strong>
-    <p>{readable}</p>
-    {technical && <details className="activity-technical">
+    <p>{parsed.readable}</p>
+    {parsed.technical && <details className="activity-technical">
       <summary>Technical evidence</summary>
-      <pre>{technical}</pre>
+      <pre>{parsed.technical}</pre>
     </details>}
   </article>;
 }
 
-function splitActivityDetail(detail: string): { readable: string; technical?: string } {
+function MaraObservationBubble({ row, parsed }: { row: ActivityRow; parsed: LedgerParse }) {
+  const [showAll, setShowAll] = useState(false);
+  const previewCount = 3;
+  const shownRecords = showAll ? parsed.records : parsed.records.slice(0, previewCount);
+  const moreCount = Math.max(0, parsed.records.length - shownRecords.length);
+  return <article className={"mara-observation " + row.tone}>
+    <div className="mara-observation-top">
+      <span className="mara-observation-avatar" aria-hidden="true">M</span>
+      <div className="mara-observation-header">
+        <small>{row.label} · Mara</small>
+        <strong>{row.title}</strong>
+      </div>
+    </div>
+    <div className="mara-observation-bubble">
+      <p>{parsed.readable}</p>
+      {parsed.chips.length > 0 && <ul className="mara-observation-chips">
+        {parsed.chips.map(chip => <li key={chip}>{chip}</li>)}
+      </ul>}
+      {shownRecords.length > 0 && <ul className="mara-observation-records">
+        {shownRecords.map((record, index) => <li key={record.id ?? index}>
+          <strong>{record.name || record.id || "record"}</strong>
+          <span>
+            {record.proposedClass ? record.proposedClass : ""}
+            {record.confidence !== undefined ? ` · ${record.confidence}%` : ""}
+            {record.status ? ` · ${record.status}` : ""}
+          </span>
+        </li>)}
+        {moreCount > 0 && <li>
+          <button type="button" className="mara-observation-more" onClick={() => setShowAll(true)}>View {moreCount} more</button>
+        </li>}
+      </ul>}
+      {parsed.technical && <details className="activity-technical">
+        <summary>Technical evidence</summary>
+        <pre>{parsed.technical}</pre>
+      </details>}
+    </div>
+  </article>;
+}
+
+type LedgerRecordChip = { id?: string; name?: string; proposedClass?: string; confidence?: number; status?: string };
+type LedgerParse = {
+  readable: string;
+  technical?: string;
+  chips: string[];
+  records: LedgerRecordChip[];
+  hasStructuredPayload: boolean;
+};
+
+function parseLedgerReasoning(detail: string): LedgerParse {
   const trimmed = (detail || "").trim();
-  if (!trimmed) return { readable: "—" };
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    // Full-body JSON → hide behind Technical evidence, show a short summary.
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      const readable = typeof parsed.summary === "string" ? parsed.summary
-        : typeof parsed.message === "string" ? parsed.message
-        : typeof parsed.action === "string" ? `Action: ${parsed.action}`
-        : "Structured event recorded.";
-      return { readable, technical: JSON.stringify(parsed, null, 2) };
-    } catch {
-      return { readable: "Raw JSON payload recorded.", technical: trimmed };
-    }
-  }
-  // Mixed text + inline JSON — strip embedded braces into technical.
-  const braceStart = trimmed.indexOf("{");
-  if (braceStart > 0 && trimmed.trimEnd().endsWith("}")) {
+  if (!trimmed) return { readable: "—", chips: [], records: [], hasStructuredPayload: false };
+
+  // Never surface chain-of-thought. Strip `Thought:` and internal Action:.
+  const stripped = trimmed
+    .replace(/^Thought\s*:\s*[^|]+\|\s*/i, "")
+    .replace(/^Thought\s*:\s*.+$/i, "")
+    .trim();
+
+  const observationMatch = stripped.match(/Observation\s*:\s*([\s\S]+)$/i);
+  const jsonText = observationMatch ? observationMatch[1].trim() : (stripped.startsWith("{") || stripped.startsWith("[") ? stripped : "");
+  const parsed = safeParseJson(jsonText);
+
+  if (parsed && typeof parsed === "object") {
+    const summary = readableSummaryFromPayload(parsed as Record<string, unknown>);
+    const chips = chipsFromPayload(parsed as Record<string, unknown>);
+    const records = recordsFromPayload(parsed as Record<string, unknown>);
     return {
-      readable: trimmed.slice(0, braceStart).trim().replace(/[|:,]\s*$/, ""),
-      technical: trimmed.slice(braceStart).trim(),
+      readable: summary || cleanFragment(observationMatch ? stripped.slice(0, observationMatch.index).trim() : "Observation recorded."),
+      technical: prettyJson(parsed),
+      chips,
+      records,
+      hasStructuredPayload: true,
     };
   }
-  return { readable: trimmed };
+
+  // No JSON — return the cleaned text alone.
+  if (jsonText) {
+    return { readable: cleanFragment(stripped) || "Observation recorded.", technical: jsonText, chips: [], records: [], hasStructuredPayload: true };
+  }
+  return { readable: cleanFragment(stripped) || "—", chips: [], records: [], hasStructuredPayload: false };
+}
+
+function safeParseJson(value: string): unknown {
+  if (!value) return null;
+  try { return JSON.parse(value); }
+  catch {
+    // Try to extract the first {...} block.
+    const match = value.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try { return JSON.parse(match[0]); } catch { return null; }
+  }
+}
+
+function readableSummaryFromPayload(payload: Record<string, unknown>): string {
+  if (typeof payload.summary === "string" && payload.summary.trim()) return payload.summary.trim();
+  if (typeof payload.message === "string" && payload.message.trim()) return payload.message.trim();
+  const ready = numberFrom(payload, ["ready_count", "ready", "ready_for_simulation"]);
+  const held = numberFrom(payload, ["held_count", "held", "held_for_review", "review_count"]);
+  const affected = numberFrom(payload, ["affected_count", "affected", "affected_records"]);
+  const proposedClass = stringFrom(payload, ["proposed_class", "class"]);
+  const idStatus = stringFrom(payload, ["identification_status", "identity_status", "status"]);
+  const parts: string[] = [];
+  if (ready !== undefined) parts.push(`${ready} record${ready === 1 ? "" : "s"} ready for simulation`);
+  if (held !== undefined) parts.push(`held ${held} for human review`);
+  if (affected !== undefined && ready === undefined && held === undefined) parts.push(`${affected} affected records`);
+  if (parts.length) return "I found " + joinList(parts) + ".";
+  if (proposedClass) return `Proposed class: ${proposedClass}${idStatus ? ` · ${idStatus}` : ""}.`;
+  if (typeof payload.action === "string" && payload.action.trim()) return `Recorded action: ${payload.action.trim()}.`;
+  return "Structured observation recorded.";
+}
+
+function chipsFromPayload(payload: Record<string, unknown>): string[] {
+  const chips: string[] = [];
+  const ready = numberFrom(payload, ["ready_count", "ready"]);
+  const held = numberFrom(payload, ["held_count", "held", "held_for_review"]);
+  const affected = numberFrom(payload, ["affected_count", "affected", "affected_records"]);
+  const confidence = numberFrom(payload, ["confidence"]);
+  if (ready !== undefined) chips.push(`${ready} ready`);
+  if (held !== undefined) chips.push(`${held} held`);
+  if (affected !== undefined) chips.push(`${affected} affected`);
+  if (confidence !== undefined) {
+    const pct = confidence <= 1 ? Math.round(confidence * 100) : Math.round(confidence);
+    chips.push(`${pct}% confidence`);
+  }
+  const proposedClass = stringFrom(payload, ["proposed_class"]);
+  if (proposedClass) chips.push(proposedClass);
+  const identification = stringFrom(payload, ["identification_status"]);
+  if (identification) chips.push(identification);
+  return chips;
+}
+
+function recordsFromPayload(payload: Record<string, unknown>): LedgerRecordChip[] {
+  const candidates: unknown[] = [];
+  for (const key of ["records", "items", "results", "cis", "findings"]) {
+    const value = payload[key];
+    if (Array.isArray(value)) candidates.push(...value);
+  }
+  return candidates.slice(0, 24).map((entry): LedgerRecordChip => {
+    if (!entry || typeof entry !== "object") return {};
+    const raw = entry as Record<string, unknown>;
+    const confidence = numberFrom(raw, ["confidence"]);
+    return {
+      id: stringFrom(raw, ["id", "sys_id", "number", "record_id"]),
+      name: stringFrom(raw, ["name", "display_value", "record_name", "hostname", "identifier"]),
+      proposedClass: stringFrom(raw, ["proposed_class", "class", "className"]),
+      confidence: confidence === undefined ? undefined : confidence <= 1 ? Math.round(confidence * 100) : Math.round(confidence),
+      status: stringFrom(raw, ["status", "identification_status", "operation"]),
+    };
+  }).filter(record => record.id || record.name || record.proposedClass);
+}
+
+function numberFrom(payload: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && !Number.isNaN(Number(value))) return Number(value);
+  }
+  return undefined;
+}
+function stringFrom(payload: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+function joinList(parts: string[]): string {
+  if (parts.length <= 1) return parts.join("");
+  return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+}
+function cleanFragment(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[|:,]\s*$/, "")
+    .trim();
+}
+function prettyJson(value: unknown): string {
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
 function WorkQueueBucketCard({ bucket, selectedId, onSelect }: { bucket: WorkQueueBucket; selectedId?: string; onSelect: (id: string) => void }) {
@@ -1257,14 +1414,16 @@ function shortId(value?: string) {
   return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
-function activityRows(workbench: IreWorkbenchRecord, events: TimelineEvent[]) {
-  const rows = [
-    workbench.simulation && { id: "simulation", label: "SIMULATION", title: workbench.simulation.success ? "Simulation recorded" : "Simulation failed", detail: workbench.simulation.error?.message ?? workbench.simulation.evidence?.[0] ?? "ServiceNow returned simulation metadata.", tone: workbench.simulation.success ? "complete" : "error" },
-    workbench.approval && { id: "approval", label: "APPROVAL", title: `${workbench.approval.status ?? "decision"} recorded`, detail: workbench.approval.error?.message ?? "Review decision was submitted for the single actionable finding.", tone: workbench.approval.success ? "review" : "error" },
-    workbench.execution && { id: "execution", label: "EXECUTION", title: workbench.execution.success ? "Execution accepted" : "Execution rejected", detail: workbench.execution.error?.message ?? "ServiceNow rebuilt and handled the IRE execution request.", tone: workbench.execution.success ? "complete" : "error" },
-    workbench.verification && { id: "verification", label: "VERIFY", title: workbench.verification.success ? "Verification complete" : "Verification failed", detail: workbench.verification.error?.message ?? workbench.verification.verification_summary ?? "Read-back was tied to the execution correlation ID.", tone: workbench.verification.success ? "complete" : "error" },
-  ].filter(Boolean) as { id: string; label: string; title: string; detail: string; tone: string }[];
-  const ledgerRows = events.map(event => ({ id: event.id, label: `LEDGER ${event.seq}`, title: event.name, detail: event.reasoning, tone: event.status }));
+type ActivityRow = { id: string; label: string; title: string; detail: string; tone: string; actor?: string };
+
+function activityRows(workbench: IreWorkbenchRecord, events: TimelineEvent[]): ActivityRow[] {
+  const rows: ActivityRow[] = [
+    workbench.simulation && { id: "simulation", label: "SIMULATION", title: workbench.simulation.success ? "Simulation recorded" : "Simulation failed", detail: workbench.simulation.error?.message ?? workbench.simulation.evidence?.[0] ?? "ServiceNow returned simulation metadata.", tone: workbench.simulation.success ? "complete" : "error", actor: "IRE" },
+    workbench.approval && { id: "approval", label: "APPROVAL", title: `${workbench.approval.status ?? "decision"} recorded`, detail: workbench.approval.error?.message ?? "Review decision was submitted for the single actionable finding.", tone: workbench.approval.success ? "review" : "error", actor: "Reviewer" },
+    workbench.execution && { id: "execution", label: "EXECUTION", title: workbench.execution.success ? "Execution accepted" : "Execution rejected", detail: workbench.execution.error?.message ?? "ServiceNow rebuilt and handled the IRE execution request.", tone: workbench.execution.success ? "complete" : "error", actor: "IRE" },
+    workbench.verification && { id: "verification", label: "VERIFY", title: workbench.verification.success ? "Verification complete" : "Verification failed", detail: workbench.verification.error?.message ?? workbench.verification.verification_summary ?? "Read-back was tied to the execution correlation ID.", tone: workbench.verification.success ? "complete" : "error", actor: "IRE" },
+  ].filter(Boolean) as ActivityRow[];
+  const ledgerRows: ActivityRow[] = events.map(event => ({ id: event.id, label: `LEDGER ${event.seq}`, title: event.name, detail: event.reasoning, tone: event.status, actor: event.source }));
   return [...rows, ...ledgerRows].slice(-7).reverse();
 }
 

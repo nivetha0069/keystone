@@ -1355,3 +1355,86 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .mara-companion { right: 20px; bottom: 20px; }
   .mara-companion.mara-open { max-width: 320px; }
 }
+
+/* ---------- Mara observation bubble (Lifecycle Activity feed) ---------- */
+
+.activity-feed .mara-observation {
+  display: block; padding: 12px 14px; border-bottom: 1px solid rgba(239, 241, 233, .065);
+  min-width: 0;
+}
+.activity-feed .mara-observation:last-child { border-bottom: 0; }
+.mara-observation-top {
+  display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: start;
+}
+.mara-observation-avatar {
+  width: 32px; height: 32px; display: grid; place-items: center;
+  color: #12160c; background: var(--lime); border-radius: 50%;
+  font: 600 12px var(--mono); flex: none;
+}
+.mara-observation-header { min-width: 0; }
+.mara-observation-header small { color: var(--faint); font: 8px var(--mono); letter-spacing: .09em; }
+.mara-observation-header strong { display: block; margin: 3px 0; font-size: 11.5px; }
+.mara-observation.complete .mara-observation-header strong { color: var(--green); }
+.mara-observation.review .mara-observation-header strong,
+.mara-observation.active .mara-observation-header strong { color: var(--amber); }
+.mara-observation.error .mara-observation-header strong { color: var(--coral); }
+.mara-observation-bubble {
+  position: relative; margin: 8px 0 0 44px; padding: 12px 14px;
+  background: rgba(199, 243, 77, .05);
+  border: 1px solid rgba(199, 243, 77, .22);
+  border-radius: 3px;
+  min-width: 0; max-width: 100%;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.mara-observation-bubble::before {
+  content: ""; position: absolute; top: -6px; left: 14px;
+  width: 10px; height: 10px; background: rgba(199, 243, 77, .05);
+  border-top: 1px solid rgba(199, 243, 77, .22);
+  border-left: 1px solid rgba(199, 243, 77, .22);
+  transform: rotate(45deg);
+}
+.mara-observation-bubble p {
+  margin: 0; color: var(--ink); font-size: 11px; line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.mara-observation-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none;
+}
+.mara-observation-chips li {
+  padding: 3px 8px; color: var(--lime);
+  background: rgba(199, 243, 77, .06);
+  border: 1px solid rgba(199, 243, 77, .28);
+  font: 9.5px var(--mono); letter-spacing: .04em;
+  overflow-wrap: anywhere; max-width: 100%;
+}
+.mara-observation-records {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 10px 0 0; padding: 0; list-style: none;
+}
+.mara-observation-records li {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 8px;
+  padding: 6px 8px; background: rgba(10, 12, 11, .5); border: 1px solid var(--line);
+  min-width: 0;
+}
+.mara-observation-records li strong {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; font-weight: 600;
+}
+.mara-observation-records li span {
+  color: var(--muted); font: 9.5px var(--mono);
+  overflow-wrap: anywhere; text-align: right;
+}
+.mara-observation-more {
+  padding: 4px 10px; color: var(--lime); background: transparent;
+  border: 1px solid rgba(199, 243, 77, .3); font: 9.5px var(--mono); cursor: pointer;
+}
+.mara-observation-more:hover { background: rgba(199, 243, 77, .06); }
+.mara-observation-bubble .activity-technical { margin-top: 10px; }
+.mara-observation-bubble .activity-technical > pre {
+  max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .mara-observation-bubble { margin-left: 0; }
+  .mara-observation-bubble::before { display: none; }
+}
