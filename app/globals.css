@@ -1767,6 +1767,26 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .journey-chapter-caret { transition: none; }
 }
 
+/* Source adapter picker — sits inside the paste-mode intake column. */
+.adapter-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; margin-top: 12px; padding: 12px; background: #0d100d; border: 1px solid var(--line); }
+.adapter-picker > label { display: flex; flex-direction: column; gap: 4px; }
+.adapter-picker > label > span { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
+.adapter-picker select { padding: 8px 10px; border: 1px solid var(--line-strong); background: #0a0d0a; color: var(--ink); font-size: 12px; }
+.adapter-help { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(199, 243, 77, .04); border: 1px solid rgba(199, 243, 77, .16); }
+.adapter-help strong { font-size: 12px; color: var(--lime); }
+.adapter-help span { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.adapter-help small { font: 9px var(--mono); letter-spacing: .12em; color: var(--faint); text-transform: uppercase; margin-top: 2px; }
+.adapter-preview { margin-top: 10px; padding: 10px 12px; background: #0c0f0c; border: 1px dashed var(--line-strong); }
+.adapter-preview-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.adapter-preview-head strong { font-size: 12px; color: var(--ink); }
+.adapter-preview-head span { font: 9.5px var(--mono); letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
+.adapter-preview ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.adapter-preview li { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: baseline; padding: 6px 8px; background: rgba(255,255,255,.015); border-left: 2px solid var(--lime); }
+.adapter-preview li code { font: 9px var(--mono); letter-spacing: .1em; color: var(--lime); background: rgba(199, 243, 77, .06); padding: 2px 5px; border: 1px solid rgba(199, 243, 77, .16); }
+.adapter-preview li strong { font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adapter-preview li span { font: 9.5px var(--mono); color: var(--muted); }
+.adapter-preview-more { color: var(--faint); font-style: italic; justify-content: center; border-left-color: transparent !important; }
+
 /* Worker roster — real named agents (Router / Atlas / Scout / Weaver /
    Sentry / Ledger / Mara / IRE) that emitted events for this run. Sourced
    from event.source, never invented. */
