@@ -1438,3 +1438,55 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .mara-observation-bubble { margin-left: 0; }
   .mara-observation-bubble::before { display: none; }
 }
+
+/* ---------- Mara mascot: draggable, mobile, safe-area ---------- */
+
+.mara-companion {
+  touch-action: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.mara-companion .mara-toggle {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.mara-companion .mara-toggle:active { cursor: grabbing; }
+.mara-companion .mara-bubble { touch-action: auto; }
+
+.mara-companion .mara-reset {
+  padding: 0 8px; min-height: 22px;
+  color: var(--muted); background: transparent; border: 1px solid var(--line);
+  font-size: 12px; cursor: pointer;
+}
+.mara-companion .mara-reset:hover { color: var(--lime); border-color: rgba(199, 243, 77, .35); }
+
+/* Small mobile mascot + bottom-sheet bubble */
+.mara-companion.mara-mobile .mara-toggle { width: 64px; height: 64px; }
+.mara-companion.mara-mobile .mara-bubble {
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  top: auto;
+  max-width: none; min-width: 0;
+  max-height: 60vh; overflow: auto;
+  border-radius: 6px 6px 0 0;
+}
+.mara-companion.mara-mobile .mara-bubble .mara-bubble-body { max-height: 40vh; overflow: auto; }
+
+@media (max-width: 640px) {
+  .mara-companion .mara-toggle { width: 64px; height: 64px; }
+  .mara-companion.mara-open .mara-toggle { width: 48px; height: 48px; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .mara-companion .mara-svg,
+  .mara-companion .mara-halo-ring,
+  .mara-companion .mara-inner-petals,
+  .mara-companion .mara-outer-petals,
+  .mara-companion .mara-core,
+  .mara-companion .mara-status-ring,
+  .mara-companion .mara-orbit { animation: none !important; transition: none !important; }
+}

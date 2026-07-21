@@ -5,16 +5,33 @@ import type { ConfigurationItem, HealthData, HealthFix, TimelineEvent } from "./
 import {
   buildMaraMessage,
   deriveMaraState,
-  maraStateLabel,
-  type MaraCompanionState,
   type MaraFindingLike,
   type MaraReviewLike,
   type MaraSection,
 } from "./lib/cmdb/mara-companion-state";
-import type { MaraActionKey, WorkspaceViewState } from "./lib/cmdb/workspace-view-state";
+import type {
+  MaraActionKey,
+  MaraLive,
+  MaraLiveState,
+  MaraVisualState,
+  WorkspaceViewState,
+} from "./lib/cmdb/workspace-view-state";
+import { useDraggableMascot } from "./lib/ui/use-draggable-mascot";
 
 const MUTE_STORAGE_KEY = "keystone.mara.muted";
 const AUTO_COLLAPSE_MS = 12000;
+
+// States that should proactively open the bubble when they arrive. Everything
+// else stays quietly in the mascot until the user opens it.
+const AUTO_OPEN_STATES = new Set<MaraLiveState>([
+  "awaiting_review",
+  "awaiting_approval",
+  "executing",
+  "verifying",
+  "completed",
+  "warning",
+  "error",
+]);
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
 type AnalysisState = "idle" | "starting" | "started" | "error";
@@ -36,20 +53,23 @@ export type MaraCompanionProps = {
   onNavigate: (section: MaraSection) => void;
   onOpenLedger: () => void;
   onOpenApprovals?: () => void;
+  onOpenRemediation?: () => void;
   onShowReviewQueue: () => void;
 };
 
-type MaraAction = { label: string; onSelect: () => void };
+type MaraAction = { key: MaraActionKey; label: string; onSelect: () => void };
 
 export function MaraCompanion(props: MaraCompanionProps) {
   const {
     section, activeRunId, activeRunLabel, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, queuedFix, view,
-    onNavigate, onOpenLedger, onOpenApprovals, onShowReviewQueue,
+    onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue,
   } = props;
 
   const topFixTitle = queuedFix?.title ?? health.fixes[0]?.title;
 
+  // Fallback derivation for surfaces that don't hand us a workspace view yet.
+  // The dashboard always passes `view`, so this is defensive only.
   const fallbackDerivation = useMemo(() => deriveMaraState({
     section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
@@ -57,11 +77,6 @@ export function MaraCompanion(props: MaraCompanionProps) {
     section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
   ]);
-
-  const derivation: { state: MaraCompanionState } = view
-    ? { state: view.mara.state }
-    : fallbackDerivation;
-
   const fallbackMessage = useMemo(() => buildMaraMessage({
     section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
@@ -70,9 +85,14 @@ export function MaraCompanion(props: MaraCompanionProps) {
     timeline, cis, health, findings, reviews, topFixTitle,
   ]);
 
-  const message = view
-    ? { primary: view.mara.primary, secondary: view.mara.secondary }
-    : fallbackMessage;
+  const live: MaraLive = view?.mara ?? {
+    state: fallbackDerivation.state === "blooming" ? "completed" : fallbackDerivation.state as MaraLiveState,
+    visualState: fallbackDerivation.state,
+    headline: fallbackHeadline(fallbackDerivation.state),
+    message: fallbackMessage.primary,
+    secondary: fallbackMessage.secondary,
+    actions: ["watch_activity"],
+  };
 
   const actions = useMemo<MaraAction[]>(() => {
     const aiUsageHref = activeRunId
@@ -80,62 +100,48 @@ export function MaraCompanion(props: MaraCompanionProps) {
       : "/ai-usage";
     const goAiUsage = () => { window.location.assign(aiUsageHref); };
     const openApprovals = () => (onOpenApprovals ? onOpenApprovals() : onNavigate("remediate"));
+    const openRemediation = () => (onOpenRemediation ? onOpenRemediation() : onNavigate("remediate"));
 
     const build = (key: MaraActionKey): MaraAction | null => {
       switch (key) {
         case "start_rescue":
-          return activeRunId ? null : { label: "Start a rescue", onSelect: () => onNavigate("import") };
-        case "watch_agents": return { label: "Watch them work", onSelect: () => onNavigate("live") };
-        case "open_team": return { label: "Team", onSelect: () => onNavigate("hr") };
-        case "review_findings": return { label: "Review findings", onSelect: () => onShowReviewQueue() };
-        case "open_approvals": return { label: "Open approvals", onSelect: openApprovals };
-        case "open_evidence": return { label: "View evidence", onSelect: () => onOpenLedger() };
-        case "open_ai_usage": return { label: "AI usage", onSelect: goAiUsage };
-        case "inspect_run": return { label: "Inspect the run", onSelect: () => onNavigate("comprehend") };
+          return activeRunId ? null : { key, label: "Start a rescue", onSelect: () => onNavigate("import") };
+        case "watch_agents":
+        case "watch_activity":
+          return { key, label: "Watch activity", onSelect: () => onNavigate("live") };
+        case "open_team": return { key, label: "Team", onSelect: () => onNavigate("hr") };
+        case "review_findings": return { key, label: "Review findings", onSelect: () => onShowReviewQueue() };
+        case "open_approvals": return { key, label: "Open approvals", onSelect: openApprovals };
+        case "open_remediation": return { key, label: "Open remediation", onSelect: openRemediation };
+        case "open_evidence": return { key, label: "View evidence", onSelect: () => onOpenLedger() };
+        case "open_ai_usage": return { key, label: "AI usage", onSelect: goAiUsage };
+        case "inspect_run": return { key, label: "Inspect the run", onSelect: () => onNavigate("comprehend") };
       }
     };
 
-    if (view) {
-      return view.mara.actions
-        .map(build)
-        .filter((a): a is MaraAction => Boolean(a));
-    }
-
-    switch (derivation.state) {
-      case "sleeping":
-        return activeRunId
-          ? [build("watch_agents")!, build("open_evidence")!]
-          : [build("start_rescue")!];
-      case "inspecting": return [build("watch_agents")!, build("open_team")!];
-      case "warning": return [build("review_findings")!, build("open_approvals")!];
-      case "awaiting_approval": return [build("review_findings")!, build("open_approvals")!];
-      case "blooming": return [build("open_evidence")!, build("open_ai_usage")!];
-      case "error": return [build("inspect_run")!, build("open_evidence")!];
-    }
-  }, [view, derivation.state, activeRunId, onNavigate, onOpenLedger, onOpenApprovals, onShowReviewQueue]);
+    return live.actions
+      .map(build)
+      .filter((a): a is MaraAction => Boolean(a));
+  }, [live.actions, activeRunId, onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue]);
 
   const [muted, setMuted] = useState<boolean>(() => {
     try {
       if (typeof window === "undefined") return false;
       return window.localStorage.getItem(MUTE_STORAGE_KEY) === "1";
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   });
   const [open, setOpen] = useState(false);
-  // Track the last state we auto-opened for so polling that lands on the same
-  // state does not repeatedly re-open the bubble.
-  const [lastAutoState, setLastAutoState] = useState<MaraCompanionState>(derivation.state);
+  // Meaningful transition key: state + latest event id. Polling with the same
+  // (state, event) will not re-open the bubble.
+  const transitionKey = `${live.state}:${live.latestEventId ?? "0"}`;
+  const [lastTransitionKey, setLastTransitionKey] = useState(transitionKey);
   const [openedAt, setOpenedAt] = useState(0);
   const autoCloseTimerRef = useRef<number | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // React's recommended pattern for reacting to changed derived state: adjust
-  // during render rather than in an effect. Sleeping is the quiet default.
-  if (derivation.state !== lastAutoState) {
-    setLastAutoState(derivation.state);
-    if (!muted && derivation.state !== "sleeping") {
+  if (transitionKey !== lastTransitionKey) {
+    setLastTransitionKey(transitionKey);
+    if (!muted && AUTO_OPEN_STATES.has(live.state)) {
       setOpen(true);
       setOpenedAt(value => value + 1);
     }
@@ -146,9 +152,7 @@ export function MaraCompanion(props: MaraCompanionProps) {
       if (typeof window === "undefined") return;
       if (muted) window.localStorage.setItem(MUTE_STORAGE_KEY, "1");
       else window.localStorage.removeItem(MUTE_STORAGE_KEY);
-    } catch {
-      // ignore persistence failures — the runtime setting still works.
-    }
+    } catch { /* ignore */ }
   }, [muted]);
 
   const scheduleAutoClose = useCallback(() => {
@@ -160,8 +164,6 @@ export function MaraCompanion(props: MaraCompanionProps) {
     setOpenedAt(value => value + 1);
   }, []);
 
-  // Auto-collapse the bubble unless the user is interacting with it. Reset by
-  // bumping `openedAt` whenever the user hovers/focuses inside the bubble.
   useEffect(() => {
     if (!open || openedAt === 0) return;
     if (autoCloseTimerRef.current !== null) window.clearTimeout(autoCloseTimerRef.current);
@@ -181,23 +183,30 @@ export function MaraCompanion(props: MaraCompanionProps) {
     };
   }, [open, openedAt]);
 
-  const stateSlug = derivation.state.replace("_", "-");
+  const { containerRef, style, onPointerDown, onKeyDown, resetPosition, wasDragged, isMobile } = useDraggableMascot();
+
+  const visualState: MaraVisualState = live.visualState;
+  const stateSlug = visualState.replace("_", "-");
   const emphasis = !muted && open ? " mara-emphasis" : "";
-  const collapsed = ` mara-${stateSlug}`;
   const openClass = open ? " mara-open" : "";
+  const mobileClass = isMobile ? " mara-mobile" : "";
+  const label = live.headline;
 
   return (
     <div
-      ref={rootRef}
-      className={`mara-companion${collapsed}${emphasis}${muted ? " mara-muted" : ""}${openClass}`}
-      data-state={derivation.state}
+      ref={containerRef}
+      className={`mara-companion mara-${stateSlug}${emphasis}${muted ? " mara-muted" : ""}${openClass}${mobileClass}`}
+      data-state={live.state}
+      data-visual-state={visualState}
+      style={style}
     >
       {open && (
         <div
           ref={bubbleRef}
           className="mara-bubble"
+          data-mara-no-drag=""
           role="dialog"
-          aria-label={`Mara says: ${message.primary}`}
+          aria-label={`Mara says: ${live.message}`}
           onMouseEnter={scheduleAutoClose}
           onFocus={scheduleAutoClose}
         >
@@ -206,7 +215,7 @@ export function MaraCompanion(props: MaraCompanionProps) {
               <span className="mara-eyebrow">CMDB COMPANION</span>
               <strong className="mara-name">Mara</strong>
             </div>
-            <div className="mara-bubble-controls">
+            <div className="mara-bubble-controls" data-mara-no-drag="">
               <button
                 type="button"
                 className="mara-mute"
@@ -219,6 +228,13 @@ export function MaraCompanion(props: MaraCompanionProps) {
               </button>
               <button
                 type="button"
+                className="mara-reset"
+                aria-label="Reset Mara position"
+                title="Reset Mara position"
+                onClick={resetPosition}
+              >⤾</button>
+              <button
+                type="button"
                 className="mara-close"
                 aria-label="Collapse Mara"
                 onClick={() => setOpen(false)}
@@ -226,18 +242,18 @@ export function MaraCompanion(props: MaraCompanionProps) {
             </div>
           </div>
           <div className="mara-bubble-body">
-            <p className="mara-primary">{message.primary}</p>
-            {message.secondary && <p className="mara-secondary">{message.secondary}</p>}
+            <p className="mara-primary">{live.message}</p>
+            {live.secondary && <p className="mara-secondary">{live.secondary}</p>}
             <p className="mara-status" aria-live="polite">
               <span className={`mara-status-dot mara-status-${stateSlug}`} aria-hidden="true" />
-              <span>{maraStateLabel(derivation.state)}{activeRunLabel ? ` · ${activeRunLabel}` : ""}</span>
+              <span>{label}{activeRunLabel ? ` · ${activeRunLabel}` : ""}</span>
             </p>
           </div>
           {actions.length > 0 && (
-            <div className="mara-bubble-actions">
+            <div className="mara-bubble-actions" data-mara-no-drag="">
               {actions.slice(0, 2).map(action => (
                 <button
-                  key={action.label}
+                  key={action.key}
                   type="button"
                   className="mara-action"
                   onClick={() => { action.onSelect(); }}
@@ -252,18 +268,36 @@ export function MaraCompanion(props: MaraCompanionProps) {
       <button
         type="button"
         className="mara-toggle"
-        aria-label={open ? "Collapse Mara companion" : `Open Mara companion. ${maraStateLabel(derivation.state)}.`}
+        aria-label={open ? "Collapse Mara companion" : `Open Mara companion. ${label}.`}
         aria-expanded={open}
-        title={`Mara — ${maraStateLabel(derivation.state)}`}
-        onClick={() => (open ? setOpen(false) : openBubble())}
+        title={`Mara — ${label}. Drag to move, arrow keys to nudge.`}
+        onPointerDown={onPointerDown}
+        onKeyDown={onKeyDown}
+        onClick={event => {
+          // Suppress the click if it followed a drag.
+          if (wasDragged) { event.preventDefault(); return; }
+          if (open) setOpen(false);
+          else openBubble();
+        }}
       >
-        <MaraLotusSvg state={derivation.state} />
+        <MaraLotusSvg state={visualState} />
       </button>
     </div>
   );
 }
 
-function MaraLotusSvg({ state }: { state: MaraCompanionState }) {
+function fallbackHeadline(state: MaraVisualState): string {
+  switch (state) {
+    case "sleeping": return "Resting";
+    case "inspecting": return "Inspecting";
+    case "warning": return "Attention needed";
+    case "awaiting_approval": return "Awaiting decision";
+    case "blooming": return "Verified";
+    case "error": return "Interrupted";
+  }
+}
+
+function MaraLotusSvg({ state }: { state: MaraVisualState }) {
   const sleeping = state === "sleeping";
   const warning = state === "warning";
   const awaiting = state === "awaiting_approval";
@@ -350,16 +384,13 @@ function MaraLotusSvg({ state }: { state: MaraCompanionState }) {
         ))}
       </g>
 
-      {/* Small leaf arms */}
       <g className="mara-arms" aria-hidden="true">
         <ellipse cx="18" cy="60" rx="6" ry="3" fill="#4d8f36" transform="rotate(-25 18 60)" />
         <ellipse cx="78" cy="60" rx="6" ry="3" fill="#4d8f36" transform="rotate(25 78 60)" />
       </g>
 
-      {/* Glowing centre + face */}
       <circle cx="48" cy="52" r="14" fill="url(#mara-core)" className="mara-core" />
 
-      {/* Glasses */}
       <g
         className={`mara-glasses ${sleeping || error ? "mara-glasses-tilted" : ""}`}
         transform={awaiting || warning ? "rotate(-4 48 51)" : error ? "rotate(6 48 51)" : undefined}
@@ -371,7 +402,6 @@ function MaraLotusSvg({ state }: { state: MaraCompanionState }) {
         <path d="M60.4 51h1.4" stroke="#e6eede" strokeWidth="1.2" strokeLinecap="round" />
       </g>
 
-      {/* Eyes */}
       {sleeping ? (
         <g className="mara-eyes-closed">
           <path d="M38 51.5c1.5 1 4.5 1 6 0" stroke="#11150e" strokeWidth="1.2" strokeLinecap="round" fill="none" />
@@ -381,13 +411,11 @@ function MaraLotusSvg({ state }: { state: MaraCompanionState }) {
         <g className="mara-eyes">
           <circle cx="41" cy={warning || awaiting ? "50" : "51"} r="1.6" fill="#11150e" />
           <circle cx="55" cy={warning || awaiting ? "50" : "51"} r="1.6" fill="#11150e" />
-          {/* highlights */}
           <circle cx="41.7" cy="50.3" r="0.55" fill="#f6ffcf" />
           <circle cx="55.7" cy="50.3" r="0.55" fill="#f6ffcf" />
         </g>
       )}
 
-      {/* Status ring */}
       <circle
         cx="48"
         cy="48"

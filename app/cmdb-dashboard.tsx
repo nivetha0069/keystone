@@ -645,6 +645,7 @@ export function CmdbDashboard() {
       onNavigate={next => setSection(next)}
       onOpenLedger={openEventLedger}
       onOpenApprovals={() => setSection("approvals")}
+      onOpenRemediation={() => setSection("remediate")}
       onShowReviewQueue={() => { setFilter("review"); setSection("comprehend"); }}
     />
   </div>;

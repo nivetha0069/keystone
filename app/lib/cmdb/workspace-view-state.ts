@@ -18,7 +18,28 @@ export type WorkspacePhaseId = CprPhaseId | "verify";
 
 export type PhaseStatus = "waiting" | "working" | "complete" | "blocked" | "approval_required" | "unknown";
 
-export type MaraViewState =
+/**
+ * Expanded live state used everywhere Mara is rendered (mascot, bubble,
+ * workspace status, governance, remediate, approvals). Each value maps to a
+ * `MaraVisualState` for the existing lotus SVG animations.
+ */
+export type MaraLiveState =
+  | "sleeping"
+  | "inspecting"
+  | "prioritizing"
+  | "awaiting_review"
+  | "awaiting_approval"
+  | "executing"
+  | "verifying"
+  | "completed"
+  | "warning"
+  | "error";
+
+/**
+ * CSS-facing enum kept stable so the existing mascot animations and status
+ * dots keep working. Each `MaraLiveState` maps to one visual class.
+ */
+export type MaraVisualState =
   | "sleeping"
   | "inspecting"
   | "warning"
@@ -32,9 +53,22 @@ export type MaraActionKey =
   | "open_team"
   | "review_findings"
   | "open_approvals"
+  | "open_remediation"
   | "open_evidence"
   | "open_ai_usage"
-  | "inspect_run";
+  | "inspect_run"
+  | "watch_activity";
+
+export type MaraLive = {
+  state: MaraLiveState;
+  visualState: MaraVisualState;
+  headline: string;
+  message: string;
+  secondary?: string;
+  actions: MaraActionKey[];
+  latestEventId?: string;
+  updatedAt?: string;
+};
 
 export type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
 
@@ -102,12 +136,7 @@ export type WorkspaceViewState = {
   latestResult: string;
   activityCards: ActivityCard[];
 
-  mara: {
-    state: MaraViewState;
-    primary: string;
-    secondary?: string;
-    actions: MaraActionKey[];
-  };
+  mara: MaraLive;
 
   governance: {
     title: string;
@@ -206,9 +235,25 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
   const nextAction = deriveNextAction({ requiresApproval, verifyStatus, remediateStatus, readyToSimulateCount });
   const latestResult = deriveLatestResult(activityCards, prioritizeStatus, workGroupCount);
 
-  const mara = deriveMaraView({
-    hasRun, runStateLower, analysisState: input.analysisState, apiState: input.apiState,
-    requiresApproval, approvalCount, heldCount, verifyStatus, snapshot, activityCards,
+  const executingCount = queue.items.filter(i => i.bucket === "needs_verification").length;
+  const verifiedCount = queue.items.filter(i => i.bucket === "verified").length;
+  const mara = deriveMaraLiveState({
+    hasRun,
+    runStateLower,
+    analysisState: input.analysisState,
+    apiState: input.apiState,
+    requiresApproval,
+    approvalCount,
+    heldCount,
+    executingCount,
+    verifiedCount,
+    prioritizeStatus,
+    remediateStatus,
+    verifyStatus,
+    comprehendStatus,
+    activityCards,
+    activeAction: snapshot.activeAction,
+    latestTimelineTime: input.timeline.at(-1)?.time,
   });
 
   const governance = deriveGovernance({
@@ -534,7 +579,13 @@ function phaseForEvent(event: TimelineEvent): CprPhaseId {
   return "comprehend";
 }
 
-function deriveMaraView(input: {
+/**
+ * The single Mara live-state adapter. Every Mara surface reads from this
+ * shape — mascot, bubble, workspace status, governance, remediate,
+ * approvals. Never invents activity. Never surfaces raw JSON or
+ * chain-of-thought.
+ */
+export function deriveMaraLiveState(input: {
   hasRun: boolean;
   runStateLower: string;
   analysisState?: string;
@@ -542,14 +593,28 @@ function deriveMaraView(input: {
   requiresApproval: boolean;
   approvalCount: number;
   heldCount: number;
+  executingCount: number;
+  verifiedCount: number;
+  prioritizeStatus: PhaseStatus;
+  remediateStatus: PhaseStatus;
   verifyStatus: PhaseStatus;
-  snapshot: AgentWorkspaceSnapshot;
+  comprehendStatus: PhaseStatus;
   activityCards: ActivityCard[];
-}): WorkspaceViewState["mara"] {
+  activeAction?: string;
+  latestTimelineTime?: string;
+}): MaraLive {
+  const latestCard = input.activityCards.at(-1);
+  const latestEventId = latestCard?.id;
+  const updatedAt = input.latestTimelineTime ?? undefined;
+
   if (!input.hasRun) return {
     state: "sleeping",
-    primary: "Bring me an estate when you're ready.",
+    visualState: "sleeping",
+    headline: "Resting",
+    message: "Bring me an estate when you're ready.",
     actions: ["start_rescue"],
+    latestEventId,
+    updatedAt,
   };
 
   const errored = input.analysisState === "error"
@@ -557,49 +622,115 @@ function deriveMaraView(input: {
     || (input.apiState === "error" && !isDraftRunState(input.runStateLower));
   if (errored) return {
     state: "error",
-    primary: "Something interrupted the run. The existing evidence is still available.",
+    visualState: "error",
+    headline: "Interrupted",
+    message: "Something interrupted the run. The existing evidence is still available.",
     actions: ["inspect_run", "open_evidence"],
+    latestEventId,
+    updatedAt,
   };
 
   if (input.requiresApproval) {
     const count = Math.max(input.approvalCount, input.heldCount);
-    const primary = count === 1
-      ? "The investigation is complete. 1 record requires your review before I can continue."
-      : `The investigation is complete. ${countWord(count)} records require your review before I can continue.`;
+    const message = count === 1
+      ? "One record needs your review before I can continue."
+      : `${countWord(count)} records need your review before I can continue.`;
     return {
       state: "awaiting_approval",
-      primary,
+      visualState: "awaiting_approval",
+      headline: "Awaiting decision",
+      message,
       secondary: "Each approval is scoped to one staged CI and one simulation fingerprint.",
       actions: ["review_findings", "open_approvals"],
+      latestEventId,
+      updatedAt,
     };
   }
 
-  if (input.heldCount > 0 && (isTerminalRunState(input.runStateLower) || !isDraftRunState(input.runStateLower))) {
+  // Execution in flight → needs_verification bucket count.
+  if (input.executingCount > 0 && input.remediateStatus === "working") {
     return {
-      state: "warning",
-      primary: input.heldCount === 1
-        ? "1 record needs human attention."
-        : `${input.heldCount} records need human attention.`,
-      actions: ["review_findings", "open_approvals"],
+      state: "executing",
+      visualState: "inspecting",
+      headline: "Executing",
+      message: "Approval received. I'm sending governed changes through IRE.",
+      actions: ["watch_activity", "open_remediation"],
+      latestEventId,
+      updatedAt,
     };
   }
 
-  if (input.runStateLower === "complete" || input.runStateLower === "completed" || input.runStateLower === "committed" || input.verifyStatus === "complete") {
+  // Verification in progress: needs_verification items exist but remediate
+  // status has finished pushing them.
+  if (input.verifyStatus === "working") {
     return {
-      state: "blooming",
-      primary: input.verifyStatus === "complete"
-        ? "The repair was verified through IRE."
+      state: "verifying",
+      visualState: "inspecting",
+      headline: "Verifying",
+      message: "The changes landed. I'm verifying the ServiceNow records now.",
+      actions: ["watch_activity", "open_evidence"],
+      latestEventId,
+      updatedAt,
+    };
+  }
+
+  // Completed (verified) — bloom once.
+  if (input.verifyStatus === "complete"
+    || input.runStateLower === "complete"
+    || input.runStateLower === "completed"
+    || input.runStateLower === "committed") {
+    return {
+      state: "completed",
+      visualState: "blooming",
+      headline: "Verified",
+      message: input.verifyStatus === "complete"
+        ? "The verified work is complete and the evidence has been recorded."
         : "The run is complete and the evidence is preserved.",
       actions: ["open_evidence", "open_ai_usage"],
+      latestEventId,
+      updatedAt,
     };
   }
 
-  // Active run without approval, held records, or terminal success — the
-  // agents are working. Never fall through to "sleeping" while a run exists.
+  // Held/review outstanding without a formal approval requirement.
+  if (input.heldCount > 0 && (isTerminalRunState(input.runStateLower) || !isDraftRunState(input.runStateLower))) {
+    return {
+      state: "awaiting_review",
+      visualState: "warning",
+      headline: "Attention needed",
+      message: input.heldCount === 1
+        ? "One record needs human attention."
+        : `${input.heldCount} records need human attention.`,
+      actions: ["review_findings", "open_approvals"],
+      latestEventId,
+      updatedAt,
+    };
+  }
+
+  // Prioritize completed and Remediate hasn't started yet.
+  if (input.prioritizeStatus === "complete" && input.remediateStatus !== "working" && input.executingCount === 0) {
+    return {
+      state: "prioritizing",
+      visualState: "inspecting",
+      headline: "Prioritized",
+      message: "I ranked the findings into bounded work groups.",
+      actions: ["watch_activity", "open_remediation"],
+      latestEventId,
+      updatedAt,
+    };
+  }
+
+  // Default active-run behaviour — inspecting the staged estate.
   return {
     state: "inspecting",
-    primary: input.snapshot.activeAction || "The agents are inspecting this migration run.",
-    actions: ["watch_agents", "open_team"],
+    visualState: "inspecting",
+    headline: input.comprehendStatus === "working" ? "Inspecting" : "Working",
+    message: input.activeAction && !/^\s*\{|\bObservation:/i.test(input.activeAction)
+      ? input.activeAction
+      : "I'm inspecting the staged estate.",
+    actions: ["watch_activity", "open_evidence"],
+    latestEventId,
+    updatedAt,
   };
 }
 
