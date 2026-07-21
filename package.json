@@ -28,7 +28,8 @@
     "smoke:servicenow-exporter": "node scripts/smoke-servicenow-exporter.cjs",
     "smoke:mara-observation": "node scripts/smoke-mara-observation.cjs",
     "smoke:mara-live-state": "node scripts/smoke-mara-live-state.cjs",
-    "smoke:frontend-errors": "node scripts/smoke-frontend-errors.cjs"
+    "smoke:frontend-errors": "node scripts/smoke-frontend-errors.cjs",
+    "verify:cold-load": "node scripts/verify-cold-load-no-400.cjs"
   },
   "dependencies": {
     "next": "16.2.6",
