@@ -462,6 +462,14 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .ci-evidence-card.ci-scope-strategy-error { border-color: rgba(255, 101, 66, .38); box-shadow: inset 3px 0 var(--coral); }
 .ci-evidence-card.ci-scope-execution-error { border-color: rgba(232, 178, 61, .42); box-shadow: inset 3px 0 var(--amber); }
 .ci-evidence-card.ci-scope-execution-error .ci-evidence-scope { color: var(--amber); }
+.ci-evidence-card.ci-scope-ineligible { border-color: rgba(232, 178, 61, .38); box-shadow: inset 3px 0 var(--amber); background: linear-gradient(180deg, rgba(232, 178, 61, .04), transparent 40%), #0d100d; }
+.ci-evidence-card.ci-scope-ineligible .ci-evidence-scope { color: var(--amber); }
+.ci-explainer { padding: 9px 11px; background: rgba(255, 255, 255, .015); border: 1px solid var(--line); }
+.ci-explainer strong { display: block; font-size: 11px; color: var(--ink); margin-bottom: 4px; }
+.ci-explainer p, .ci-explainer li { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.ci-explainer ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.ci-evidence-details-wide { grid-column: 1 / -1; }
+.ci-evidence-details .dim { color: var(--faint); font-size: 10px; margin-left: 4px; }
 .ci-evidence-card.ci-scope-empty { border-style: dashed; }
 .ci-evidence-head { display: flex; flex-direction: column; gap: 3px; }
 .ci-evidence-scope { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
@@ -1766,6 +1774,33 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .journey-chapter.active .journey-chapter-node { animation: none; }
   .journey-chapter-caret { transition: none; }
 }
+
+/* Runs queue page — client-side registry of every run the user has touched. */
+.runs-page-actions { display: flex; gap: 10px; }
+.runs-bucket { margin-bottom: 16px; padding: 0; }
+.runs-bucket .panel-heading { padding: 14px 16px; }
+.runs-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.runs-empty-line { margin: 0; padding: 14px 20px; color: var(--faint); font-size: 12px; font-style: italic; border-top: 1px solid var(--line); }
+.runs-row { display: grid; grid-template-columns: 1fr auto; align-items: stretch; border-bottom: 1px solid var(--line); position: relative; }
+.runs-row:last-child { border-bottom: none; }
+.runs-row-open { flex: 1; display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: center; padding: 14px 18px; background: transparent; border: 0; text-align: left; color: inherit; cursor: pointer; transition: background .18s ease; }
+.runs-row-open:hover { background: rgba(199, 243, 77, .05); }
+.runs-row-lead { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.runs-row-glyph { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--line-strong); background: #0a0d0a; font-size: 15px; }
+.runs-row-lead strong { display: block; font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 480px; }
+.runs-row-lead small { display: block; font: 9.5px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; margin-top: 2px; }
+.runs-row-state { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+.runs-row-state small { font: 9px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+.runs-state-pill { padding: 3px 9px; border: 1px solid var(--line-strong); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.runs-state-active { color: var(--lime); border-color: rgba(199, 243, 77, .35); background: rgba(199, 243, 77, .06); }
+.runs-state-done { color: var(--green); border-color: rgba(89, 197, 139, .35); background: rgba(89, 197, 139, .06); }
+.runs-state-muted { color: var(--faint); }
+.runs-row-current { background: rgba(199, 243, 77, .04); box-shadow: inset 3px 0 var(--lime); }
+.runs-row-current-tag { align-self: center; padding: 2px 8px; font: 9px var(--mono); letter-spacing: .18em; color: var(--lime); border: 1px solid rgba(199, 243, 77, .35); }
+.runs-row-forget { display: grid; place-items: center; width: 40px; padding: 0; background: transparent; border: 0; border-left: 1px solid var(--line); color: var(--faint); cursor: pointer; }
+.runs-row-forget:hover { color: var(--coral); background: rgba(255, 101, 66, .06); }
+.runs-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px; color: var(--muted); text-align: center; }
+.runs-empty strong { color: var(--ink); }
 
 /* Dataset identity — the "which dataset am I looking at?" chip in the top bar. */
 .dataset-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }

@@ -311,6 +311,31 @@ function event(overrides) {
   assert.equal(exec.kind, "execution");
   assert.equal(exec.message, "ServiceNow rejected the IRE action.");
 
+  // Live wording the user hit: "Staged CI is not eligible for simulation".
+  // Must classify as "ineligible", not "execution" — and preserve the
+  // exact message.
+  const ineligible = evidence.classifySimulationFailure({
+    simulation: {
+      success: false,
+      action: "simulate",
+      state: "simulation_failed",
+      error: { code: "IRE_FAILED", message: "Staged CI is not eligible for simulation" },
+    },
+  }, { className: "cmdb_ci_server", confidence: 0.4 });
+  assert.equal(ineligible.kind, "ineligible", `expected ineligible, got ${ineligible.kind}`);
+  assert.equal(ineligible.message, "Staged CI is not eligible for simulation");
+  assert.equal(ineligible.confidence, 40, "confidence must be converted 0-100");
+
+  // "confidence gate" wording should also classify as ineligible.
+  const gate = evidence.classifySimulationFailure({
+    simulation: {
+      success: false, action: "simulate", state: "simulation_failed",
+      error: { code: "IRE_FAILED", message: "Held by confidence gate" },
+    },
+  }, { className: "cmdb_ci_server", confidence: 20 });
+  assert.equal(gate.kind, "ineligible");
+  assert.equal(gate.confidence, 20);
+
   // hasCiSpecificIreResponse must be true for a failing simulation — we
   // still have a per-CI response, it just failed.
   assert.equal(evidence.hasCiSpecificIreResponse(workbench), true);

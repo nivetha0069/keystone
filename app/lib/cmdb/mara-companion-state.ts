@@ -15,7 +15,7 @@ export type MaraCompanionState =
   | "blooming"
   | "error";
 
-export type MaraSection = "import" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
+export type MaraSection = "import" | "runs" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 
 export type MaraFindingLike = { severity?: string; stagedCiId?: string };
 export type MaraReviewLike = { decision?: string };

@@ -14,7 +14,7 @@
 
 import type { WorkbenchRecord } from "./work-queue";
 
-export type SimulationFailureKind = "strategy" | "execution" | "none";
+export type SimulationFailureKind = "strategy" | "ineligible" | "execution" | "none";
 
 export type SimulationFailureClassification = {
   kind: SimulationFailureKind;
@@ -22,6 +22,10 @@ export type SimulationFailureClassification = {
   message: string;
   className?: string;
   strategy?: string;
+  /** Confidence % of the staged CI at the moment of failure. */
+  confidence?: number;
+  /** Missing identifier hint list ("no host_name", "no ip_address", ...). */
+  missingIdentifiers?: string[];
 };
 
 /** True when at least one CI-scoped IRE response is on the workbench. */
@@ -38,6 +42,17 @@ const STRATEGY_PATTERNS = [
   /strategy\s+not\s+registered/i,
 ];
 
+const INELIGIBLE_PATTERNS = [
+  /not\s+eligible\s+for\s+simulation/i,
+  /ineligible\s+for\s+simulation/i,
+  /eligibility\s+check\s+failed/i,
+  /confidence\s+gate/i,
+  /held\s+by\s+confidence/i,
+  /missing\s+(required\s+)?identifier/i,
+  /no\s+identifier/i,
+  /insufficient\s+identifier/i,
+];
+
 /**
  * Inspect the workbench for the simulation failure kind. Strategy failures
  * come from the configuration layer (no allowlisted strategy for this CI's
@@ -46,7 +61,7 @@ const STRATEGY_PATTERNS = [
  */
 export function classifySimulationFailure(
   workbench: WorkbenchRecord | undefined | null,
-  ci?: { className?: string } | null,
+  ci?: { className?: string; confidence?: number; ip?: string; name?: string; status?: string } | null,
 ): SimulationFailureClassification {
   const sim = workbench?.simulation;
   if (!sim) return { kind: "none", message: "" };
@@ -56,11 +71,24 @@ export function classifySimulationFailure(
   const detailText = typeof details === "string" ? details : Array.isArray(details) ? details.filter(x => typeof x === "string").join(" ") : "";
   const haystack = `${message} ${detailText}`.trim();
   const isStrategy = STRATEGY_PATTERNS.some(pattern => pattern.test(haystack));
+  const isIneligible = !isStrategy && INELIGIBLE_PATTERNS.some(pattern => pattern.test(haystack));
+  const confidencePct = typeof ci?.confidence === "number"
+    ? (ci.confidence <= 1 ? Math.round(ci.confidence * 100) : Math.round(ci.confidence))
+    : undefined;
+  const missingIdentifiers = isIneligible
+    ? [
+        !ci?.ip && "no ip_address",
+        !ci?.name && "no name / host_name",
+        (ci as { serial_number?: string } | undefined)?.serial_number === undefined && "no serial_number",
+      ].filter((entry): entry is string => Boolean(entry))
+    : undefined;
   return {
-    kind: isStrategy ? "strategy" : "execution",
+    kind: isStrategy ? "strategy" : isIneligible ? "ineligible" : "execution",
     message: message || detailText || "Simulation failed.",
     className: ci?.className,
     strategy: isStrategy ? "unavailable" : undefined,
+    confidence: confidencePct,
+    missingIdentifiers,
   };
 }
 

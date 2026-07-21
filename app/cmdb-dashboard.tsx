@@ -43,6 +43,7 @@ import {
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import { isDraftRunState, isTerminalRunState, TERMINAL_RUN_STATES } from "./lib/cmdb/run-lifecycle";
 import { rememberRun, resolveActiveRun } from "./lib/cmdb/run-context";
+import { forgetRunEntry, isRunTerminal as isRegistryRunTerminal, readRegistry, rememberRunEntry, type RegistryEntry } from "./lib/cmdb/run-registry";
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
@@ -78,7 +79,7 @@ type AnalysisState = "idle" | "starting" | "started" | "error";
 type ResourceName = "cis" | "timeline" | "relationships" | "health" | "findings" | "reviews";
 type ResourceStatus = "connecting" | "live" | "unavailable" | "error";
 type ResourceState = Record<ResourceName, ResourceStatus>;
-type Section = "import" | "workspace" | "approvals" | "evidence" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
+type Section = "import" | "runs" | "workspace" | "approvals" | "evidence" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 type IreWorkbenchRecord = {
   simulation?: IreActionResponse;
   approval?: IreActionResponse;
@@ -499,6 +500,18 @@ export function CmdbDashboard() {
       .then(data => { if (data && typeof data.host === "string" && data.host) setInstanceHost(data.host); })
       .catch(() => {});
   }, []);
+  // Enrich the persisted registry entry once the /run response lands so the
+  // Runs queue page can show real names + source system + run numbers.
+  useEffect(() => {
+    if (!activeRunId || !runRecord) return;
+    rememberRunEntry({
+      id: activeRunId,
+      label: activeRunLabel,
+      summary: runRecord.summary,
+      sourceSystem: runRecord.sourceSystem,
+      runNumber: runRecord.number,
+    });
+  }, [activeRunId, activeRunLabel, runRecord]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); }, [section]);
   useEffect(() => {
     if (!playing) return;
@@ -551,6 +564,15 @@ export function CmdbDashboard() {
     setLiveRefreshCount(0);
     setSection("workspace");
     rememberRun(runId);
+    // Persist to the client-side runs registry so the Runs queue page can
+    // switch between recent runs even after a browser reload.
+    if (runId) {
+      rememberRunEntry({
+        id: runId,
+        label,
+        imported: Boolean(run && run.id && run.id === runId && run.label),
+      });
+    }
     const url = new URL(window.location.href);
     if (runId) url.searchParams.set("run", runId);
     else url.searchParams.delete("run");
@@ -721,6 +743,11 @@ export function CmdbDashboard() {
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
+      {section === "runs" && <RunsQueueView
+        activeRunId={activeRunId}
+        onOpenRun={(entry) => openRun({ id: entry.id, label: entry.label })}
+        onNewImport={() => setSection("import")}
+      />}
       {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runId={activeRunId} runState={runRecord?.state ?? ""} apiState={apiState} analysisState={analysisState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenVerify={() => setSection("evidence")} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onRefresh={() => void loadData(activeRunId)} />}
       {section === "evidence" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} onStartAnalysis={() => activeRunId && void startComprehend(activeRunId)} />}
@@ -1223,6 +1250,9 @@ function SelectedCiIreEvidence(props: {
   if (failure.kind === "strategy") {
     return <StrategyFailureCard failure={failure} selectedCi={selectedCi} />;
   }
+  if (failure.kind === "ineligible") {
+    return <IneligibleCiCard failure={failure} selectedCi={selectedCi} />;
+  }
 
   const hasResponse = hasCiSpecificIreResponse(workbench);
   if (hasResponse) {
@@ -1275,6 +1305,39 @@ function SelectedCiIreEvidence(props: {
       <strong>No live response yet</strong>
     </div>
     <p className="ci-evidence-message">{CI_EVIDENCE_EMPTY_STATE}</p>
+  </div>;
+}
+
+function IneligibleCiCard({ failure, selectedCi }: { failure: SimulationFailureClassification; selectedCi: ConfigurationItem }) {
+  const confidence = typeof failure.confidence === "number"
+    ? failure.confidence
+    : Math.round((selectedCi.confidence ?? 0) * 100);
+  const missing = failure.missingIdentifiers ?? [];
+  return <div className="ci-evidence-card ci-scope-ineligible">
+    <div className="ci-evidence-head">
+      <span className="ci-evidence-scope">CI-SPECIFIC · IRE ELIGIBILITY BLOCK</span>
+      <strong>Staged CI is not eligible for IRE simulation</strong>
+    </div>
+    <p className="ci-evidence-message">{failure.message || "IRE refused to simulate this staged CI."}</p>
+    <div className="ci-explainer">
+      <strong>What this means:</strong>
+      <p>IRE needs enough deterministic evidence — a stable identifier plus a confidence score above the gate — before it will safely reconcile the CI against the CMDB. This record didn&apos;t clear the check.</p>
+    </div>
+    <dl className="ci-evidence-details">
+      <div><dt>Confidence</dt><dd>{confidence}% <span className="dim">(gate threshold typically 60%)</span></dd></div>
+      <div><dt>Class</dt><dd>{selectedCi.className || "—"}</dd></div>
+      <div><dt>IP</dt><dd>{selectedCi.ip || <span className="dim">not supplied</span>}</dd></div>
+      <div><dt>Name</dt><dd>{selectedCi.name || <span className="dim">not supplied</span>}</dd></div>
+      {missing.length > 0 && <div className="ci-evidence-details-wide"><dt>Missing identifiers</dt><dd>{missing.join(" · ")}</dd></div>}
+    </dl>
+    <div className="ci-explainer">
+      <strong>How to unblock:</strong>
+      <ul>
+        <li>Enrich the source data with a stable identifier (IP, hostname, serial number, or MAC).</li>
+        <li>Re-import the dataset; Sentry re-scores after fresh evidence lands.</li>
+        <li>Or approve the finding manually if a reviewer has out-of-band confirmation of identity.</li>
+      </ul>
+    </div>
   </div>;
 }
 
@@ -1336,6 +1399,162 @@ function RunSummarySection({ timeline, queue }: { timeline: TimelineEvent[]; que
       <pre>{rawJson}</pre>
     </details>}
   </div>;
+}
+
+/**
+ * Runs queue — lists every run the current user has imported or opened,
+ * hydrated with the backend's live state. ServiceNow does not expose a
+ * runs-list endpoint, so the registry is client-side (localStorage) and
+ * every entry is re-fetched via /run to confirm current state before it
+ * is rendered as active/complete/blocked.
+ */
+function RunsQueueView(props: {
+  activeRunId: string;
+  onOpenRun: (entry: RegistryEntry) => void;
+  onNewImport: () => void;
+}) {
+  const { activeRunId, onOpenRun, onNewImport } = props;
+  const [entries, setEntries] = useState<RegistryEntry[]>(() => (typeof window === "undefined" ? [] : readRegistry()));
+  const [liveState, setLiveState] = useState<Record<string, { state: string; refreshedAt: string }>>({});
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    const current = readRegistry();
+    setEntries(current);
+    // Fetch each run's current state in parallel; failures leave the entry
+    // in its previous state rather than falsely marking it dead.
+    const results = await Promise.allSettled(
+      current.map(async entry => {
+        const response = await fetch(`/api/cmdb/run?run=${encodeURIComponent(entry.id)}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${entry.id} → ${response.status}`);
+        const body = await response.json();
+        const state = body?.result?.result?.state || body?.result?.state || body?.state || "unknown";
+        return { id: entry.id, state: String(state) };
+      }),
+    );
+    const next: Record<string, { state: string; refreshedAt: string }> = {};
+    const stamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
+      if (result.status === "fulfilled") {
+        next[result.value.id] = { state: result.value.state, refreshedAt: stamp };
+      }
+    }
+    setLiveState(next);
+    setRefreshing(false);
+  }, []);
+
+  useEffect(() => {
+    // Fire-and-forget initial refresh — refreshAll dispatches setState
+    // asynchronously after the /run responses land, which is exactly what
+    // this effect is for.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshAll();
+  }, [refreshAll]);
+
+  function drop(id: string) {
+    setEntries(forgetRunEntry(id));
+    setLiveState(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
+  const inFlight = entries.filter(entry => {
+    const state = liveState[entry.id]?.state ?? "unknown";
+    return !isRegistryRunTerminal(state) && state !== "unknown";
+  });
+  const completed = entries.filter(entry => isRegistryRunTerminal(liveState[entry.id]?.state ?? ""));
+  const pending = entries.filter(entry => !inFlight.includes(entry) && !completed.includes(entry));
+
+  return <div className="page runs-page">
+    <section className="page-heading">
+      <div>
+        <span className="eyebrow accent">RUNS QUEUE</span>
+        <h1>All the datasets you&apos;ve opened.</h1>
+        <p>Switch between runs, or start a new import. State is re-fetched from ServiceNow on load.</p>
+      </div>
+      <div className="runs-page-actions">
+        <button className="ghost-button" disabled={refreshing} onClick={() => void refreshAll()}>
+          <Icon name="refresh" size={15} /> {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        <button className="primary-button" onClick={onNewImport}>
+          <Icon name="upload" size={15} /> New import
+        </button>
+      </div>
+    </section>
+
+    <RunsQueueBucket title="In flight" description="Backend is still working — analyzing, awaiting approval, executing, or verifying." entries={inFlight} liveState={liveState} activeRunId={activeRunId} onOpenRun={onOpenRun} onForget={drop} emptyLine="Nothing is running right now." />
+    <RunsQueueBucket title="Pending state check" description="Registered but not yet re-confirmed against ServiceNow." entries={pending} liveState={liveState} activeRunId={activeRunId} onOpenRun={onOpenRun} onForget={drop} emptyLine="All runs have been re-confirmed." />
+    <RunsQueueBucket title="Completed" description="Reached a terminal state. Kept for evidence — click to re-open." entries={completed} liveState={liveState} activeRunId={activeRunId} onOpenRun={onOpenRun} onForget={drop} emptyLine="No completed runs yet." />
+
+    {entries.length === 0 && <div className="runs-empty">
+      <Icon name="clock" size={22} />
+      <strong>The registry is empty.</strong>
+      <p>Import a dataset or paste a run sys_id in Comprehend to add one.</p>
+    </div>}
+  </div>;
+}
+
+function RunsQueueBucket(props: {
+  title: string;
+  description: string;
+  entries: RegistryEntry[];
+  liveState: Record<string, { state: string; refreshedAt: string }>;
+  activeRunId: string;
+  onOpenRun: (entry: RegistryEntry) => void;
+  onForget: (id: string) => void;
+  emptyLine: string;
+}) {
+  const { title, description, entries, liveState, activeRunId, onOpenRun, onForget, emptyLine } = props;
+  return <section className="panel runs-bucket">
+    <div className="panel-heading compact">
+      <div>
+        <span className="section-index">{title === "In flight" ? "01" : title === "Pending state check" ? "02" : "03"}</span>
+        <div><h2>{title}</h2><p>{description}</p></div>
+      </div>
+      <span className="panel-stat">{entries.length}</span>
+    </div>
+    {entries.length === 0
+      ? <p className="runs-empty-line">{emptyLine}</p>
+      : <ul className="runs-list">
+          {entries.map(entry => <RunsQueueRow key={entry.id} entry={entry} live={liveState[entry.id]} isActive={entry.id === activeRunId} onOpen={() => onOpenRun(entry)} onForget={() => onForget(entry.id)} />)}
+        </ul>}
+  </section>;
+}
+
+function RunsQueueRow(props: {
+  entry: RegistryEntry;
+  live?: { state: string; refreshedAt: string };
+  isActive: boolean;
+  onOpen: () => void;
+  onForget: () => void;
+}) {
+  const { entry, live, isActive, onOpen, onForget } = props;
+  const state = live?.state ?? "checking…";
+  const tone = live ? (isRegistryRunTerminal(state) ? "done" : "active") : "muted";
+  const source = entry.sourceSystem?.toLowerCase() || "?";
+  return <li className={`runs-row runs-row-${tone}${isActive ? " runs-row-current" : ""}`}>
+    <button className="runs-row-open" onClick={onOpen}>
+      <div className="runs-row-lead">
+        <span className="runs-row-glyph" aria-hidden="true">{sourceSystemGlyph(source)}</span>
+        <div>
+          <strong>{entry.summary || entry.label}</strong>
+          <small>{sourceSystemLabel(source)}{entry.runNumber ? ` · ${entry.runNumber}` : ""} · {entry.id.slice(0, 8).toUpperCase()}</small>
+        </div>
+      </div>
+      <div className="runs-row-state">
+        <span className={`runs-state-pill runs-state-${tone}`}>{state.replaceAll("_", " ")}</span>
+        {live && <small>synced {live.refreshedAt}</small>}
+      </div>
+      {isActive && <span className="runs-row-current-tag">CURRENT</span>}
+    </button>
+    <button className="runs-row-forget" onClick={onForget} title="Remove from this browser's registry (does not delete the ServiceNow run)">
+      <Icon name="x" size={14} />
+    </button>
+  </li>;
 }
 
 /**
