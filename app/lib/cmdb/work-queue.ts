@@ -205,14 +205,62 @@ function lifecycleFromPersistedEvidence(
   return approvalWasRecorded ? ledgerLifecycle : reviewLifecycle;
 }
 
+/**
+ * True if the event is a run-level Mara observation blob, not a per-CI
+ * IRE event. These events dump aggregate counts (ready_count, held_count,
+ * ...) or start with `Observation:` / `Thought:` markers; treating them as
+ * per-CI evidence lets a run-wide summary be attributed to whatever CI
+ * happens to be selected.
+ */
+export function isMaraObservationEvent(event: TimelineEvent): boolean {
+  const actor = (event.source || "").toLowerCase();
+  const text = (event.reasoning || "").trim();
+  if (/mara/i.test(actor)) return true;
+  if (/^\s*(observation|thought)\s*:/i.test(text)) return true;
+  // Raw JSON payload in a ledger event is only ever a Mara-style dump.
+  if (/^[[{]/.test(text)) return true;
+  // Aggregate-count markers Mara emits — never per-CI.
+  if (/"?ready_count"?\s*[:=]/i.test(text) && /"?held_count"?\s*[:=]/i.test(text)) return true;
+  return false;
+}
+
+/** Case-insensitive equality — treats null/undefined as no match. */
+function equalsCi(candidate: string | undefined | null, ci: ConfigurationItem): boolean {
+  if (!candidate) return false;
+  const value = candidate.toString().trim().toLowerCase();
+  if (!value) return false;
+  const ciIds = [ci.id, ci.stagedCiId, ci.name]
+    .filter((v): v is string => Boolean(v))
+    .map(v => v.toLowerCase());
+  return ciIds.includes(value);
+}
+
+/**
+ * A ledger event is CI-scoped only if it identifies exactly this staged CI —
+ * either by naming it in `recordName` (identity match, not substring), or by
+ * carrying a `staged_ci_id=` / `target_ci_sys_id=` metadata token in its
+ * reasoning that matches the CI. Substring/name matches used to leak
+ * unrelated events (e.g. Mara run summaries mentioning a CI in passing) into
+ * per-CI evidence — that is exactly the bug this filter closes.
+ */
+export function isCiScopedTimelineEvent(event: TimelineEvent, ci: ConfigurationItem): boolean {
+  if (isMaraObservationEvent(event)) return false;
+  if (equalsCi(event.recordName, ci)) return true;
+  const reasoning = event.reasoning || "";
+  const stagedCiId = ci.stagedCiId || ci.id;
+  if (stagedCiId) {
+    const pattern = new RegExp(`\\b(staged_ci_id|target_ci_sys_id|ci_sys_id)\\s*=\\s*${escapeRegex(stagedCiId)}\\b`, "i");
+    if (pattern.test(reasoning)) return true;
+  }
+  return false;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) {
-  const needles = [ci.id, ci.stagedCiId, ci.name]
-    .filter((value): value is string => Boolean(value))
-    .map(value => value.toLowerCase());
-  return timeline.filter(event => {
-    const haystack = `${event.recordName} ${event.name} ${event.reasoning}`.toLowerCase();
-    return needles.some(needle => haystack.includes(needle));
-  });
+  return timeline.filter(event => isCiScopedTimelineEvent(event, ci));
 }
 
 function relatedFindings(ci: ConfigurationItem, findings: RemediationFinding[]) {
@@ -267,7 +315,7 @@ function queueReason(input: {
 }) {
   if (input.approvalRejected) return "Review decision rejected the current remediation path.";
   if (input.review?.decision === "approved") return input.review.rationale || "ServiceNow review decision approved the current simulation.";
-  if (input.latestEvent) return input.latestEvent.reasoning;
+  if (input.latestEvent && !isMaraObservationEvent(input.latestEvent)) return input.latestEvent.reasoning;
   if (input.healthFix) return input.healthFix.description;
   if (input.bucket === "ready_to_simulate") return "Staged record has enough local gate evidence to request non-mutating IRE simulation.";
   if (input.bucket === "simulation_failed") return "Staged record is incomplete or already failed local eligibility checks.";

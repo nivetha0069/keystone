@@ -32,6 +32,7 @@ import {
 } from "./lib/cmdb/ire";
 import {
   deriveRemediationWorkQueue,
+  isMaraObservationEvent,
   type WorkQueueBucket,
   type WorkQueueItem,
   type WorkQueueItemSource,
@@ -56,6 +57,15 @@ import {
   extractComprehendError,
   friendlyIreError,
 } from "./lib/cmdb/frontend-errors";
+import {
+  CI_EVIDENCE_EMPTY_STATE,
+  STRATEGY_FAILURE_CARD,
+  buildRunSummaryChips,
+  classifySimulationFailure,
+  hasCiSpecificIreResponse,
+  type RunSummaryChip,
+  type SimulationFailureClassification,
+} from "./lib/cmdb/selected-ci-evidence";
 import {
   externalHrefFor,
   navigationItems,
@@ -1113,14 +1123,13 @@ function RemediateView(props: {
 
           <WorkbenchCountsRow queue={queue} lifecycle={lifecycle} />
 
-          {selectedQueueItem && <div className="queue-evidence">
-            <div>
-              <span className={`source-dot ${selectedQueueItem.source}`} />
-              <strong>{sourceLabel(selectedQueueItem.source)}</strong>
-              <p>{selectedQueueItem.reason}</p>
-            </div>
-            <div>{selectedQueueItem.evidence.slice(0, 6).map(item => <code key={item}>{item}</code>)}</div>
-          </div>}
+          <SelectedCiIreEvidence
+            selectedCi={selectedCi}
+            selectedQueueItem={selectedQueueItem}
+            workbench={workbench}
+          />
+
+          <RunSummarySection timeline={timeline} queue={queue} />
 
           {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
           <label className="approval-rationale"><span>APPROVAL RATIONALE</span><textarea value={rationale} onChange={event => setRationale(event.target.value)} /></label>
@@ -1146,6 +1155,126 @@ function RemediateView(props: {
         </div>
       </aside>
     </section>
+  </div>;
+}
+
+function SelectedCiIreEvidence(props: {
+  selectedCi: ConfigurationItem | null;
+  selectedQueueItem?: WorkQueueItem;
+  workbench: IreWorkbenchRecord;
+}) {
+  const { selectedCi, selectedQueueItem, workbench } = props;
+  if (!selectedCi) return null;
+
+  // Precedence: real CI-scoped response → strategy failure → legitimate
+  // non-live source (ledger/records/derived) → empty state. A run-level
+  // Mara observation is never eligible here.
+  const hasResponse = hasCiSpecificIreResponse(workbench);
+  if (hasResponse) {
+    return <div className="ci-evidence-card ci-scope-live">
+      <div className="ci-evidence-head">
+        <span className="ci-evidence-scope">CI-SPECIFIC · SELECTED STAGED CI</span>
+        <strong>Live IRE response</strong>
+      </div>
+      <p className="ci-evidence-message">{selectedQueueItem?.reason || "ServiceNow returned an IRE response for this staged CI."}</p>
+      <div className="ci-evidence-chips">
+        {selectedQueueItem?.evidence.slice(0, 6).map((item, index) => <code key={`${item}-${index}`}>{item}</code>)}
+      </div>
+    </div>;
+  }
+
+  const failure = classifySimulationFailure(workbench, selectedCi);
+  if (failure.kind === "strategy") {
+    return <StrategyFailureCard failure={failure} selectedCi={selectedCi} />;
+  }
+
+  // Non-Mara ledger evidence (real per-CI event that isn't a live workbench
+  // response) still gets its own card, but never labelled "Live IRE
+  // response" — that label is reserved for actual /ire/* responses.
+  if (
+    selectedQueueItem &&
+    selectedQueueItem.source !== "live_action" &&
+    selectedQueueItem.latestEvent &&
+    !isMaraObservationEvent(selectedQueueItem.latestEvent)
+  ) {
+    return <div className={`ci-evidence-card ci-scope-${selectedQueueItem.source}`}>
+      <div className="ci-evidence-head">
+        <span className="ci-evidence-scope">CI-SPECIFIC · SELECTED STAGED CI</span>
+        <strong>{sourceLabel(selectedQueueItem.source)}</strong>
+      </div>
+      <p className="ci-evidence-message">{selectedQueueItem.reason}</p>
+      <div className="ci-evidence-chips">
+        {selectedQueueItem.evidence.slice(0, 6).map((item, index) => <code key={`${item}-${index}`}>{item}</code>)}
+      </div>
+    </div>;
+  }
+
+  return <div className="ci-evidence-card ci-scope-empty">
+    <div className="ci-evidence-head">
+      <span className="ci-evidence-scope">CI-SPECIFIC · SELECTED STAGED CI</span>
+      <strong>No live response yet</strong>
+    </div>
+    <p className="ci-evidence-message">{CI_EVIDENCE_EMPTY_STATE}</p>
+  </div>;
+}
+
+function StrategyFailureCard({ failure, selectedCi }: { failure: SimulationFailureClassification; selectedCi: ConfigurationItem }) {
+  const { title, defaultMessage, labels, defaults } = STRATEGY_FAILURE_CARD;
+  const shown = failure.message || defaultMessage;
+  const rows: Array<{ label: string; value: string }> = [
+    { label: labels.class, value: failure.className || selectedCi.className || "unknown" },
+    { label: labels.strategy, value: failure.strategy || defaults.strategy },
+    { label: labels.fingerprint, value: defaults.fingerprint },
+    { label: labels.approval, value: defaults.approval },
+    { label: labels.execution, value: defaults.execution },
+    { label: labels.verification, value: defaults.verification },
+  ];
+  return <div className="ci-evidence-card ci-scope-strategy-error">
+    <div className="ci-evidence-head">
+      <span className="ci-evidence-scope">CI-SPECIFIC · STRATEGY / CONFIGURATION FAILURE</span>
+      <strong>{title}</strong>
+    </div>
+    <p className="ci-evidence-message">{shown}</p>
+    <dl className="ci-evidence-details">
+      {rows.map(row => <div key={row.label}>
+        <dt>{row.label}</dt>
+        <dd>{row.value}</dd>
+      </div>)}
+    </dl>
+  </div>;
+}
+
+function RunSummarySection({ timeline, queue }: { timeline: TimelineEvent[]; queue: WorkQueueSummary }) {
+  const latestObservation = [...timeline].reverse().find(isMaraObservationEvent);
+  const parsed = latestObservation ? buildRunSummaryChips(latestObservation.reasoning) : { chips: [] as RunSummaryChip[] };
+  const queueChipCandidates: RunSummaryChip[] = [
+    { label: "queued", value: String(queue.items.length) },
+    { label: "ready", value: String(queue.items.filter(i => i.bucket === "ready_to_simulate").length), tone: "good" as const },
+    { label: "approval", value: String(queue.items.filter(i => i.bucket === "needs_approval").length), tone: "warn" as const },
+    { label: "verify", value: String(queue.items.filter(i => i.bucket === "needs_verification").length) },
+    { label: "verified", value: String(queue.items.filter(i => i.bucket === "verified").length), tone: "good" as const },
+    { label: "blocked", value: String(queue.items.filter(i => i.bucket === "blocked" || i.bucket === "simulation_failed").length), tone: "warn" as const },
+  ];
+  const queueChips: RunSummaryChip[] = queueChipCandidates.filter(chip => Number(chip.value) > 0);
+  const chips = parsed.chips.length ? parsed.chips : queueChips;
+  const rawJson = parsed.raw;
+  return <div className="run-summary-section">
+    <div className="run-summary-head">
+      <span className="run-summary-scope">RUN-WIDE · MARA SUMMARY</span>
+      <strong>Run summary</strong>
+    </div>
+    {chips.length > 0
+      ? <ul className="run-summary-chips">
+          {chips.map((chip, index) => <li key={`${chip.label}-${index}`} className={chip.tone ? `run-summary-chip ${chip.tone}` : "run-summary-chip"}>
+            <strong>{chip.value}</strong>
+            <span>{chip.label}</span>
+          </li>)}
+        </ul>
+      : <p className="run-summary-empty">No run-level observation recorded yet.</p>}
+    {rawJson && <details className="run-summary-technical">
+      <summary>Technical evidence</summary>
+      <pre>{rawJson}</pre>
+    </details>}
   </div>;
 }
 
