@@ -11,6 +11,7 @@ import {
   type MaraReviewLike,
   type MaraSection,
 } from "./lib/cmdb/mara-companion-state";
+import type { MaraActionKey, WorkspaceViewState } from "./lib/cmdb/workspace-view-state";
 
 const MUTE_STORAGE_KEY = "keystone.mara.muted";
 const AUTO_COLLAPSE_MS = 12000;
@@ -31,8 +32,10 @@ export type MaraCompanionProps = {
   findings: MaraFindingLike[];
   reviews: MaraReviewLike[];
   queuedFix: HealthFix | null;
+  view?: WorkspaceViewState;
   onNavigate: (section: MaraSection) => void;
   onOpenLedger: () => void;
+  onOpenApprovals?: () => void;
   onShowReviewQueue: () => void;
 };
 
@@ -41,13 +44,13 @@ type MaraAction = { label: string; onSelect: () => void };
 export function MaraCompanion(props: MaraCompanionProps) {
   const {
     section, activeRunId, activeRunLabel, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, queuedFix,
-    onNavigate, onOpenLedger, onShowReviewQueue,
+    timeline, cis, health, findings, reviews, queuedFix, view,
+    onNavigate, onOpenLedger, onOpenApprovals, onShowReviewQueue,
   } = props;
 
   const topFixTitle = queuedFix?.title ?? health.fixes[0]?.title;
 
-  const derivation = useMemo(() => deriveMaraState({
+  const fallbackDerivation = useMemo(() => deriveMaraState({
     section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
   }), [
@@ -55,50 +58,61 @@ export function MaraCompanion(props: MaraCompanionProps) {
     timeline, cis, health, findings, reviews, topFixTitle,
   ]);
 
-  const message = useMemo(() => buildMaraMessage({
+  const derivation: { state: MaraCompanionState } = view
+    ? { state: view.mara.state }
+    : fallbackDerivation;
+
+  const fallbackMessage = useMemo(() => buildMaraMessage({
     section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
-  }, derivation), [
-    derivation, section, activeRunId, runState, analysisState, apiState,
+  }, fallbackDerivation), [
+    fallbackDerivation, section, activeRunId, runState, analysisState, apiState,
     timeline, cis, health, findings, reviews, topFixTitle,
   ]);
+
+  const message = view
+    ? { primary: view.mara.primary, secondary: view.mara.secondary }
+    : fallbackMessage;
 
   const actions = useMemo<MaraAction[]>(() => {
     const aiUsageHref = activeRunId
       ? `/ai-usage?run=${encodeURIComponent(activeRunId)}`
       : "/ai-usage";
-    const goAiUsage = () => { window.location.href = aiUsageHref; };
+    const goAiUsage = () => { window.location.assign(aiUsageHref); };
+    const openApprovals = () => (onOpenApprovals ? onOpenApprovals() : onNavigate("remediate"));
+
+    const build = (key: MaraActionKey): MaraAction | null => {
+      switch (key) {
+        case "start_rescue":
+          return activeRunId ? null : { label: "Start a rescue", onSelect: () => onNavigate("import") };
+        case "watch_agents": return { label: "Watch them work", onSelect: () => onNavigate("live") };
+        case "open_team": return { label: "Team", onSelect: () => onNavigate("hr") };
+        case "review_findings": return { label: "Review findings", onSelect: () => onShowReviewQueue() };
+        case "open_approvals": return { label: "Open approvals", onSelect: openApprovals };
+        case "open_evidence": return { label: "View evidence", onSelect: () => onOpenLedger() };
+        case "open_ai_usage": return { label: "AI usage", onSelect: goAiUsage };
+        case "inspect_run": return { label: "Inspect the run", onSelect: () => onNavigate("comprehend") };
+      }
+    };
+
+    if (view) {
+      return view.mara.actions
+        .map(build)
+        .filter((a): a is MaraAction => Boolean(a));
+    }
 
     switch (derivation.state) {
       case "sleeping":
-        return [{ label: "Start a rescue", onSelect: () => onNavigate("import") }];
-      case "inspecting":
-        return [
-          { label: "Watch them work", onSelect: () => onNavigate("live") },
-          { label: "Team", onSelect: () => onNavigate("hr") },
-        ];
-      case "warning":
-        return [
-          { label: "Show me", onSelect: () => { onShowReviewQueue(); } },
-          { label: "View priorities", onSelect: () => onNavigate("prioritize") },
-        ];
-      case "awaiting_approval":
-        return [
-          { label: "Review findings", onSelect: () => onNavigate("prioritize") },
-          { label: "Open remediation", onSelect: () => onNavigate("remediate") },
-        ];
-      case "blooming":
-        return [
-          { label: "View evidence", onSelect: () => onOpenLedger() },
-          { label: "AI usage", onSelect: goAiUsage },
-        ];
-      case "error":
-        return [
-          { label: "Inspect the run", onSelect: () => onNavigate("comprehend") },
-          { label: "View ledger", onSelect: () => onOpenLedger() },
-        ];
+        return activeRunId
+          ? [build("watch_agents")!, build("open_evidence")!]
+          : [build("start_rescue")!];
+      case "inspecting": return [build("watch_agents")!, build("open_team")!];
+      case "warning": return [build("review_findings")!, build("open_approvals")!];
+      case "awaiting_approval": return [build("review_findings")!, build("open_approvals")!];
+      case "blooming": return [build("open_evidence")!, build("open_ai_usage")!];
+      case "error": return [build("inspect_run")!, build("open_evidence")!];
     }
-  }, [derivation.state, activeRunId, onNavigate, onOpenLedger, onShowReviewQueue]);
+  }, [view, derivation.state, activeRunId, onNavigate, onOpenLedger, onOpenApprovals, onShowReviewQueue]);
 
   const [muted, setMuted] = useState<boolean>(() => {
     try {
@@ -170,11 +184,12 @@ export function MaraCompanion(props: MaraCompanionProps) {
   const stateSlug = derivation.state.replace("_", "-");
   const emphasis = !muted && open ? " mara-emphasis" : "";
   const collapsed = ` mara-${stateSlug}`;
+  const openClass = open ? " mara-open" : "";
 
   return (
     <div
       ref={rootRef}
-      className={`mara-companion${collapsed}${emphasis}${muted ? " mara-muted" : ""}`}
+      className={`mara-companion${collapsed}${emphasis}${muted ? " mara-muted" : ""}${openClass}`}
       data-state={derivation.state}
     >
       {open && (

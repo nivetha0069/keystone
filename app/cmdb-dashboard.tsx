@@ -50,6 +50,7 @@ import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 import { MaraCompanion } from "./mara-companion";
 import { AgentWorkspaceView } from "./agent-workspace";
+import { deriveWorkspaceViewState } from "./lib/cmdb/workspace-view-state";
 
 type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
 type AnalysisState = "idle" | "starting" | "started" | "error";
@@ -408,6 +409,20 @@ export function CmdbDashboard() {
     return () => window.clearInterval(timer);
   }, [playing, timeline.length]);
 
+  const workspaceView = useMemo(() => deriveWorkspaceViewState({
+    runLabel: activeRunLabel,
+    runId: activeRunId,
+    runState: runRecord?.state ?? "",
+    apiState,
+    analysisState,
+    cis,
+    timeline,
+    relationships,
+    findings,
+    reviews,
+    health,
+  }), [activeRunLabel, activeRunId, runRecord?.state, apiState, analysisState, cis, timeline, relationships, findings, reviews, health]);
+
   const filteredCis = useMemo(() => cis.filter(ci => {
     const matches = `${ci.name} ${ci.className} ${ci.source} ${ci.ip}`.toLowerCase().includes(search.toLowerCase());
     return matches && (filter === "all" || ci.status !== "live");
@@ -514,7 +529,7 @@ export function CmdbDashboard() {
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
-      {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runState={runRecord?.state ?? ""} apiState={apiState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onRefresh={() => void loadData(activeRunId)} />}
+      {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runId={activeRunId} runState={runRecord?.state ?? ""} apiState={apiState} analysisState={analysisState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenVerify={() => setSection("evidence")} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onRefresh={() => void loadData(activeRunId)} />}
       {section === "evidence" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "comprehend" && <ComprehendView health={health} timeline={timeline} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={activeStep} startPlayback={startPlayback} setActiveStep={setActiveStep} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} onStartAnalysis={() => activeRunId && void startComprehend(activeRunId)} />}
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
@@ -538,8 +553,10 @@ export function CmdbDashboard() {
       findings={findings}
       reviews={reviews}
       queuedFix={queuedFix}
+      view={workspaceView}
       onNavigate={next => setSection(next)}
       onOpenLedger={openEventLedger}
+      onOpenApprovals={() => setSection("approvals")}
       onShowReviewQueue={() => { setFilter("review"); setSection("comprehend"); }}
     />
   </div>;
