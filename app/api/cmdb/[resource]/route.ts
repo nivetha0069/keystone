@@ -99,8 +99,24 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   if (!url) return Response.json({ error: "Remediation is not configured" }, { status: 503 });
 
   const incoming = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const migrationRunId = identifier(incoming.migration_run_id);
-  const stagedCiId = identifier(incoming.staged_ci_id);
+  const rawRunId = incoming.migration_run_id ?? incoming.migrationRunId;
+  const rawStagedCiId = incoming.staged_ci_id ?? incoming.stagedCiId;
+  const migrationRunId = identifier(rawRunId);
+  const stagedCiId = identifier(rawStagedCiId);
+  // Legacy {fixId, tool} shape is retained only when the caller sent no
+  // ServiceNow IDs at all. If IDs were sent but failed the 32-hex check,
+  // fail loudly so the caller sees the validation problem instead of the
+  // backend rejecting a mismatched legacy payload.
+  const attemptedIreShape = rawRunId !== undefined || rawStagedCiId !== undefined;
+  if (attemptedIreShape && (!migrationRunId || !stagedCiId)) {
+    const missing: string[] = [];
+    if (!migrationRunId) missing.push("migration_run_id");
+    if (!stagedCiId) missing.push("staged_ci_id");
+    return Response.json({
+      error: "Invalid remediate request: migration_run_id and staged_ci_id must be 32-character lowercase hex.",
+      missing,
+    }, { status: 400 });
+  }
   const body = JSON.stringify(migrationRunId && stagedCiId
     ? {
         migration_run_id: migrationRunId,
