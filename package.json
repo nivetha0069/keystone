@@ -20,6 +20,7 @@
     "smoke:run-context": "node scripts/smoke-run-context.cjs",
     "smoke:usage-adapter": "node scripts/smoke-usage-adapter.cjs",
     "smoke:mara-companion": "node scripts/smoke-mara-companion.cjs",
+    "smoke:mara-observation": "node scripts/smoke-mara-observation.cjs",
     "smoke:agent-workspace": "node scripts/smoke-agent-workspace.cjs"
   },
   "dependencies": {
