@@ -22,10 +22,34 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/ire/approve` | `/ire/approve` | POST | Approves, rejects, or defers the single actionable remediation finding. |
 | `/api/cmdb/ire/execute` | `/ire/execute` | POST | Identifier-only status compatibility for the server-owned Phase D execution continuation; it cannot start IRE. |
 | `/api/cmdb/ire/verify` | `/ire/verify` | POST | Identifier-only status compatibility for the correlated server-owned verification continuation; it cannot start Verify. |
+| `/api/cmdb/remediation-campaign/plan` | existing GET resources | POST | Builds a stable homogeneous, server-derived plan of at most 20 staged CIs. |
+| `/api/cmdb/remediation-campaign/simulate` | `/ire/simulate` | POST | Simulates plan items with concurrency capped at three and isolates item failures. |
+| `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources | POST | Recomputes evidence and freezes a SHA-256 manifest for eligible `UPDATE` and `NO_CHANGE` items. |
+| `/api/cmdb/remediation-campaign/approve` | `/ire/approve` | POST | After the server-only safety gate is opened, recomputes the manifest and submits individual fingerprint-bound approvals sequentially. It never calls Execute or Verify. |
+| `/api/cmdb/remediation-campaign/status` | existing GET resources | POST | Reconstructs campaign execution and verification progress from persisted ServiceNow evidence. |
 
 All read endpoints accept an optional `run` query parameter containing a `migration_run` sys_id.
 
 The IRE action routes accept only identifiers and correlation metadata from the browser. In Phase D, browser calls to Execute and Verify are status-only. The successful prepared-approval Script Action is the only execution initiator. ServiceNow rebuilds and revalidates the payload from the exact persisted approval chain before calling IRE, then verifies the server-returned target through the same continuation.
+
+## Phase E campaign contract
+
+Campaign requests accept only the migration run, work-group signature, campaign
+ID, frozen manifest ID, staged-record IDs, and the bounded limit. Classes,
+mappings, operations, payloads, and CMDB values are reread and derived on the
+server. The coordinator deduplicates and deterministically orders the selected
+group, enforces a 20-item maximum, and accepts only fresh successful `UPDATE`
+or `NO_CHANGE` simulations with an actionable finding, deferred review,
+canonical 64-character fingerprint, and no blocker.
+
+The approval manifest is SHA-256 over sorted staged CI, finding, review,
+simulation correlation, fingerprint, and operation tuples. The approval route
+recomputes it from current ServiceNow evidence and rejects drift. One UX
+confirmation fans out into sequential calls to the existing individual
+`/ire/approve` contract; the Phase D continuation remains the sole owner of IRE
+Execute and correlated Verify. The grouped approval route is disabled unless
+the server-only `CMDB_AGENT_BATCH_APPROVAL_ENABLED=true` gate is explicitly
+opened for an authorized manifest.
 
 ## ServiceNow table usage
 

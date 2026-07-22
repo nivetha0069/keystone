@@ -88,8 +88,10 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - Milestones 0-1: Mostly complete. Architecture, schema inventory, contracts, IRE design, field-gap analysis, and agent harness design exist. Build and lint are currently clean.
 - Milestone 2: Partially complete. Import staging and ServiceNow-backed data views exist, with safe demo fallback. Full production-grade ingestion, pagination, and source fixtures remain incomplete.
 - Milestone 3: Partially complete. Comprehend and Live Ops views consume ServiceNow-backed run data and event ledger information. Prioritize is still mostly a health/fix presentation layer rather than a complete hybrid deterministic and agentic prioritization layer.
-- Milestone 4: Backend/proxy contract complete in the repository, and ServiceNow endpoints were reported as deployed. The main missing piece is the frontend single-record IRE control loop and automated tests around the safety contract.
-- Next milestone: Agent-orchestrated remediation. This should connect a deterministic work queue and agent tool layer to the Milestone 4 single-record control loop without granting the agent direct CMDB write authority.
+- Milestone 4: Complete. The fingerprint-bound Phase D continuation is deployed and live-validated; Execute and Verify are server-owned, correlated, and exposed to the browser only as status compatibility routes.
+- Milestone 5: Complete. The single-record workbench supports simulation, fingerprint-bound approval, automatic continuation monitoring, blockers, correlations, and verification results.
+- Milestone 6: Complete. The deterministic work queue and playback state reconstruct from ServiceNow evidence after refresh.
+- Milestone 7: Partially delivered. Phase E adds the first bounded bulk loop: stable homogeneous planning, three-wide simulation, frozen manifests, and sequential individual approvals for campaigns of at most 20 CIs. Broader retry strategies and live campaign acceptance remain open.
 
 ## 3. User Personas
 
@@ -544,6 +546,8 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 
 ### Milestone 5: Single-Record Remediation Workbench
 
+**Status: Complete.** The browser no longer initiates Execute or Verify. A successful fingerprint-bound approval starts the server-owned Phase D continuation, and the workbench monitors persisted evidence through correlated verification.
+
 - Objective: Make the Milestone 4 IRE control loop usable from the Keystone web app.
 - User-visible outcome: A user selects one staged CI, runs simulation, reviews the actionable finding, approves or rejects, executes an approved operation, and verifies the result.
 - Backend work: Harden `/api/cmdb/ire/[action]/route.ts` validation, normalize IRE responses, and add local request-shape tests if time allows.
@@ -557,6 +561,8 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 
 ### Milestone 6: Derived Agent Work Queue And Playback
 
+**Status: Complete.** Queue buckets, blockers, correlations, and lifecycle playback are deterministically reconstructed from staged records, findings, reviews, and Event Ledger evidence.
+
 - Objective: Convert staged records, findings, review decisions, and event ledger entries into an agent-owned work queue.
 - User-visible outcome: Users can see what the system is doing, what is queued, what is blocked, and what requires approval.
 - Backend work: Add selectors or adapter utilities that derive lifecycle state from existing records and events.
@@ -569,6 +575,8 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 - Deferred: Full model-driven orchestration.
 
 ### Milestone 7: Deterministic Failure Grouping And Retry Loop
+
+**Status: Partially delivered through Phase E.** The bounded campaign coordinator plans stable homogeneous groups of at most 20, simulates at concurrency three, isolates item failures, exposes only the allowlisted class-alias retry evidence, freezes a canonical SHA-256 manifest, and fans one confirmation into sequential Phase D approvals. The broad retry catalog and live 3–5 item acceptance campaign remain deferred.
 
 - Objective: Demonstrate that Keystone can investigate repeated IRE failures and retry with allowed strategies.
 - User-visible outcome: A set of failed simulations is grouped by shared cause; Keystone selects an allowed alternative and re-simulates.

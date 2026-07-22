@@ -91,3 +91,27 @@ approval, prepared-event, fingerprint, execution-event, target-CI, and
 verification bindings. The broad acceptance report still flags older
 pre-Phase-D ledger ordering and fingerprint mismatches; those historical
 records do not conflict with the new sequences 75-78.
+
+## Phase E Repository Build Status
+
+Phase E implements the first Milestone 7 bulk-remediation loop without adding
+ServiceNow schema or write APIs. The deterministic coordinator plans one stable
+homogeneous group of at most 20 staged CIs, simulates with concurrency capped
+at three, isolates record-level failures, and prepares only fresh safe-update
+evidence. A frozen SHA-256 manifest binds every staged CI to its finding,
+deferred review, simulation correlation, canonical fingerprint, and operation.
+
+One UI confirmation is translated into sequential individual ServiceNow
+approvals. The campaign route has no Execute or Verify invocation; Phase D owns
+both operations and the UI reconstructs progress from Event Ledger evidence.
+The local campaign smoke proves deterministic ordering and IDs, deduplication,
+the 20-record cap, homogeneous selection, stable manifest hashing, concurrency
+three, partial continuation, stale-manifest rejection, sequential approval,
+duplicate-safe correlations, refresh reconstruction, and direct Execute/Verify
+route exclusion.
+
+Milestone 5 and Milestone 6 are complete. Milestone 7 is partially delivered
+through this bounded campaign loop. No live grouped approval has been sent. The
+server-only group-approval gate remains closed pending a fresh GET-derived 3–5
+record manifest and explicit action-time authorization naming its run,
+campaign ID, manifest hash, item count, staged CI IDs, and fingerprints.

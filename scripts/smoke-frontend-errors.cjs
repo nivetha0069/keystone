@@ -189,9 +189,11 @@ const errors = require(cjsPath);
   const dashSrc = fs.readFileSync(path.join(repoRoot, "app", "cmdb-dashboard.tsx"), "utf8");
   const gate = /const\s+liveRunReady\s*=\s*Boolean\(activeRunId\s*&&\s*selectedCi\s*&&\s*apiState\s*!==\s*"demo"\)/;
   assert.ok(gate.test(dashSrc), "liveRunReady must require activeRunId + selectedCi + non-demo apiState");
-  // Every IRE action button must be disabled when !liveRunReady
+  // Phase E exposes only Simulate and Approve; both are disabled without a live run.
   const buttonMatches = dashSrc.match(/disabled=\{!liveRunReady[^}]*\}/g) || [];
-  assert.ok(buttonMatches.length >= 4, `expected >=4 !liveRunReady-gated buttons, got ${buttonMatches.length}`);
+  assert.equal(buttonMatches.length, 2, `expected exactly 2 !liveRunReady-gated buttons, got ${buttonMatches.length}`);
+  assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashSrc), false,
+    "Execute and Verify must remain server-owned status operations");
   // Cold load sets apiState to "demo" so liveRunReady is false even if a CI
   // happens to be selected from an earlier session
   assert.ok(/setApiState\("demo"\)/.test(dashSrc), "cold branch must force apiState='demo'");

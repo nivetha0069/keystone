@@ -17,6 +17,7 @@
     "acceptance:lifecycle:report": "node scripts/acceptance-autonomous-lifecycle.cjs --report",
     "smoke:stress-fixtures": "node scripts/smoke-company-stress-fixtures.cjs",
     "smoke:work-queue": "node scripts/smoke-work-queue.cjs",
+    "smoke:remediation-campaign": "node scripts/smoke-remediation-campaign.cjs",
     "smoke:playback": "node scripts/smoke-playback.cjs",
     "smoke:run-parser": "node scripts/smoke-run-parser.cjs",
     "smoke:run-lifecycle": "node scripts/smoke-run-lifecycle.cjs",
