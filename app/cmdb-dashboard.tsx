@@ -46,6 +46,7 @@ import type {
   RemediationCampaignSimulationResult,
   RemediationCampaignStatus,
 } from "./lib/cmdb/remediation-campaign";
+import { recoverLatestCampaignPlan } from "./lib/cmdb/remediation-campaign-recovery";
 
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import {
@@ -108,6 +109,7 @@ type CampaignViewState = {
   manifest?: RemediationApprovalManifest;
   approval?: RemediationCampaignApprovalResult;
   status?: RemediationCampaignStatus;
+  restored?: boolean;
 };
 
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
@@ -1153,6 +1155,7 @@ function RemediateView(props: {
   const [campaignPending, setCampaignPending] = useState<"plan" | "simulate" | "prepare-approval" | "approve" | "status" | null>(null);
   const [campaignError, setCampaignError] = useState("");
   const [manifestConfirmed, setManifestConfirmed] = useState(false);
+  const campaignRecoveryAttempted = useRef("");
   const demoFallback = !activeRunId && apiState === "demo";
 
   const selectedCi = stagedCis.find(ci => ci.id === selectedCiId) ?? stagedCis[0];
@@ -1187,6 +1190,40 @@ function RemediateView(props: {
     }))
     .slice(-5)
     : [];
+  const recoveredCampaignPlan = useMemo(
+    () => activeRunId ? recoverLatestCampaignPlan(activeRunId, cis.filter(ci => ci.id || ci.stagedCiId), timeline) : undefined,
+    [activeRunId, cis, timeline],
+  );
+
+  useEffect(() => {
+    if (campaign.plan || !recoveredCampaignPlan || campaignPending || campaignRecoveryAttempted.current === recoveredCampaignPlan.campaign_id) return;
+    campaignRecoveryAttempted.current = recoveredCampaignPlan.campaign_id;
+    const timer = window.setTimeout(async () => {
+      setCampaignPending("status");
+      try {
+        const response = await fetch("/api/cmdb/remediation-campaign/status", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            migration_run_id: recoveredCampaignPlan.migration_run_id,
+            campaign_id: recoveredCampaignPlan.campaign_id,
+            work_group_signature: recoveredCampaignPlan.work_group_signature,
+            staged_ci_ids: recoveredCampaignPlan.items.map(item => item.staged_ci_id),
+            limit: recoveredCampaignPlan.max_items,
+          }),
+        });
+        const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
+        if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Campaign recovery failed with HTTP ${response.status}.`);
+        setCampaign({ plan: { ...recoveredCampaignPlan, approval_enabled: false }, status: payload as RemediationCampaignStatus, restored: true });
+        setCampaignError("");
+      } catch (error) {
+        setCampaignError(error instanceof Error ? error.message : "Campaign recovery failed.");
+      } finally {
+        setCampaignPending(null);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [campaign.plan, campaignPending, recoveredCampaignPlan]);
 
   const campaignRequestBody = useCallback((includeManifest = false) => {
     const plan = campaign.plan;
@@ -1457,6 +1494,7 @@ function AgentCampaignPanel(props: {
 
     {!activeRunId && <div className="campaign-notice"><Icon name="shield" size={15} />Select a live migration run to create a server-derived campaign plan.</div>}
     {error && <div className="ire-error"><Icon name="x" size={15} />{error}</div>}
+    {campaign.restored && <div className="campaign-notice"><Icon name="refresh" size={15} />Campaign progress restored from persisted ServiceNow approval, execution, and verification evidence.</div>}
 
     {plan && <div className="campaign-identity">
       <div><small>SELECTED GROUP</small><strong>{plan.group_title}</strong></div>

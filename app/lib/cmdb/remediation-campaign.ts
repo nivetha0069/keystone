@@ -410,11 +410,8 @@ export async function approveRemediationCampaign(
 }
 
 export function remediationCampaignStatus(snapshot: RemediationCampaignSnapshot, selection: CampaignSelection): RemediationCampaignStatus {
-  const plan = validateCampaignSelection(snapshot, selection);
-  const context = campaignContext(snapshot);
-  const byId = new Map(context.queueItems.map(item => [item.stagedCiId, item]));
-  const items = plan.items.map(planned => {
-    const current = byId.get(planned.staged_ci_id)!;
+  const frozen = validateFrozenCampaignSelection(snapshot, selection);
+  const items = frozen.items.map(current => {
     const structured = campaignLifecycleEvidence(snapshot.timeline, current);
     return {
       ...campaignItem(current),
@@ -447,14 +444,14 @@ export function remediationCampaignStatus(snapshot: RemediationCampaignSnapshot,
   return {
     success: true,
     stage,
-    migration_run_id: plan.migration_run_id,
-    campaign_id: plan.campaign_id,
-    work_group_signature: plan.work_group_signature,
+    migration_run_id: snapshot.migrationRunId,
+    campaign_id: frozen.campaignId,
+    work_group_signature: selection.work_group_signature,
     items,
     summary: {
       total: items.length,
       eligible: items.length - counts.blocked,
-      excluded: plan.exclusions.length,
+      excluded: 0,
       succeeded: items.length - counts.blocked,
       failed: counts.blocked,
       approved: counts.approved,
@@ -464,6 +461,40 @@ export function remediationCampaignStatus(snapshot: RemediationCampaignSnapshot,
       blocked: counts.blocked,
     },
   };
+}
+
+/**
+ * Status follows the identifiers frozen into the reviewed campaign instead of
+ * replanning the current simulation queue. Successful records intentionally
+ * leave that queue during Execute and Verify, so replanning would replace them
+ * with later eligible records and incorrectly report membership drift.
+ */
+function validateFrozenCampaignSelection(snapshot: RemediationCampaignSnapshot, selection: CampaignSelection) {
+  if (snapshot.migrationRunId !== selection.migration_run_id) {
+    throw campaignError("CAMPAIGN_RUN_MISMATCH", "Campaign run does not match the authoritative snapshot.");
+  }
+  const requestedIds = normalizeIds(selection.staged_ci_ids);
+  if (!requestedIds.length) {
+    throw campaignError("INVALID_REQUEST", "Frozen campaign staged CI identifiers are required for status reconstruction.");
+  }
+  const context = campaignContext(snapshot);
+  const byId = new Map(context.queueItems.flatMap(item => [
+    [item.stagedCiId.toLowerCase(), item] as const,
+    [item.id.toLowerCase(), item] as const,
+  ]));
+  const items: WorkQueueItem[] = [];
+  for (const id of requestedIds) {
+    const item = byId.get(id);
+    if (!item) {
+      throw campaignError("CAMPAIGN_MEMBERSHIP_CHANGED", "A frozen campaign item is no longer present in the authoritative run snapshot.");
+    }
+    items.push(item);
+  }
+  const expectedCampaignId = campaignHash(snapshot.migrationRunId, selection.work_group_signature, requestedIds);
+  if (!selection.campaign_id || selection.campaign_id !== expectedCampaignId) {
+    throw campaignError("CAMPAIGN_STALE", "Frozen campaign identifiers do not match the supplied campaign id.");
+  }
+  return { campaignId: expectedCampaignId, items };
 }
 
 export function approvalManifestHash(campaignId: string, items: RemediationApprovalManifestItem[]) {

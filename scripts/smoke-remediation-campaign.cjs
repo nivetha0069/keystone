@@ -23,6 +23,7 @@ require.extensions[".ts"] = function loadTypeScript(module, filename) {
 };
 
 const campaign = require("../app/lib/cmdb/remediation-campaign.ts");
+const recovery = require("../app/lib/cmdb/remediation-campaign-recovery.ts");
 const { normalizeComprehendTimeline } = require("../app/lib/cmdb/comprehend-adapter.ts");
 
 async function main() {
@@ -281,6 +282,60 @@ assert.equal(status.summary.verified, 19);
 assert.equal(status.summary.blocked, 1);
 assert.equal(status.stage, "completed", "mixed campaigns complete when every item is verified or terminally blocked");
 
+const fullyVerifiedTimeline = [...timeline.filter(event => event !== timeline[timeline.length - 1]), ...plan.items.map((item, index) => ({
+  id: sysId(600 + index), seq: 200 + index, step: 7, name: "verification passed", recordName: item.name,
+  className: "cmdb_ci_linux_server", operation: "INSERT", source: "Remediate", confidence: 1,
+  time: `2026-07-22 14:${String(index).padStart(2, "0")}:00`, status: "complete",
+  reasoning: JSON.stringify({ schema: "keystone.agent.v1", phase: "remediate", actor: "Remediate",
+    decision_source: "deterministic", action: "verification_passed", status: "completed",
+    summary: "Correlated verification passed", migration_run_id: RUN, staged_ci_id: item.staged_ci_id,
+    simulation_correlation_id: `ks-sim-${item.staged_ci_id}`, simulation_fingerprint: fp(index + 1),
+    execution_correlation_id: sysId(900 + index), execution_event_id: sysId(900 + index),
+    target_ci_sys_id: sysId(1000 + index), operation: "INSERT", retry_count: 0 }),
+}))];
+const advancedFindings = plan.items.map((item, index) => ({
+  id: sysId(1200 + index), number: `DWF-ADV-${index}`, stagedCiId: item.staged_ci_id,
+  type: "data_quality", recommendation: "Approved campaign remediation",
+}));
+const advancedReviews = advancedFindings.map((finding, index) => ({
+  id: sysId(1300 + index), findingId: finding.id, decision: "approved",
+  rationale: "Frozen campaign approval accepted", policyApproved: false,
+}));
+const fullyVerifiedSnapshot = {
+  ...approvalSnapshot,
+  timeline: fullyVerifiedTimeline,
+  findings: advancedFindings,
+  reviews: advancedReviews,
+};
+const replannedAfterCompletion = campaign.planRemediationCampaign(fullyVerifiedSnapshot, plan.work_group_signature, 20);
+assert.notDeepEqual(replannedAfterCompletion.items.map(item => item.staged_ci_id), plan.items.map(item => item.staged_ci_id),
+  "completed records leave the simulation plan and later records take their place");
+const reconstructed = campaign.remediationCampaignStatus(fullyVerifiedSnapshot, {
+  migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
+  staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
+});
+assert.equal(reconstructed.items.length, 20, "status retains every frozen campaign member after queue advancement");
+assert.equal(reconstructed.summary.verified, 20);
+assert.equal(reconstructed.stage, "completed");
+const recovered = recovery.recoverLatestCampaignPlan(RUN, cis, plan.items.map((item, index) => ({
+  id: sysId(1500 + index), seq: 300 + index, step: 7, name: "verification passed", recordName: item.name,
+  className: item.class_name, operation: "INSERT", source: "Remediate", confidence: 1,
+  time: `2026-07-22 15:${String(index).padStart(2, "0")}:00`, status: "complete",
+  reasoning: JSON.stringify({ action: "verification_passed", migration_run_id: RUN,
+    staged_ci_id: item.staged_ci_id, correlation_id: `ks-campaign:${plan.campaign_id}:approve:${index}` }),
+})));
+assert.equal(recovered.campaign_id, plan.campaign_id, "refresh recovery discovers the persisted campaign id");
+assert.equal(recovered.items.length, 20, "refresh recovery retains the frozen staged CI membership");
+assert.equal(recovered.work_group_signature, plan.work_group_signature, "refresh recovery rebuilds the stable homogeneous signature");
+await assert.rejects(async () => campaign.remediationCampaignStatus(fullyVerifiedSnapshot, {
+  migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: "F".repeat(24),
+  staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
+}), error => error.code === "CAMPAIGN_STALE", "status rejects a campaign id that does not bind the frozen membership");
+await assert.rejects(async () => campaign.remediationCampaignStatus(fullyVerifiedSnapshot, {
+  migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
+  staged_ci_ids: [...plan.items.slice(0, -1).map(item => item.staged_ci_id), sysId(9999)], limit: 20,
+}), error => error.code === "CAMPAIGN_MEMBERSHIP_CHANGED", "status rejects a frozen item missing from the authoritative run");
+
 const route = fs.readFileSync(path.join(root, "app/api/cmdb/remediation-campaign/[action]/route.ts"), "utf8");
 assert.match(route, /CMDB_AGENT_BATCH_APPROVAL_ENABLED/);
 assert.equal(/invokeCampaignIre\("execute"|invokeCampaignIre\("verify"/.test(route), false, "campaign route never invokes Execute or Verify");
@@ -298,6 +353,8 @@ assert.match(dashboard, /function AgentCampaignPanel/);
 assert.match(dashboard, /Execute \+ Verify are automatic/);
 assert.match(dashboard, /This manifest will create/);
 assert.match(dashboard, /authoritative unmatched-identity evidence/);
+assert.match(dashboard, /recoverLatestCampaignPlan/);
+assert.match(dashboard, /Campaign progress restored from persisted ServiceNow/);
 assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashboard), false, "UI never triggers Execute or Verify");
 
 console.log("remediation campaign smoke passed");

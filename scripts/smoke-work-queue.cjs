@@ -77,6 +77,17 @@ assert.equal(pendingApproval.liveBackedCount, 1);
 const verified = deriveRemediationWorkQueue({ cis: [ci], timeline: [simulationEvent, verifiedEvent] });
 assert.equal(verified.items[0]?.bucket, "verified");
 
+const structuredVerification = deriveRemediationWorkQueue({ cis: [ci], timeline: [{
+  ...verifiedEvent,
+  recordName: "Remediate",
+  reasoning: JSON.stringify({
+    action: "verification_passed", status: "completed", migration_run_id: runId,
+    staged_ci_id: ci.id, correlation_id: "ks-campaign:ABCDEF0123456789ABCDEF01:approve:item",
+    execution_correlation_id: "ks-execute-json", target_ci_sys_id: "f41dd7bf168ec7109ae721961ee4da4f",
+  }),
+}] });
+assert.equal(structuredVerification.items[0]?.bucket, "verified", "structured per-CI Phase D JSON is lifecycle evidence, not a Mara summary");
+
 const staleExecution = deriveRemediationWorkQueue({
   cis: [ci],
   timeline: [],

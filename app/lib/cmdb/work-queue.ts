@@ -221,11 +221,29 @@ export function isMaraObservationEvent(event: TimelineEvent): boolean {
   const text = (event.reasoning || "").trim();
   if (/mara/i.test(actor)) return true;
   if (/^\s*(observation|thought)\s*:/i.test(text)) return true;
-  // Raw JSON payload in a ledger event is only ever a Mara-style dump.
-  if (/^[[{]/.test(text)) return true;
+  // Structured per-CI lifecycle events are persisted as JSON by Phase D.
+  // Other raw JSON remains a run-level Mara-style technical evidence dump.
+  if (/^[[{]/.test(text)) return !isStructuredCiLifecycleEvent(text);
   // Aggregate-count markers Mara emits — never per-CI.
   if (/"?ready_count"?\s*[:=]/i.test(text) && /"?held_count"?\s*[:=]/i.test(text)) return true;
   return false;
+}
+
+function isStructuredCiLifecycleEvent(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const stagedCiId = typeof parsed.staged_ci_id === "string" ? parsed.staged_ci_id : "";
+    const action = typeof parsed.action === "string" ? parsed.action : "";
+    return /^[0-9a-f]{32}$/i.test(stagedCiId) && [
+      "ire_simulation_started", "ire_simulation_completed", "ire_simulation_failed",
+      "approval_review_deferred", "approval_recorded", "approval_resume_claimed", "approval_resume_prepared",
+      "ire_execution_claimed", "ire_execution_completed", "ire_execution_failed",
+      "ire_execution_reconciliation_required", "ire_verification_claimed",
+      "verification_passed", "verification_failed",
+    ].includes(action);
+  } catch {
+    return false;
+  }
 }
 
 /** Case-insensitive equality — treats null/undefined as no match. */
