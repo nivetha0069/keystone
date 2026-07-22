@@ -309,7 +309,7 @@ function evidenceByStagedCi(detailEvents, timeline) {
       stagedCiId: detail.staged_ci_id,
       fingerprint: detail.simulation_fingerprint,
       simulationCorrelation: detail.simulation_correlation_id,
-      executionCorrelation: detail.execution_correlation_id,
+      executionCorrelation: detail.execution_correlation_id || detail.execution_event_id,
     };
     const text = `${detail.action} ${detail.status} ${event.name}`.toLowerCase();
     if (/simulat/.test(text)) add({ ...item, kind: "simulations" });
@@ -335,7 +335,7 @@ function eventEvidence(event) {
     stagedCiId: readToken(event.reasoning, "staged_ci_id"),
     fingerprint: readToken(event.reasoning, "simulation_fingerprint") || readToken(event.reasoning, "fingerprint"),
     simulationCorrelation: readToken(event.reasoning, "simulation_correlation_id"),
-    executionCorrelation: readToken(event.reasoning, "execution_correlation_id"),
+    executionCorrelation: readToken(event.reasoning, "execution_correlation_id") || readToken(event.reasoning, "execution_event_id"),
   };
 }
 

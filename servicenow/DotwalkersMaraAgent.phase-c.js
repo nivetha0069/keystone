@@ -950,6 +950,51 @@ DotwalkersMaraAgent.prototype = {
         };
     },
 
+    /**
+     * Phase D deterministic continuation. The prepared token contains only
+     * server-owned identifiers and canonical correlation evidence. No model,
+     * prompt, payload, class, mapping, operation, target, or decision can enter
+     * this method.
+     */
+    continueApprovalResume: function(prepared) {
+        if (!prepared || typeof prepared !== 'object' ||
+            Object.prototype.toString.call(prepared) === '[object Array]') {
+            return { success: false, state: 'approval_resume_rejected' };
+        }
+        var allowed = {
+            success: true,
+            state: true,
+            migration_run_id: true,
+            staged_ci_id: true,
+            approval_event_id: true,
+            simulation_correlation_id: true,
+            simulation_fingerprint: true,
+            continuation_ready: true,
+            executed: true,
+            verified: true,
+            cmdb_committed: true
+        };
+        var keys = Object.keys(prepared);
+        for (var i = 0; i < keys.length; i++) {
+            if (!allowed[keys[i]]) {
+                return { success: false, state: 'approval_resume_rejected' };
+            }
+        }
+        if (prepared.success !== true ||
+            prepared.state !== 'approval_resume_prepared' ||
+            prepared.continuation_ready !== true ||
+            prepared.executed !== false ||
+            prepared.verified !== false ||
+            prepared.cmdb_committed !== false ||
+            !/^[0-9a-f]{32}$/i.test(String(prepared.migration_run_id || '')) ||
+            !/^[0-9a-f]{32}$/i.test(String(prepared.staged_ci_id || '')) ||
+            !/^[0-9a-f]{32}$/i.test(String(prepared.approval_event_id || '')) ||
+            !/^[0-9a-f]{64}$/i.test(String(prepared.simulation_fingerprint || ''))) {
+            return { success: false, state: 'approval_resume_rejected' };
+        }
+        return new DotwalkersIreSimulationService().continuePreparedApproval(prepared);
+    },
+
     type:
         'DotwalkersMaraAgent'
 };

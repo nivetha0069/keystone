@@ -24,6 +24,9 @@ list and `docs/lifecycle-acceptance-report.md` for acceptance classifications.
 - `servicenow/run_dotwalkers_mara.phase-c.js`
 - `servicenow/DotwalkersMaraAgent.phase-c.js`
 - `servicenow/DotwalkersPhaseCTests.phase-c.js`
+- `servicenow/ire_execute.phase-d.js`
+- `servicenow/ire_verify.phase-d.js`
+- `servicenow/DotwalkersPhaseDTests.phase-d.js`
 
 The first helper creates compact, allowlisted `AgentEventDetailV1` evidence. The
 second owns deterministic work grouping, the single class-alias retry strategy,
@@ -43,7 +46,8 @@ simulation never commits a CMDB record.
   `x_kest_dotwalkers.mara.requested` event with a validated resume token.
 - Extend the Mara Script Action and `DotwalkersMaraAgent` only through
   concurrency-safe token claim and preparation. Execute and Verify remain a
-  later explicitly confirmed slice.
+  later explicitly confirmed slice. Phase D now source-controls that slice but
+  remains uninstalled and untriggered.
 - Extend the existing health read path with persisted projected/verified data.
 
 Preserve deployed role, run-linkage, identifier-only, idempotency, concurrency,
@@ -57,13 +61,14 @@ Current server-side status:
 
 - Phase B3A: 23/23
 - Phase B3B: 41/41
-- Phase C: 36/36 in the separate test-only Script Include
+- Phase C/C.1: 48/48 live-validated
+- Phase D: 32/32 locally in a separate test-only Script Include
 
 The Phase C baseline and ledger-sequence correction are installed. A fresh
 GET-only reread verified new simulation sequences 64/65 and the canonical
 fingerprint. Phase C.1 adds the explicit deterministic deferred-review binding
-and expands the same test record from 36 to 48 tests; that patch is not yet
-installed. The test record sys_id is `2a2cc9589316cf10410e383efaba102f`.
+and expands the same test record from 36 to 48 tests; it is installed and
+live-validated. The test record sys_id is `2a2cc9589316cf10410e383efaba102f`.
 
 Phase C.1 keeps Record proposal explicit. The existing `/remediate` resource
 accepts only run, staged CI, finding, proposal correlation/idempotency, and the
@@ -105,3 +110,46 @@ ire_simulation_completed
 -> approval_resume_prepared
 -> STOP
 ```
+
+## Phase D Build-Only Handoff
+
+The fresh GET-only scope export on 2026-07-22 found the deployed `ire_execute`
+still using a legacy 32-character fingerprint, browser-triggered execution,
+query-then-insert concurrency, and raw IRE failure detail. The deployed
+`ire_verify` was server-derived but interactive and non-atomic. Phase D replaces
+those resources in place with status-only adapters and extends the existing
+`DotwalkersIreSimulationService`; it creates no parallel runtime API or service.
+
+The deterministic execution claim sys_id binds run, staged CI, approval event,
+prepared event, simulation correlation, and canonical fingerprint. The claim is
+inserted with `setNewGuidValue` before the single IRE call. A successful result
+is the only source of target CI and operation. Completed exact replay returns
+the persisted result; conflicting replay stops.
+
+Retry rules are fixed before deployment:
+
+- one pre-invocation execution retry through a deterministic retry claim;
+- no automatic retry after IRE invocation begins or its result is ambiguous;
+- one transient verification-read retry through a deterministic verification
+  retry claim;
+- no second Execute after verification transport failure or mismatch.
+
+Expected later sequence:
+
+```text
+approval_resume_prepared
+-> ire_execution_claimed
+-> exactly one createOrUpdateCI
+-> ire_execution_completed
+-> ire_verification_claimed
+-> verification_passed or verification_failed
+-> STOP
+```
+
+Install nothing and trigger nothing until the action-time confirmation names:
+
+- staged CI `24ac4df32b82871060aefba6b891bf5c`;
+- fingerprint `8E080D7595B72AB11893B32EFDBEC60A215E0C33C47F83F0106384AB07CCE67D`;
+- approval event `495c623d6523bb79b494287d0f0b51ed`;
+- prepared event `1b43ac6e2e86d25abbb64faaad77ecf3`;
+- and explicitly authorizes exactly one IRE Execute plus one correlated Verify.

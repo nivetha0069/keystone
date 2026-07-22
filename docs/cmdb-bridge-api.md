@@ -20,12 +20,12 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/remediate` | `/remediate` | POST | Records an identifier-only proposal for one staged CI. Legacy fix/tool proposals remain compatible. It does not write to CMDB. |
 | `/api/cmdb/ire/simulate` | `/ire/simulate` | POST | Requests non-mutating single-record IRE simulation. |
 | `/api/cmdb/ire/approve` | `/ire/approve` | POST | Approves, rejects, or defers the single actionable remediation finding. |
-| `/api/cmdb/ire/execute` | `/ire/execute` | POST | Requests approved single-record IRE execution by identifier only. |
-| `/api/cmdb/ire/verify` | `/ire/verify` | POST | Verifies the CI returned by a specific execution correlation id. |
+| `/api/cmdb/ire/execute` | `/ire/execute` | POST | Identifier-only status compatibility for the server-owned Phase D execution continuation; it cannot start IRE. |
+| `/api/cmdb/ire/verify` | `/ire/verify` | POST | Identifier-only status compatibility for the correlated server-owned verification continuation; it cannot start Verify. |
 
 All read endpoints accept an optional `run` query parameter containing a `migration_run` sys_id.
 
-The IRE action routes accept only identifiers and correlation metadata from the browser. Execute requests must not include target class, final operation, target CI, CMDB values, or an authoritative IRE payload. ServiceNow must rebuild and revalidate the payload from staged data and approval records before calling IRE.
+The IRE action routes accept only identifiers and correlation metadata from the browser. In Phase D, browser calls to Execute and Verify are status-only. The successful prepared-approval Script Action is the only execution initiator. ServiceNow rebuilds and revalidates the payload from the exact persisted approval chain before calling IRE, then verifies the server-returned target through the same continuation.
 
 ## ServiceNow table usage
 
@@ -134,8 +134,8 @@ Every IRE action receives:
 Additional fields:
 
 - `/ire/approve`: `decision`, `rationale`, optional `simulation_correlation_id`.
-- `/ire/execute`: `simulation_correlation_id` only.
-- `/ire/verify`: `execution_correlation_id` only.
+- `/ire/execute`: `simulation_correlation_id` only, for status lookup; it cannot invoke IRE.
+- `/ire/verify`: `execution_correlation_id` only, for status lookup; it cannot initiate verification.
 
 The `/remediate` contract contains exactly `migration_run_id`, `staged_ci_id`,
 `finding_id`, `correlation_id`, `idempotency_key`,

@@ -27,6 +27,7 @@
     "smoke:servicenow-phase-a": "node scripts/smoke-servicenow-phase-a-paste.cjs",
     "smoke:servicenow-runtime": "node scripts/smoke-servicenow-runtime-helpers.cjs",
     "smoke:servicenow-phase-c": "node scripts/smoke-servicenow-phase-c.cjs",
+    "smoke:servicenow-phase-d": "node scripts/smoke-servicenow-phase-d.cjs",
     "smoke:servicenow-exporter": "node scripts/smoke-servicenow-exporter.cjs",
     "smoke:mara-observation": "node scripts/smoke-mara-observation.cjs",
     "smoke:mara-live-state": "node scripts/smoke-mara-live-state.cjs",

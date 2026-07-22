@@ -87,6 +87,8 @@ export function sanitizeIreRequest(action: IreAction, incoming: Record<string, u
   }
 
   if (action === "execute") {
+    // Phase D compatibility request: the upstream resource reports the
+    // server-owned continuation status and cannot start an IRE commit.
     return {
       ...base,
       simulation_correlation_id: value(incoming.simulation_correlation_id ?? incoming.simulationCorrelationId),
@@ -94,6 +96,8 @@ export function sanitizeIreRequest(action: IreAction, incoming: Record<string, u
   }
 
   if (action === "verify") {
+    // Phase D compatibility request: the upstream resource reports the
+    // correlated server-owned verification status and cannot start Verify.
     return {
       ...base,
       execution_correlation_id: value(incoming.execution_correlation_id ?? incoming.executionCorrelationId),

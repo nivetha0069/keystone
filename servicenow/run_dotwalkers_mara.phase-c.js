@@ -23,7 +23,9 @@
             throw new Error('Preparation did not complete');
         }
 
-        service.recordApprovalResumePrepared(claim.binding, claim.claim_event_id);
+        if (!service.recordApprovalResumePrepared(claim.binding, claim.claim_event_id)) {
+            throw new Error('Prepared marker was not recorded');
+        }
         gs.info('Dotwalkers Mara approval continuation prepared.');
     } catch (ignoredPreparationFailure) {
         try {
@@ -33,5 +35,17 @@
             return;
         }
         gs.error('Dotwalkers Mara approval continuation preparation failed safely.');
+        return;
+    }
+
+    try {
+        var continuation = new DotwalkersMaraAgent().continueApprovalResume(prepared);
+        if (!continuation || continuation.success !== true) {
+            gs.error('Dotwalkers Mara Phase D continuation stopped safely.');
+            return;
+        }
+        gs.info('Dotwalkers Mara Phase D continuation reached its terminal verification state.');
+    } catch (ignoredContinuationFailure) {
+        gs.error('Dotwalkers Mara Phase D continuation stopped safely.');
     }
 })();

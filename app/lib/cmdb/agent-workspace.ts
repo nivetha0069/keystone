@@ -30,6 +30,14 @@ export type AgentEventDetailV1 = {
   correlation_id?: string;
   simulation_correlation_id?: string;
   execution_correlation_id?: string;
+  approval_event_id?: string;
+  resume_prepared_event_id?: string;
+  root_execution_claim_id?: string;
+  execution_claim_id?: string;
+  execution_event_id?: string;
+  root_verification_claim_id?: string;
+  verification_claim_id?: string;
+  verification_event_id?: string;
   simulation_fingerprint?: string;
   mapping_version?: string;
   idempotency_key?: string;

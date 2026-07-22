@@ -1,6 +1,6 @@
 # Autonomous Lifecycle Acceptance Report
 
-Read-only report refreshed on 2026-07-21 with:
+Read-only report refreshed again on 2026-07-21 with:
 
 ```text
 npm.cmd run acceptance:lifecycle:report
@@ -16,18 +16,21 @@ and `relationships` with GET.
 | Check | Classification | Evidence |
 |---|---|---|
 | Read-only bridge access | STATIC PASS | Harness permits only the seven GET resources. |
-| Automatic analysis evidence | FAIL | Analysis exists, but the historical Event Ledger sequence is broken. |
-| Deterministic work grouping | STATIC PASS | Two stable local groups reconstruct from live evidence. |
+| Automatic analysis evidence | FAIL | Analysis exists, but the historical Event Ledger sequence is still broken. |
+| Deterministic work grouping | STATIC PASS | Three stable local groups reconstruct from live evidence. |
 | Retry strategy and mapping version | FAIL | Deployed ledger has no `normalize_known_class_alias` plus mapping-version evidence. |
 | One retry maximum | UNAVAILABLE | Deployed ledger exposes no retry counters. |
-| Simulation fingerprint parity | FAIL | The selected CI has missing or different simulation, approval, and execution fingerprints. |
-| Approval linkage | PASS | 18 approval events are backed by 3 findings and 4 review decisions. |
+| Simulation fingerprint parity | FAIL | Six historical execution observations for the selected CI do not match the current canonical approval fingerprint. |
+| Approval linkage | PASS | 23 approval events are backed by 5 findings and 5 review decisions. |
 | Identifier-only approval contract | STATIC PASS | The Keystone route forwards only the exact eight binding identifiers/correlation fields and discards decision, rationale, operation, mapping, class, and payload data. |
 | Identifier-only execution contract | STATIC PASS | The Keystone route discards class, values, and payload fields. |
 | Exact execution-correlation verification | PASS | Three verification events match prior execution correlations. |
 | Refresh reconstruction | STATIC PASS | Re-derivation from cloned GET evidence is identical. |
 | Health attribution | UNAVAILABLE | The deployed health resource does not expose baseline, verified, or projected metrics. |
 | Relationship readiness | PASS | 0/1 is ready using verified endpoint evidence only. |
+
+The refreshed bridge counts were 2 CIs, 84 timeline events, 5 findings, 5
+reviews, 1 relationship, and 3 deterministic work groups.
 
 `STATIC PASS` proves a local contract or deterministic derivation. `PASS`
 requires returned ServiceNow evidence. `UNAVAILABLE` means the resource lacks
@@ -51,8 +54,8 @@ until report mode is run again against refreshed lifecycle evidence.
 
 ## Phase C Installed Build Status
 
-Phase C was installed in place on 2026-07-21. The separate
-`DotwalkersPhaseCTests.run()` suite passed 36/36 in ServiceNow;
+Phase C/C.1 was installed in place on 2026-07-21. The separate
+`DotwalkersPhaseCTests.run()` suite passed 48/48 in ServiceNow;
 `DotwalkersPhaseB3BTests.run()` remained byte-for-byte unchanged and passed
 41/41. A fresh GET-only export then matched all six deployed Phase C source
 records exactly. No live approval, event queue, Execute, Verify, or CMDB write
@@ -60,9 +63,31 @@ was sent.
 
 The ledger-sequence correction was subsequently installed and verified: a new
 simulation wrote started/completed sequences 64/65 and a GET-only reread found
-the canonical 64-character fingerprint as the newest evidence. Phase C.1 is
-now source-controlled to bind that simulation to one deterministic deferred
-review through the existing Record proposal path. Its expanded 48-test suite
-and `/remediate` patch are build-only until the next deployment gate. Explicit
-action-time confirmation remains required before recording the proposal or any
-approval.
+the canonical 64-character fingerprint as the newest evidence. Phase C.1 then
+bound that simulation to one deterministic deferred review through the existing
+Record proposal path and was live-validated at 48/48. The prepared continuation
+stops before Execute and Verify.
+
+## Phase D Installed And Live-Validated Status
+
+Phase D was installed on 2026-07-22. A post-install GET-only export returned
+464 scoped records and 53 scripts with no unavailable tables and matched all 14
+expected source records and settings. The live server-side gates passed B3A
+23/23, B3B 41/41, Phase C 48/48, and Phase D 32/32.
+
+After a separate four-value action-time authorization and final GET-only
+freshness check, the server-owned continuation ran exactly once for staged CI
+`24ac4df32b82871060aefba6b891bf5c`. It persisted:
+
+- sequence 75, `ire_execution_claimed` (`ae2f810821219f2003778a902e1641cc`);
+- sequence 76, `ire_execution_completed` (`9aa2865acbd61dfe4de94a48626070bc`);
+- sequence 77, `ire_verification_claimed` (`fb004f38126b78c364af352ef2388ff2`);
+- sequence 78, `verification_passed` (`c85513184138c3a8d9f084792895a1d9`).
+
+IRE returned `NO_CHANGE` for target CI
+`f41dd7bf168ec7109ae721961ee4da4f`; correlated verification passed with retry
+count zero. A GET-only reread found 88 timeline events and confirmed the exact
+approval, prepared-event, fingerprint, execution-event, target-CI, and
+verification bindings. The broad acceptance report still flags older
+pre-Phase-D ledger ordering and fingerprint mismatches; those historical
+records do not conflict with the new sequences 75-78.

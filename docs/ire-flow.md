@@ -51,7 +51,7 @@ The confirmed scoped server APIs are:
 
 Use the non-enhanced APIs by default. Use enhanced APIs only when the target instance supports them and enhanced options are intentionally needed.
 
-The browser must never submit the final operation, target class, target CI, CMDB values, or authoritative IRE payload for execution. Execute requests are identifier-only and ServiceNow must rebuild and revalidate the payload from the staged record and approval records.
+The browser must never submit the final operation, target class, target CI, CMDB values, or authoritative IRE payload for execution. In Phase D, browser Execute and Verify requests are identifier-only status lookups; they cannot initiate either action. The successfully prepared Mara continuation rereads the exact persisted approval chain, rebuilds and revalidates the payload, performs one IRE commit, and verifies only the server-returned target.
 
 ## Simulation freshness, idempotency, and concurrency
 

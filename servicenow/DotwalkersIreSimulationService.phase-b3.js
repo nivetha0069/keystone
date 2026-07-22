@@ -136,6 +136,26 @@ DotwalkersIreSimulationService.prototype = {
         gs.eventQueue(this.MARA_EVENT, runRecord, runId, approvalEventId);
     },
 
+    _createOrUpdateCi: function(ireInput) {
+        return sn_cmdb.IdentificationEngine.createOrUpdateCI(
+            'Other Automated',
+            ireInput
+        );
+    },
+
+    _prepareIreCommit: function(authority) {
+        if (!authority || !authority.ire_input) {
+            var error = new Error('IRE input was not prepared');
+            error.before_ire_invocation = true;
+            throw error;
+        }
+    },
+
+    _readTargetCi: function(targetCiSysId) {
+        var target = this._newRecord('cmdb_ci');
+        return target.get(targetCiSysId) ? target : null;
+    },
+
     // ──────────────────────────────────────────────────────────────────
     // Phase B1: verifyExecution — shared read-only verification method
     // ──────────────────────────────────────────────────────────────────
@@ -1382,6 +1402,950 @@ DotwalkersIreSimulationService.prototype = {
         ).won;
     },
 
+    // ---------------------------------------------------------------------
+    // Phase D: prepared approval -> one atomic Execute -> one atomic Verify
+    // ---------------------------------------------------------------------
+
+    /**
+     * Consumes only the compact output of DotwalkersMaraAgent preparation.
+     * Every executable field is reread from the exact persisted Phase C chain.
+     */
+    continuePreparedApproval: function(prepared) {
+        var token;
+        try {
+            token = this._validatePreparedContinuation(prepared);
+            this._validateCaller();
+        } catch (validationError) {
+            return this._phaseDError(
+                validationError && validationError.error_code ? validationError.error_code : 'EXECUTION_BINDING_REJECTED',
+                'Prepared approval continuation was rejected',
+                false
+            );
+        }
+
+        var binding;
+        var preparedMarker;
+        try {
+            binding = this._bindingFromApprovalEvent(
+                token.migration_run_id,
+                token.approval_event_id
+            );
+            this._validateExecutionOwnership(binding);
+
+            if (binding.staged_ci_id !== token.staged_ci_id ||
+                binding.simulation_correlation_id !== token.simulation_correlation_id ||
+                binding.simulation_fingerprint !== token.simulation_fingerprint) {
+                throw this._bindingError(409, 'PREPARED_BINDING_MISMATCH', 'Prepared continuation does not match approval evidence');
+            }
+
+            var resumeClaim = this._findLatestBindingAction(
+                binding,
+                'approval_resume_claimed',
+                'analyzed'
+            );
+            preparedMarker = this._findLatestBindingAction(
+                binding,
+                'approval_resume_prepared',
+                'analyzed'
+            );
+
+            if (!resumeClaim || !preparedMarker ||
+                this._text(preparedMarker.detail.claim_event_id).toLowerCase() !== resumeClaim.sys_id) {
+                throw this._bindingError(409, 'PREPARED_EVIDENCE_MISSING', 'Prepared approval evidence was not found');
+            }
+
+            var exactResumeClaim = this._getEvent(resumeClaim.sys_id);
+            if (!exactResumeClaim ||
+                !this._detailMatchesBinding(exactResumeClaim.detail, binding, 'approval_resume_claimed')) {
+                throw this._bindingError(409, 'RESUME_CLAIM_MISMATCH', 'Approval resume claim is invalid');
+            }
+        } catch (bindingError) {
+            return this._phaseDError(
+                bindingError && bindingError.error_code ? bindingError.error_code : 'EXECUTION_BINDING_REJECTED',
+                'Prepared approval continuation was rejected',
+                false
+            );
+        }
+
+        var authority;
+        try {
+            authority = this._executionAuthority(binding);
+        } catch (authorityError) {
+            return this._phaseDError(
+                authorityError && authorityError.error_code ? authorityError.error_code : 'EXECUTION_AUTHORITY_REJECTED',
+                'Execution authority is stale or incomplete',
+                false
+            );
+        }
+
+        var conflict = this._findConflictingExecution(binding, preparedMarker.sys_id);
+        if (conflict) {
+            return this._phaseDError('EXECUTION_REPLAY_CONFLICT', 'Conflicting execution evidence exists', false);
+        }
+
+        var completed = this._findPhaseDAction(
+            binding,
+            'ire_execution_completed',
+            'committed',
+            { resume_prepared_event_id: preparedMarker.sys_id }
+        );
+        if (completed) {
+            return this._continueVerification(binding, completed, true);
+        }
+
+        var claim = this._acquireExecutionClaim(binding, preparedMarker.sys_id);
+        if (!claim.claimed) {
+            if (claim.completed) {
+                return this._continueVerification(binding, claim.completed, true);
+            }
+            return this._phaseDError(
+                claim.code || 'EXECUTION_ALREADY_CLAIMED',
+                claim.message || 'Execution is already claimed',
+                claim.retryable === true
+            );
+        }
+
+        try {
+            this._prepareIreCommit(authority);
+        } catch (preCommitError) {
+            return this._recordExecutionPreCommitFailure(
+                binding,
+                preparedMarker.sys_id,
+                claim,
+                'EXECUTION_PRECOMMIT_FAILED'
+            );
+        }
+
+        var rawResult;
+        try {
+            rawResult = this._createOrUpdateCi(authority.ire_input);
+        } catch (ignoredIreFailure) {
+            return this._recordExecutionReconciliation(
+                binding,
+                preparedMarker.sys_id,
+                claim,
+                'IRE_INVOCATION_AMBIGUOUS'
+            );
+        }
+
+        var commit;
+        try {
+            commit = this._parseIreCommitResult(rawResult);
+        } catch (ignoredResultFailure) {
+            return this._recordExecutionReconciliation(
+                binding,
+                preparedMarker.sys_id,
+                claim,
+                'IRE_RESULT_AMBIGUOUS'
+            );
+        }
+
+        var completionId = this._claimId('ire-execution-completed', [
+            claim.execution_claim_id
+        ]);
+        var completion;
+        try {
+            completion = this._insertPhaseDEvent(
+                binding,
+                'committed',
+                'ire_execution_completed',
+                completionId,
+                {
+                    resume_prepared_event_id: preparedMarker.sys_id,
+                    root_execution_claim_id: claim.root_execution_claim_id,
+                    execution_claim_id: claim.execution_claim_id,
+                    execution_event_id: completionId,
+                    execution_correlation_id: completionId,
+                    target_ci_sys_id: commit.target_ci_sys_id,
+                    operation: commit.operation,
+                    retry_count: claim.retry_count
+                },
+                [
+                    'resume_prepared_event_id', 'root_execution_claim_id',
+                    'execution_claim_id', 'execution_event_id', 'execution_correlation_id',
+                    'target_ci_sys_id', 'operation', 'retry_count'
+                ]
+            );
+        } catch (ignoredCompletionFailure) {
+            return this._recordExecutionReconciliation(
+                binding,
+                preparedMarker.sys_id,
+                claim,
+                'EXECUTION_COMPLETION_AMBIGUOUS'
+            );
+        }
+
+        return this._continueVerification(binding, completion, false);
+    },
+
+    /**
+     * Compatibility boundary for /ire/execute. It is deliberately status-only:
+     * only the server-owned Mara continuation above can start an IRE commit.
+     */
+    executionStatus: function(request, context) {
+        if (!context || context.mode !== 'interactive_status_only') {
+            return this._phaseDError('FORBIDDEN', 'Execution is server-continuation only', false, 403);
+        }
+
+        var allowed = {
+            migration_run_id: true,
+            staged_ci_id: true,
+            correlation_id: true,
+            idempotency_key: true,
+            simulation_correlation_id: true
+        };
+        var normalized;
+        try {
+            this._validateCaller();
+            normalized = this._identifierOnlyRequest(request, allowed, true);
+        } catch (error) {
+            return this._phaseDError(
+                error && error.error_code ? error.error_code : 'INVALID_REQUEST',
+                'Invalid execution status request',
+                false,
+                error && error.error_code === 'FORBIDDEN' ? 403 : 400
+            );
+        }
+
+        var ledger = this._newRecord(this.TABLES.ledger);
+        ledger.addQuery('migration_run', normalized.migration_run_id);
+        ledger.addQuery('event_type', 'committed');
+        ledger.addQuery('detail', 'CONTAINS', normalized.staged_ci_id);
+        ledger.addQuery('detail', 'CONTAINS', 'ire_execution_completed');
+        ledger.orderByDesc('sequence');
+        ledger.setLimit(50);
+        ledger.query();
+
+        while (ledger.next()) {
+            var detail = this._tryParseObject(ledger.getValue('detail'));
+            if (!detail || this._text(detail.action) !== 'ire_execution_completed') continue;
+            if (this._text(detail.migration_run_id).toLowerCase() !== normalized.migration_run_id) continue;
+            if (this._text(detail.staged_ci_id).toLowerCase() !== normalized.staged_ci_id) continue;
+            if (this._text(detail.simulation_correlation_id) !== normalized.simulation_correlation_id) continue;
+            return this._executionStatusResult(ledger.getUniqueValue(), detail);
+        }
+
+        return this._phaseDError(
+            'SERVER_CONTINUATION_REQUIRED',
+            'Execution has not completed through the prepared server continuation',
+            false,
+            409
+        );
+    },
+
+    verificationStatus: function(request, context) {
+        if (!context || context.mode !== 'interactive_status_only') {
+            return this._phaseDError('FORBIDDEN', 'Verification is server-continuation only', false, 403);
+        }
+        var allowed = {
+            migration_run_id: true,
+            staged_ci_id: true,
+            correlation_id: true,
+            idempotency_key: true,
+            execution_correlation_id: true
+        };
+        var normalized;
+        try {
+            this._validateCaller();
+            normalized = this._identifierOnlyRequest(request, allowed, false);
+        } catch (error) {
+            return this._phaseDError('INVALID_REQUEST', 'Invalid verification status request', false, 400);
+        }
+
+        var ledger = this._newRecord(this.TABLES.ledger);
+        ledger.addQuery('migration_run', normalized.migration_run_id);
+        ledger.addQuery('detail', 'CONTAINS', normalized.staged_ci_id);
+        ledger.addQuery('detail', 'CONTAINS', normalized.execution_correlation_id);
+        ledger.orderByDesc('sequence');
+        ledger.setLimit(50);
+        ledger.query();
+        while (ledger.next()) {
+            var detail = this._tryParseObject(ledger.getValue('detail'));
+            if (!detail) continue;
+            var action = this._text(detail.action);
+            if (action !== 'verification_passed' && action !== 'verification_failed') continue;
+            if (this._text(detail.migration_run_id).toLowerCase() !== normalized.migration_run_id) continue;
+            if (this._text(detail.staged_ci_id).toLowerCase() !== normalized.staged_ci_id) continue;
+            if (this._text(detail.execution_event_id).toLowerCase() !== normalized.execution_correlation_id.toLowerCase()) continue;
+            return {
+                success: true,
+                http_status: 200,
+                action: 'verify',
+                state: action === 'verification_passed' ? 'verified' : 'verification_failed',
+                migration_run_id: normalized.migration_run_id,
+                staged_ci_id: normalized.staged_ci_id,
+                execution_correlation_id: normalized.execution_correlation_id,
+                target_ci: { sys_id: this._text(detail.target_ci_sys_id) },
+                operation: this._text(detail.operation),
+                status: action === 'verification_passed' ? 'verified' : 'mismatch',
+                playback_event_ids: [this._text(ledger.getUniqueValue())],
+                error: null
+            };
+        }
+        return this._phaseDError('VERIFICATION_PENDING', 'Verification has not completed', true, 409);
+    },
+
+    _validatePreparedContinuation: function(prepared) {
+        var allowed = {
+            success: true,
+            state: true,
+            migration_run_id: true,
+            staged_ci_id: true,
+            approval_event_id: true,
+            simulation_correlation_id: true,
+            simulation_fingerprint: true,
+            continuation_ready: true,
+            executed: true,
+            verified: true,
+            cmdb_committed: true
+        };
+        if (!prepared || typeof prepared !== 'object' ||
+            Object.prototype.toString.call(prepared) === '[object Array]') {
+            throw new Error('Prepared continuation must be an object');
+        }
+        var keys = Object.keys(prepared);
+        for (var i = 0; i < keys.length; i++) {
+            if (!allowed[keys[i]]) throw new Error('Prepared continuation contains unsupported fields');
+        }
+        var fingerprint = this._text(prepared.simulation_fingerprint).toUpperCase();
+        if (/^[0-9A-F]{32}$/.test(fingerprint)) {
+            var legacy = new Error('Legacy fingerprint rejected');
+            legacy.error_code = 'LEGACY_FINGERPRINT';
+            throw legacy;
+        }
+        if (!/^[0-9A-F]{64}$/.test(fingerprint) ||
+            prepared.success !== true ||
+            prepared.state !== 'approval_resume_prepared' ||
+            prepared.continuation_ready !== true ||
+            prepared.executed !== false ||
+            prepared.verified !== false ||
+            prepared.cmdb_committed !== false) {
+            throw new Error('Prepared continuation is malformed');
+        }
+        return {
+            migration_run_id: this._requireSysId(prepared.migration_run_id, 'migration_run_id').toLowerCase(),
+            staged_ci_id: this._requireSysId(prepared.staged_ci_id, 'staged_ci_id').toLowerCase(),
+            approval_event_id: this._requireSysId(prepared.approval_event_id, 'approval_event_id').toLowerCase(),
+            simulation_correlation_id: this._requireToken(prepared.simulation_correlation_id, 'simulation_correlation_id', 240),
+            simulation_fingerprint: fingerprint
+        };
+    },
+
+    _validateExecutionOwnership: function(binding) {
+        if (!binding || !binding.run_record || !binding.review_record) {
+            throw this._bindingError(409, 'OWNERSHIP_EVIDENCE_MISSING', 'Execution ownership evidence is missing');
+        }
+        if (this._text(binding.run_record.getValue('team_prefix')) !== this.TEAM ||
+            this._text(binding.review_record.getValue('team_prefix')) !== this.TEAM) {
+            throw this._bindingError(403, 'TEAM_OWNERSHIP_REJECTED', 'Execution ownership is not authorized');
+        }
+        if (this._text(binding.review_record.getValue('decided_by')).toLowerCase() !== binding.decided_by) {
+            throw this._bindingError(409, 'REVIEW_OWNER_MISMATCH', 'Approval owner no longer matches');
+        }
+        var initiatedBy = this._text(binding.run_record.getValue('initiated_by')).toLowerCase();
+        if (initiatedBy && initiatedBy !== binding.decided_by &&
+            !this._callerHasRole('x_kest_dotwalkers.cmdb_admin') &&
+            !this._callerHasRole('admin')) {
+            throw this._bindingError(403, 'RUN_OWNER_MISMATCH', 'Migration run owner is not authorized');
+        }
+    },
+
+    _executionAuthority: function(binding) {
+        var simulation = this._latestCompletedSimulation(binding);
+        if (!simulation ||
+            this._text(simulation.finding_id).toLowerCase() !== binding.finding_id ||
+            this._text(simulation.simulation_correlation_id) !== binding.simulation_correlation_id) {
+            throw this._bindingError(409, 'LATEST_SIMULATION_MISMATCH', 'Latest simulation evidence does not match');
+        }
+
+        var persistedFingerprint = this._text(simulation.simulation_fingerprint).toUpperCase();
+        if (/^[0-9A-F]{32}$/.test(persistedFingerprint)) {
+            throw this._bindingError(409, 'LEGACY_FINGERPRINT', 'Legacy simulation fingerprint rejected');
+        }
+        if (!/^[0-9A-F]{64}$/.test(persistedFingerprint) ||
+            persistedFingerprint !== binding.simulation_fingerprint) {
+            throw this._bindingError(409, 'FINGERPRINT_MISMATCH', 'Simulation fingerprint is malformed or mismatched');
+        }
+
+        var payloadService = this._newPayloadService();
+        var strategy = this._strategyFromSimulation(simulation);
+        var bundle = strategy ?
+            payloadService.buildFromPersistedStrategy(binding.migration_run_id, binding.staged_ci_id, strategy) :
+            payloadService.build(binding.migration_run_id, binding.staged_ci_id);
+        var recomputed = this._text(payloadService.fingerprintSimulation(
+            bundle,
+            this._text(simulation.operation),
+            this._text(simulation.simulation_matched_ci),
+            strategy
+        )).toUpperCase();
+        if (!/^[0-9A-F]{64}$/.test(recomputed) ||
+            recomputed !== persistedFingerprint ||
+            recomputed !== binding.simulation_fingerprint) {
+            throw this._bindingError(409, 'FINGERPRINT_MISMATCH', 'Canonical simulation fingerprint no longer matches');
+        }
+        return {
+            bundle: bundle,
+            strategy_evidence: strategy,
+            simulation: simulation,
+            simulation_fingerprint: recomputed,
+            ire_input: this._buildSupportedIreInput(bundle)
+        };
+    },
+
+    _acquireExecutionClaim: function(binding, preparedEventId) {
+        var rootClaimId = this._claimId('ire-execution', [
+            binding.migration_run_id,
+            binding.staged_ci_id,
+            binding.approval_event_id,
+            preparedEventId,
+            binding.simulation_correlation_id,
+            binding.simulation_fingerprint
+        ]);
+        var completion = this._findPhaseDAction(
+            binding,
+            'ire_execution_completed',
+            'committed',
+            { resume_prepared_event_id: preparedEventId }
+        );
+        if (completion) return { claimed: false, completed: completion };
+
+        var reconciliation = this._findPhaseDAction(
+            binding,
+            'ire_execution_reconciliation_required',
+            'error',
+            { root_execution_claim_id: rootClaimId }
+        );
+        if (reconciliation) {
+            return { claimed: false, code: 'EXECUTION_RECONCILIATION_REQUIRED', message: 'Execution requires reconciliation', retryable: false };
+        }
+
+        var existing = this._getEvent(rootClaimId);
+        if (!existing) {
+            var initial = this._insertPhaseDEvent(
+                binding,
+                'analyzed',
+                'ire_execution_claimed',
+                rootClaimId,
+                {
+                    resume_prepared_event_id: preparedEventId,
+                    root_execution_claim_id: rootClaimId,
+                    execution_claim_id: rootClaimId,
+                    retry_count: 0
+                },
+                ['resume_prepared_event_id', 'root_execution_claim_id', 'execution_claim_id', 'retry_count']
+            );
+            if (initial.won) {
+                return { claimed: true, root_execution_claim_id: rootClaimId, execution_claim_id: rootClaimId, retry_count: 0 };
+            }
+            existing = this._getEvent(rootClaimId);
+        }
+
+        if (!existing || !this._detailMatchesBinding(existing.detail, binding, 'ire_execution_claimed') ||
+            !this._phaseDExtraMatches(existing.detail, {
+                resume_prepared_event_id: preparedEventId,
+                root_execution_claim_id: rootClaimId,
+                execution_claim_id: rootClaimId,
+                retry_count: 0
+            }, ['resume_prepared_event_id', 'root_execution_claim_id', 'execution_claim_id', 'retry_count'])) {
+            return { claimed: false, code: 'EXECUTION_CLAIM_CONFLICT', message: 'Execution claim conflicts with persisted evidence', retryable: false };
+        }
+
+        var failure = this._findPhaseDAction(
+            binding,
+            'ire_execution_failed',
+            'error',
+            { root_execution_claim_id: rootClaimId }
+        );
+        if (!failure) {
+            return { claimed: false, code: 'EXECUTION_ALREADY_CLAIMED', message: 'Execution is already claimed', retryable: false };
+        }
+        var retryCount = this._integer(failure.detail.retry_count);
+        if (retryCount >= 1 || this._text(failure.detail.error_code) !== 'EXECUTION_PRECOMMIT_FAILED') {
+            return { claimed: false, code: 'EXECUTION_PRECOMMIT_FAILED', message: 'Execution stopped before IRE invocation', retryable: false };
+        }
+
+        var retryClaimId = this._claimId('ire-execution-retry', [
+            rootClaimId,
+            failure.sys_id
+        ]);
+        var retry = this._insertPhaseDEvent(
+            binding,
+            'analyzed',
+            'ire_execution_claimed',
+            retryClaimId,
+            {
+                resume_prepared_event_id: preparedEventId,
+                root_execution_claim_id: rootClaimId,
+                execution_claim_id: retryClaimId,
+                failure_event_id: failure.sys_id,
+                retry_count: 1
+            },
+            ['resume_prepared_event_id', 'root_execution_claim_id', 'execution_claim_id', 'failure_event_id', 'retry_count']
+        );
+        if (!retry.won) {
+            return { claimed: false, code: 'EXECUTION_ALREADY_CLAIMED', message: 'Execution retry is already claimed', retryable: false };
+        }
+        return { claimed: true, root_execution_claim_id: rootClaimId, execution_claim_id: retryClaimId, retry_count: 1 };
+    },
+
+    _recordExecutionPreCommitFailure: function(binding, preparedEventId, claim, errorCode) {
+        var failureId = this._claimId('ire-execution-failed', [claim.execution_claim_id]);
+        try {
+            this._insertPhaseDEvent(
+                binding,
+                'error',
+                'ire_execution_failed',
+                failureId,
+                {
+                    resume_prepared_event_id: preparedEventId,
+                    root_execution_claim_id: claim.root_execution_claim_id,
+                    execution_claim_id: claim.execution_claim_id,
+                    error_code: errorCode,
+                    retry_count: claim.retry_count
+                },
+                ['resume_prepared_event_id', 'root_execution_claim_id', 'execution_claim_id', 'error_code', 'retry_count']
+            );
+        } catch (ignoredFailureWrite) {
+            gs.error('Unable to persist compact pre-commit execution failure evidence.');
+        }
+        return this._phaseDError(
+            errorCode,
+            claim.retry_count < 1 ? 'Execution stopped before IRE invocation and may be retried once' : 'Execution stopped before IRE invocation',
+            claim.retry_count < 1,
+            503
+        );
+    },
+
+    _recordExecutionReconciliation: function(binding, preparedEventId, claim, errorCode) {
+        var reconciliationId = this._claimId('ire-execution-reconciliation', [
+            claim.root_execution_claim_id
+        ]);
+        try {
+            this._insertPhaseDEvent(
+                binding,
+                'error',
+                'ire_execution_reconciliation_required',
+                reconciliationId,
+                {
+                    resume_prepared_event_id: preparedEventId,
+                    root_execution_claim_id: claim.root_execution_claim_id,
+                    execution_claim_id: claim.execution_claim_id,
+                    error_code: errorCode,
+                    retry_count: claim.retry_count
+                },
+                ['resume_prepared_event_id', 'root_execution_claim_id', 'execution_claim_id', 'error_code', 'retry_count']
+            );
+        } catch (ignoredReconciliationWrite) {
+            gs.error('Unable to persist compact execution reconciliation evidence.');
+        }
+        return this._phaseDError(
+            'EXECUTION_RECONCILIATION_REQUIRED',
+            'IRE invocation may have completed; automatic retry is prohibited',
+            false,
+            503
+        );
+    },
+
+    _parseIreCommitResult: function(rawResult) {
+        var parsed = typeof rawResult === 'string' ?
+            this._parseObject(rawResult, 'IRE result') : rawResult;
+        if (!parsed || !parsed.items || !parsed.items.length) {
+            throw new Error('IRE result is incomplete');
+        }
+        var item = parsed.items[0] || {};
+        var targetCiSysId = this._text(item.sysId || item.sys_id).toLowerCase();
+        var operation = this._text(item.operation).toUpperCase();
+        var allowedOperations = {
+            INSERT: true,
+            UPDATE: true,
+            NO_CHANGE: true,
+            INSERT_AS_INCOMPLETE: true
+        };
+        if (!this._isSysId(targetCiSysId) || !allowedOperations[operation] ||
+            (item.errors && item.errors.length)) {
+            throw new Error('IRE result is invalid');
+        }
+        return { target_ci_sys_id: targetCiSysId, operation: operation };
+    },
+
+    _continueVerification: function(binding, executionEvent, replayedExecution) {
+        var detail = executionEvent && executionEvent.detail;
+        var executionEventId = executionEvent ? this._text(executionEvent.sys_id).toLowerCase() : '';
+        if (!detail || !this._detailMatchesBinding(detail, binding, 'ire_execution_completed') ||
+            this._text(detail.execution_event_id).toLowerCase() !== executionEventId ||
+            !this._isSysId(this._text(detail.target_ci_sys_id))) {
+            return this._phaseDError('EXECUTION_EVIDENCE_INVALID', 'Completed execution evidence is invalid', false);
+        }
+
+        var targetCiSysId = this._text(detail.target_ci_sys_id).toLowerCase();
+        var operation = this._text(detail.operation).toUpperCase();
+        var rootVerificationClaimId = this._claimId('ire-verification', [
+            executionEventId,
+            targetCiSysId,
+            operation,
+            binding.migration_run_id,
+            binding.staged_ci_id,
+            binding.approval_event_id,
+            binding.simulation_fingerprint
+        ]);
+        var required = {
+            execution_event_id: executionEventId,
+            execution_correlation_id: executionEventId,
+            target_ci_sys_id: targetCiSysId,
+            operation: operation,
+            root_verification_claim_id: rootVerificationClaimId
+        };
+        var passed = this._findPhaseDAction(binding, 'verification_passed', 'committed', required);
+        if (passed) return this._verificationResult(binding, executionEvent, passed, true, replayedExecution);
+        var failed = this._findPhaseDAction(binding, 'verification_failed', 'error', required);
+        if (failed) return this._verificationResult(binding, executionEvent, failed, false, replayedExecution);
+
+        var claim = this._acquireVerificationClaim(binding, executionEvent, rootVerificationClaimId);
+        if (!claim.claimed) {
+            return this._phaseDError(
+                claim.code || 'VERIFICATION_ALREADY_CLAIMED',
+                claim.message || 'Verification is already claimed',
+                claim.retryable === true,
+                409
+            );
+        }
+
+        var authority;
+        try {
+            authority = this._executionAuthority(binding);
+        } catch (ignoredAuthorityFailure) {
+            return this._recordVerificationOutcome(
+                binding, executionEvent, claim, false, 'VERIFICATION_AUTHORITY_STALE'
+            );
+        }
+
+        var target;
+        try {
+            target = this._readTargetCi(targetCiSysId);
+        } catch (ignoredTransportFailure) {
+            return this._recordVerificationTransportFailure(binding, executionEvent, claim);
+        }
+        if (!target) {
+            return this._recordVerificationOutcome(
+                binding, executionEvent, claim, false, 'TARGET_CI_NOT_FOUND'
+            );
+        }
+
+        var expectedClass = this._text(authority.bundle.proposed_class);
+        var expectedName = this._text(
+            authority.bundle.authoritative_values && authority.bundle.authoritative_values.name
+        );
+        var actualClass = this._text(target.getValue('sys_class_name'));
+        var actualName = this._text(target.getValue('name'));
+        var mismatchCode = '';
+        if (!actualName || (expectedName && actualName !== expectedName)) {
+            mismatchCode = 'IDENTITY_MISMATCH';
+        }
+        if (expectedClass && actualClass !== expectedClass) {
+            mismatchCode = mismatchCode ? 'CLASS_AND_IDENTITY_MISMATCH' : 'CLASS_MISMATCH';
+        }
+        return this._recordVerificationOutcome(
+            binding,
+            executionEvent,
+            claim,
+            !mismatchCode,
+            mismatchCode || ''
+        );
+    },
+
+    _acquireVerificationClaim: function(binding, executionEvent, rootClaimId) {
+        var executionEventId = this._text(executionEvent.sys_id).toLowerCase();
+        var detail = executionEvent.detail;
+        var baseExtra = {
+            execution_event_id: executionEventId,
+            execution_correlation_id: executionEventId,
+            target_ci_sys_id: this._text(detail.target_ci_sys_id).toLowerCase(),
+            operation: this._text(detail.operation).toUpperCase(),
+            root_verification_claim_id: rootClaimId,
+            verification_claim_id: rootClaimId,
+            retry_count: 0
+        };
+        var existing = this._getEvent(rootClaimId);
+        if (!existing) {
+            var initial = this._insertPhaseDEvent(
+                binding,
+                'analyzed',
+                'ire_verification_claimed',
+                rootClaimId,
+                baseExtra,
+                ['execution_event_id', 'execution_correlation_id', 'target_ci_sys_id', 'operation', 'root_verification_claim_id', 'verification_claim_id', 'retry_count']
+            );
+            if (initial.won) {
+                return { claimed: true, root_verification_claim_id: rootClaimId, verification_claim_id: rootClaimId, retry_count: 0 };
+            }
+            existing = this._getEvent(rootClaimId);
+        }
+        if (!existing || !this._detailMatchesBinding(existing.detail, binding, 'ire_verification_claimed') ||
+            !this._phaseDExtraMatches(existing.detail, baseExtra, Object.keys(baseExtra))) {
+            return { claimed: false, code: 'VERIFICATION_CLAIM_CONFLICT', message: 'Verification claim conflicts with persisted evidence' };
+        }
+
+        var transportFailure = this._findPhaseDAction(
+            binding,
+            'ire_verification_transport_failed',
+            'error',
+            { root_verification_claim_id: rootClaimId }
+        );
+        if (!transportFailure) {
+            return { claimed: false, code: 'VERIFICATION_ALREADY_CLAIMED', message: 'Verification is already claimed' };
+        }
+        if (this._integer(transportFailure.detail.retry_count) >= 1) {
+            return { claimed: false, code: 'VERIFICATION_TRANSPORT_FAILED', message: 'Verification transport retry is exhausted' };
+        }
+        var retryClaimId = this._claimId('ire-verification-retry', [
+            rootClaimId,
+            transportFailure.sys_id
+        ]);
+        var retryExtra = {
+            execution_event_id: executionEventId,
+            execution_correlation_id: executionEventId,
+            target_ci_sys_id: this._text(detail.target_ci_sys_id).toLowerCase(),
+            operation: this._text(detail.operation).toUpperCase(),
+            root_verification_claim_id: rootClaimId,
+            verification_claim_id: retryClaimId,
+            failure_event_id: transportFailure.sys_id,
+            retry_count: 1
+        };
+        var retry = this._insertPhaseDEvent(
+            binding,
+            'analyzed',
+            'ire_verification_claimed',
+            retryClaimId,
+            retryExtra,
+            Object.keys(retryExtra)
+        );
+        if (!retry.won) {
+            return { claimed: false, code: 'VERIFICATION_ALREADY_CLAIMED', message: 'Verification retry is already claimed' };
+        }
+        return { claimed: true, root_verification_claim_id: rootClaimId, verification_claim_id: retryClaimId, retry_count: 1 };
+    },
+
+    _recordVerificationTransportFailure: function(binding, executionEvent, claim) {
+        var detail = executionEvent.detail;
+        var failureId = this._claimId('ire-verification-transport-failed', [
+            claim.verification_claim_id
+        ]);
+        var extra = {
+            execution_event_id: this._text(executionEvent.sys_id).toLowerCase(),
+            execution_correlation_id: this._text(executionEvent.sys_id).toLowerCase(),
+            target_ci_sys_id: this._text(detail.target_ci_sys_id).toLowerCase(),
+            operation: this._text(detail.operation).toUpperCase(),
+            root_verification_claim_id: claim.root_verification_claim_id,
+            verification_claim_id: claim.verification_claim_id,
+            error_code: 'VERIFICATION_TRANSPORT_FAILED',
+            retry_count: claim.retry_count
+        };
+        try {
+            this._insertPhaseDEvent(
+                binding,
+                'error',
+                'ire_verification_transport_failed',
+                failureId,
+                extra,
+                Object.keys(extra)
+            );
+        } catch (ignoredFailureWrite) {
+            gs.error('Unable to persist compact verification transport failure evidence.');
+        }
+        return this._phaseDError(
+            'VERIFICATION_TRANSPORT_FAILED',
+            claim.retry_count < 1 ? 'Verification read failed and may be retried once' : 'Verification read failed',
+            claim.retry_count < 1,
+            503
+        );
+    },
+
+    _recordVerificationOutcome: function(binding, executionEvent, claim, passed, errorCode) {
+        var detail = executionEvent.detail;
+        var action = passed ? 'verification_passed' : 'verification_failed';
+        var eventType = passed ? 'committed' : 'error';
+        var verificationEventId = this._claimId(action, [claim.verification_claim_id]);
+        var extra = {
+            execution_event_id: this._text(executionEvent.sys_id).toLowerCase(),
+            execution_correlation_id: this._text(executionEvent.sys_id).toLowerCase(),
+            target_ci_sys_id: this._text(detail.target_ci_sys_id).toLowerCase(),
+            operation: this._text(detail.operation).toUpperCase(),
+            root_verification_claim_id: claim.root_verification_claim_id,
+            verification_claim_id: claim.verification_claim_id,
+            verification_event_id: verificationEventId,
+            retry_count: claim.retry_count
+        };
+        if (errorCode) extra.error_code = errorCode;
+        var recorded = this._insertPhaseDEvent(
+            binding,
+            eventType,
+            action,
+            verificationEventId,
+            extra,
+            Object.keys(extra)
+        );
+        return this._verificationResult(binding, executionEvent, recorded, passed, false);
+    },
+
+    _verificationResult: function(binding, executionEvent, verificationEvent, passed, replayedExecution) {
+        return {
+            success: true,
+            http_status: 200,
+            action: 'verify',
+            state: passed ? 'verified' : 'verification_failed',
+            migration_run_id: binding.migration_run_id,
+            staged_ci_id: binding.staged_ci_id,
+            approval_event_id: binding.approval_event_id,
+            simulation_correlation_id: binding.simulation_correlation_id,
+            simulation_fingerprint: binding.simulation_fingerprint,
+            execution_correlation_id: this._text(executionEvent.sys_id).toLowerCase(),
+            target_ci: { sys_id: this._text(executionEvent.detail.target_ci_sys_id).toLowerCase() },
+            operation: this._text(executionEvent.detail.operation).toUpperCase(),
+            status: passed ? 'verified' : 'mismatch',
+            execution_replayed: replayedExecution === true,
+            playback_event_ids: [
+                this._text(executionEvent.sys_id).toLowerCase(),
+                this._text(verificationEvent.sys_id).toLowerCase()
+            ],
+            error: null
+        };
+    },
+
+    _findConflictingExecution: function(binding, preparedEventId) {
+        var ledger = this._newRecord(this.TABLES.ledger);
+        ledger.addQuery('migration_run', binding.migration_run_id);
+        ledger.addQuery('event_type', 'committed');
+        ledger.addQuery('detail', 'CONTAINS', binding.staged_ci_id);
+        ledger.addQuery('detail', 'CONTAINS', 'ire_execution_completed');
+        ledger.orderByDesc('sequence');
+        ledger.setLimit(50);
+        ledger.query();
+        while (ledger.next()) {
+            var detail = this._tryParseObject(ledger.getValue('detail'));
+            if (!detail || this._text(detail.action) !== 'ire_execution_completed') continue;
+            if (this._text(detail.migration_run_id).toLowerCase() !== binding.migration_run_id) continue;
+            if (this._text(detail.staged_ci_id).toLowerCase() !== binding.staged_ci_id) continue;
+            if (this._detailMatchesBinding(detail, binding, 'ire_execution_completed') &&
+                this._text(detail.resume_prepared_event_id).toLowerCase() === preparedEventId) {
+                continue;
+            }
+            return { sys_id: this._text(ledger.getUniqueValue()).toLowerCase(), detail: detail };
+        }
+        return null;
+    },
+
+    _findPhaseDAction: function(binding, action, eventType, required) {
+        var ledger = this._newRecord(this.TABLES.ledger);
+        ledger.addQuery('migration_run', binding.migration_run_id);
+        ledger.addQuery('event_type', eventType);
+        ledger.addQuery('actor', this.ACTOR);
+        ledger.addQuery('team_prefix', this.TEAM);
+        ledger.addQuery('detail', 'CONTAINS', binding.approval_event_id);
+        ledger.addQuery('detail', 'CONTAINS', action);
+        ledger.orderByDesc('sequence');
+        ledger.setLimit(50);
+        ledger.query();
+        var keys = Object.keys(required || {});
+        while (ledger.next()) {
+            var detail = this._tryParseObject(ledger.getValue('detail'));
+            if (!this._detailMatchesBinding(detail, binding, action)) continue;
+            if (!this._phaseDExtraMatches(detail, required || {}, keys)) continue;
+            return {
+                sys_id: this._text(ledger.getUniqueValue()).toLowerCase(),
+                detail: detail
+            };
+        }
+        return null;
+    },
+
+    _insertPhaseDEvent: function(binding, eventType, action, eventId, extra, requiredKeys) {
+        var recorded = this._insertBindingEvent(binding, eventType, action, eventId, extra);
+        if (!this._phaseDExtraMatches(recorded.detail, extra || {}, requiredKeys || [])) {
+            throw new Error('Deterministic Phase D ledger claim conflicts with existing evidence');
+        }
+        return recorded;
+    },
+
+    _phaseDExtraMatches: function(detail, expected, keys) {
+        if (!detail || typeof detail !== 'object') return false;
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (key === 'retry_count') {
+                if (this._integer(detail[key]) !== this._integer(expected[key])) return false;
+            } else if (this._text(detail[key]).toLowerCase() !== this._text(expected[key]).toLowerCase()) {
+                return false;
+            }
+        }
+        return true;
+    },
+
+    _identifierOnlyRequest: function(request, allowed, requireSimulation) {
+        if (!request || typeof request !== 'object' ||
+            Object.prototype.toString.call(request) === '[object Array]') {
+            throw new Error('Request must be an object');
+        }
+        var keys = Object.keys(request);
+        for (var i = 0; i < keys.length; i++) {
+            if (!allowed[keys[i]]) throw new Error('Request contains unsupported fields');
+        }
+        var normalized = {
+            migration_run_id: this._requireSysId(request.migration_run_id, 'migration_run_id').toLowerCase(),
+            staged_ci_id: this._requireSysId(request.staged_ci_id, 'staged_ci_id').toLowerCase(),
+            correlation_id: this._requireToken(request.correlation_id, 'correlation_id', 160),
+            idempotency_key: this._requireToken(request.idempotency_key, 'idempotency_key', 240)
+        };
+        if (requireSimulation) {
+            normalized.simulation_correlation_id = this._requireToken(
+                request.simulation_correlation_id,
+                'simulation_correlation_id',
+                240
+            );
+        } else {
+            normalized.execution_correlation_id = this._requireSysId(
+                request.execution_correlation_id,
+                'execution_correlation_id'
+            ).toLowerCase();
+        }
+        return normalized;
+    },
+
+    _executionStatusResult: function(eventId, detail) {
+        return {
+            success: true,
+            http_status: 200,
+            action: 'execute',
+            state: 'executed_pending_verification',
+            migration_run_id: this._text(detail.migration_run_id).toLowerCase(),
+            staged_ci_id: this._text(detail.staged_ci_id).toLowerCase(),
+            approval_event_id: this._text(detail.approval_event_id).toLowerCase(),
+            simulation_correlation_id: this._text(detail.simulation_correlation_id),
+            simulation_fingerprint: this._text(detail.simulation_fingerprint).toUpperCase(),
+            execution_correlation_id: this._text(eventId).toLowerCase(),
+            target_ci: { sys_id: this._text(detail.target_ci_sys_id).toLowerCase() },
+            operation: this._text(detail.operation).toUpperCase(),
+            status: 'already_committed',
+            playback_event_ids: [this._text(eventId).toLowerCase()],
+            error: null
+        };
+    },
+
+    _phaseDError: function(code, message, retryable, httpStatus) {
+        var verificationError = String(code || '').indexOf('VERIFICATION') === 0;
+        return {
+            success: false,
+            http_status: httpStatus || 409,
+            action: verificationError ? 'verify' : 'execute',
+            state: verificationError ? 'executed_pending_verification' :
+                (code === 'EXECUTION_RECONCILIATION_REQUIRED' ?
+                    'execution_reconciliation_required' : 'approved_for_execution'),
+            code: code,
+            message: message,
+            retryable: retryable === true,
+            error: { code: code, message: message, details: [] },
+            cmdb_committed: false
+        };
+    },
+
     _validateApprovalRequest: function(request) {
         if (!request || typeof request !== 'object' ||
             Object.prototype.toString.call(request) === '[object Array]') {
@@ -1773,11 +2737,15 @@ DotwalkersIreSimulationService.prototype = {
     },
 
     _bindingDetail: function(binding, action, extra) {
+        var lifecycleStatus = 'completed';
+        if (action.indexOf('claimed') >= 0) lifecycleStatus = 'started';
+        if (action.indexOf('failed') >= 0) lifecycleStatus = 'failed';
+        if (action.indexOf('reconciliation_required') >= 0) lifecycleStatus = 'blocked';
         var detail = {
             phase: 'remediate',
             actor: this.ACTOR,
             action: action,
-            status: action.indexOf('failed') >= 0 ? 'failed' : 'completed',
+            status: lifecycleStatus,
             summary: this._approvalSummary(action),
             decision_source: 'deterministic',
             migration_run_id: binding.migration_run_id,
@@ -1793,7 +2761,15 @@ DotwalkersIreSimulationService.prototype = {
             policy_approved: false
         };
         extra = extra || {};
-        var allowedExtra = ['claim_event_id', 'failure_event_id', 'error_code', 'decided_by'];
+        var allowedExtra = [
+            'claim_event_id', 'failure_event_id', 'error_code', 'decided_by',
+            'resume_prepared_event_id', 'root_execution_claim_id',
+            'execution_claim_id', 'execution_event_id',
+            'execution_correlation_id',
+            'root_verification_claim_id', 'verification_claim_id',
+            'verification_event_id', 'target_ci_sys_id', 'operation',
+            'retry_count'
+        ];
         for (var i = 0; i < allowedExtra.length; i++) {
             if (extra.hasOwnProperty(allowedExtra[i])) detail[allowedExtra[i]] = extra[allowedExtra[i]];
         }
@@ -1876,7 +2852,15 @@ DotwalkersIreSimulationService.prototype = {
             approval_handoff_failed: 'Mara handoff failed safely',
             approval_resume_claimed: 'Approval resume token claimed',
             approval_resume_prepared: 'Approval continuation prepared',
-            approval_resume_failed: 'Approval continuation preparation failed safely'
+            approval_resume_failed: 'Approval continuation preparation failed safely',
+            ire_execution_claimed: 'Atomic IRE execution claim acquired',
+            ire_execution_completed: 'One server-owned IRE execution completed',
+            ire_execution_failed: 'IRE execution stopped before invocation',
+            ire_execution_reconciliation_required: 'IRE execution requires reconciliation',
+            ire_verification_claimed: 'Atomic verification claim acquired',
+            ire_verification_transport_failed: 'Verification read failed safely',
+            verification_passed: 'Correlated verification passed',
+            verification_failed: 'Correlated verification failed'
         };
         return summaries[action] || 'Approval lifecycle updated';
     },

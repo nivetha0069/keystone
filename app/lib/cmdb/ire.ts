@@ -10,6 +10,7 @@ export type IreLifecycleState =
   | "simulated_pending_approval"
   | "approved_for_execution"
   | "execution_rejected_stale_simulation"
+  | "execution_reconciliation_required"
   | "executing"
   | "executed_pending_verification"
   | "verified"
@@ -88,6 +89,12 @@ export type IreActionError = {
     | "STALE_SIMULATION"
     | "DUPLICATE_EXECUTION"
     | "IRE_FAILED"
+    | "SERVER_CONTINUATION_REQUIRED"
+    | "EXECUTION_ALREADY_CLAIMED"
+    | "EXECUTION_REPLAY_CONFLICT"
+    | "EXECUTION_RECONCILIATION_REQUIRED"
+    | "VERIFICATION_PENDING"
+    | "VERIFICATION_TRANSPORT_FAILED"
     | "VERIFY_MISMATCH"
     | "UPSTREAM_UNREACHABLE";
   message: string;
@@ -130,7 +137,7 @@ export type IreActionResponse = {
   review_decision?: ServiceNowReference;
   matched_ci?: ServiceNowReference;
   target_ci?: ServiceNowReference;
-  status?: IreSimulationResult["status"] | IreExecutionResult["status"] | "approved" | "rejected" | "deferred" | "verified";
+  status?: IreSimulationResult["status"] | IreExecutionResult["status"] | "approved" | "rejected" | "deferred" | "verified" | "mismatch" | "already_committed";
   operation?: "insert" | "update" | "unchanged" | "conflict" | "incomplete" | "failed";
   evidence?: string[];
   verification_summary?: string;
@@ -248,6 +255,7 @@ export function deriveIreLifecycleState(snapshot: IreLifecycleSnapshot): IreLife
 
   if (snapshot.execution) {
     if (snapshot.execution.success) return "executed_pending_verification";
+    if (snapshot.execution.error?.code === "EXECUTION_RECONCILIATION_REQUIRED") return "execution_reconciliation_required";
     if (snapshot.execution.error?.code === "STALE_SIMULATION") return "execution_rejected_stale_simulation";
     return snapshot.execution.state ?? "execution_rejected_stale_simulation";
   }
@@ -270,6 +278,7 @@ export function ireLifecycleLabel(state: IreLifecycleState): string {
     simulated_pending_approval: "Pending approval",
     approved_for_execution: "Approved for execution",
     execution_rejected_stale_simulation: "Execution rejected",
+    execution_reconciliation_required: "Reconciliation required",
     executing: "Executing",
     executed_pending_verification: "Pending verification",
     verified: "Verified",
@@ -343,6 +352,7 @@ function lifecycleState(value: unknown, action: IreAction, success: boolean): Ir
     "simulated_pending_approval",
     "approved_for_execution",
     "execution_rejected_stale_simulation",
+    "execution_reconciliation_required",
     "executing",
     "executed_pending_verification",
     "verified",
