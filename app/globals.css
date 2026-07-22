@@ -913,39 +913,21 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 /* Mara — CMDB Modernization companion mascot */
 .mara-companion { position: fixed; right: 22px; bottom: 22px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; pointer-events: none; font-family: inherit; }
 .mara-companion > * { pointer-events: auto; }
-.mara-toggle { width: 108px; height: 108px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; display: grid; place-items: center; filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .55)) drop-shadow(0 0 18px rgba(57, 255, 156, .55)); transition: transform .2s ease, filter .3s ease; }
-.mara-toggle:hover { filter: drop-shadow(0 12px 30px rgba(0, 0, 0, .6)) drop-shadow(0 0 26px rgba(57, 255, 156, .75)); }
-.mara-companion.mara-sleeping .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .55)) drop-shadow(0 0 10px rgba(57, 255, 156, .25)); }
+.mara-toggle { width: 132px; height: 132px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; display: grid; place-items: center; filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .6)) drop-shadow(0 0 18px rgba(199, 243, 77, .5)); transition: transform .2s ease, filter .3s ease; }
+.mara-toggle:hover { filter: drop-shadow(0 12px 30px rgba(0, 0, 0, .65)) drop-shadow(0 0 26px rgba(199, 243, 77, .7)); transform: translateY(-2px); }
+.mara-companion.mara-mobile .mara-toggle { width: 96px; height: 96px; }
+.mara-companion.mara-sleeping .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .6)) drop-shadow(0 0 10px rgba(89, 197, 139, .35)); }
 .mara-companion.mara-warning .mara-toggle,
-.mara-companion.mara-awaiting-approval .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .55)) drop-shadow(0 0 22px rgba(232, 178, 61, .6)); }
-.mara-companion.mara-error .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .55)) drop-shadow(0 0 22px rgba(255, 101, 66, .6)); }
-.mara-toggle:hover { transform: translateY(-2px); }
+.mara-companion.mara-awaiting-approval .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .6)) drop-shadow(0 0 22px rgba(232, 178, 61, .6)); }
+.mara-companion.mara-error .mara-toggle { filter: drop-shadow(0 10px 26px rgba(0, 0, 0, .6)) drop-shadow(0 0 22px rgba(255, 101, 66, .6)); }
 .mara-toggle:focus-visible { outline: 2px solid var(--lime); outline-offset: 4px; }
-.mara-svg { width: 100%; height: 100%; display: block; overflow: visible; animation: mara-float 5.5s ease-in-out infinite; }
+.mara-svg { width: 100%; height: 100%; display: block; overflow: visible; image-rendering: pixelated; animation: mara-float 5.5s ease-in-out infinite; }
 .mara-companion.mara-sleeping .mara-svg { animation-duration: 8s; }
 .mara-companion.mara-emphasis .mara-svg { animation-duration: 4s; }
+.mara-halo { transform-origin: 11px 12px; animation: mara-breathe 4.4s ease-in-out infinite; }
+.mara-companion.mara-sleeping .mara-halo { opacity: .55; }
 
-.mara-halo-ring { transform-origin: 50% 50%; animation: mara-breathe 4.4s ease-in-out infinite; }
-.mara-outer-petals, .mara-inner-petals { transform-origin: 48px 52px; animation: mara-breathe 5.6s ease-in-out infinite; }
-.mara-companion.mara-inspecting .mara-inner-petals { animation: mara-spin 22s linear infinite; }
-.mara-companion.mara-blooming .mara-inner-petals { animation: mara-bloom-pulse 3.2s ease-in-out infinite; }
-.mara-petal-outer-shape, .mara-petal-inner-shape { transition: opacity .3s ease; }
-.mara-core { transform-origin: 48px 52px; animation: mara-core-glow 3.4s ease-in-out infinite; }
-.mara-eyes circle { transition: cy .2s ease; }
-.mara-companion.mara-inspecting .mara-eyes circle:first-of-type,
-.mara-companion.mara-inspecting .mara-eyes circle:nth-of-type(2) { animation: mara-blink 6s ease-in-out infinite; }
-
-.mara-orbit { transform-origin: 48px 48px; animation: mara-spin 8s linear infinite; }
-.mara-orbit-dot { fill: var(--lime); opacity: .75; }
-
-.mara-status-ring { opacity: 0; stroke-dasharray: 4 6; transition: opacity .3s ease, stroke .3s ease; }
-.mara-companion.mara-warning .mara-status-ring-warning { opacity: .95; stroke: var(--amber); animation: mara-ring-pulse 2.4s ease-in-out infinite; }
-.mara-companion.mara-awaiting-approval .mara-status-ring-awaiting-approval { opacity: .95; stroke: var(--amber); animation: mara-ring-pulse 3.2s ease-in-out infinite; }
-.mara-companion.mara-blooming .mara-status-ring-blooming { opacity: .9; stroke: var(--green); animation: mara-ring-pulse 3.8s ease-in-out infinite; }
-.mara-companion.mara-error .mara-status-ring-error { opacity: .9; stroke: var(--coral); }
-.mara-companion.mara-sleeping .mara-halo-ring { opacity: .25; }
-
-.mara-bubble { width: min(288px, calc(100vw - 32px)); max-width: min(288px, calc(100vw - 32px)); min-width: 0; max-height: calc(100vh - 140px); overflow-y: auto; overscroll-behavior: contain; padding: 13px 14px 12px; border: 1px solid rgba(255, 149, 199, .38); background: rgba(17, 20, 16, .96); backdrop-filter: blur(12px); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 #ff5aa8; color: var(--ink); animation: mara-bubble-in .22s ease both; box-sizing: border-box; }
+.mara-bubble { width: min(288px, calc(100vw - 32px)); max-width: min(288px, calc(100vw - 32px)); min-width: 0; max-height: calc(100vh - 140px); overflow-y: auto; overscroll-behavior: contain; padding: 13px 14px 12px; border: 1px solid rgba(199, 243, 77, .32); background: rgba(17, 20, 16, .96); backdrop-filter: blur(12px); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--lime); color: var(--ink); animation: mara-bubble-in .22s ease both; box-sizing: border-box; }
 .mara-companion.mara-warning .mara-bubble, .mara-companion.mara-awaiting-approval .mara-bubble { border-color: rgba(232, 178, 61, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--amber); }
 .mara-companion.mara-error .mara-bubble { border-color: rgba(255, 101, 66, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--coral); }
 .mara-companion.mara-blooming .mara-bubble { border-color: rgba(89, 197, 139, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--green); }
