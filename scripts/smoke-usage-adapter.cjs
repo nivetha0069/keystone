@@ -146,4 +146,35 @@ assert.equal(realUsage.totals.outputTokens, 40);
 assert.equal(realUsage.totals.totalTokens, 200);
 assert.equal(realUsage.totals.callsWithTokens, 2);
 
+// ServiceNow wraps every payload in a `result` envelope and the /usage script
+// double-wraps as `result.result`. Tokens must survive that nesting — the bug
+// was that the call list read as empty, so every token count showed "—".
+const wrapped = normalizeUsage({
+  result: {
+    result: {
+      run_id: "abc",
+      cost: { amount: 0.42, currency: "USD" },
+      calls: [
+        { phase: "Comprehend", model: "x", input_tokens: 100, output_tokens: 25, total_tokens: 125, duration_ms: 500, status: "success" },
+        { phase: "Prioritize", model: "y", input_tokens: 40, output_tokens: 10, total_tokens: 50, duration_ms: 200, status: "success" },
+      ],
+    },
+  },
+}, "abc");
+assert.equal(wrapped.calls.length, 2, "calls drilled out of result.result envelope");
+assert.equal(wrapped.totals.inputTokens, 140, "input tokens captured through the envelope");
+assert.equal(wrapped.totals.outputTokens, 35);
+assert.equal(wrapped.totals.totalTokens, 175);
+assert.equal(wrapped.totals.callsWithTokens, 2);
+assert.deepEqual(wrapped.cost, { amount: 0.42, currency: "USD" }, "envelope-level cost read after unwrap");
+
+// A results-array envelope (`{result: [...]}`) is also accepted.
+const resultArray = normalizeUsage({
+  result: [
+    { phase: "Mara", model: "z", input_tokens: 12, output_tokens: 8, duration_ms: 90, status: "success" },
+  ],
+}, "abc");
+assert.equal(resultArray.calls.length, 1, "results array envelope accepted");
+assert.equal(resultArray.totals.inputTokens, 12);
+
 console.log("smoke-usage-adapter: all assertions passed");

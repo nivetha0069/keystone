@@ -75,14 +75,36 @@ function optionalNumber(value: unknown): number | undefined {
   return optionalTokenCount(value);
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+// The ServiceNow bridge nests every payload under a `result` envelope, and the
+// /usage script double-wraps it as `result.result`. Drill through those object
+// layers so the call list (and its token fields) is actually found — without
+// this the whole array reads as empty and every token count renders as "—".
 function arrayFromPayload(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== "object") return [];
-  const value = payload as Record<string, unknown>;
+  const value = record(payload);
   for (const key of ["calls", "result", "data", "items", "records", "usage"]) {
     if (Array.isArray(value[key])) return value[key] as unknown[];
+    if (value[key] && typeof value[key] === "object") {
+      const nested = arrayFromPayload(value[key]);
+      if (nested.length) return nested;
+    }
   }
   return [];
+}
+
+/** Peel `result`/`data` object wrappers so envelope-level fields are readable. */
+function unwrapEnvelope(payload: unknown): Record<string, unknown> {
+  let value = record(payload);
+  for (let depth = 0; depth < 4; depth += 1) {
+    const inner = value.result ?? value.data;
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) value = inner as Record<string, unknown>;
+    else break;
+  }
+  return value;
 }
 
 function normalizePhase(value: unknown): string {
@@ -169,7 +191,7 @@ export function normalizeCall(item: unknown, index: number): AiUsageCall {
 }
 
 export function normalizeUsage(payload: unknown, runId: string): AiUsageResponse {
-  const outer = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const outer = unwrapEnvelope(payload);
   const unavailable = optionalStr(
     outer.unavailable ?? outer.unavailableReason ?? outer.unavailable_reason ?? outer.error ?? outer.message,
   );

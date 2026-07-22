@@ -1990,18 +1990,6 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   text-shadow: 0 0 6px rgba(199, 243, 77, .35);
   border-radius: 1px;
 }
-.section-index::before {
-  content: "BAY";
-  display: block;
-  position: absolute;
-  top: -9px;
-  left: 3px;
-  font: 7px/1 var(--mono);
-  letter-spacing: .22em;
-  color: var(--faint);
-  background: var(--surface);
-  padding: 0 3px;
-}
 
 /* Panel heading = machine label — corner tick brackets on both sides. */
 .panel-heading {
@@ -2058,9 +2046,9 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   50% { transform: scale(1.35); opacity: 0; }
 }
 
-/* Hazard-stripe accent — apply to any surface that gates human authorization.
-   Kept as a top-edge stripe so it reads as "warning: gate ahead" without
-   overwhelming the content. */
+/* Authorization-gate accent — a single clean top line on surfaces that gate
+   human authorization. Reads as "warning: gate ahead" without the jagged
+   candy-stripe that looked broken at 4px. */
 .ci-evidence-card.ci-scope-strategy-error,
 .journey-pause,
 .approval-scope-card,
@@ -2072,13 +2060,9 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   content: "";
   position: absolute;
   top: 0; left: 0; right: 0;
-  height: 4px;
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      var(--factory-hazard-a) 0 10px,
-      var(--factory-hazard-b) 10px 20px
-    );
+  height: 2px;
+  background: var(--factory-hazard-a);
+  opacity: .85;
   z-index: 3;
 }
 
