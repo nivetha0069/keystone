@@ -691,9 +691,9 @@ export function CmdbDashboard() {
       <div className="brand">
         <span className="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
-            <path d="M6.6 7 H17.4 L15.4 19 H8.6 Z" fill="rgba(199, 243, 77, .13)" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-            <path d="M7.2 10.2 H16.8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity=".55" />
-            <path d="M12 10.2 V19" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity=".38" />
+            <path d="M3.6 15.4 L6 9.6 L10 6.8 L14.4 7.2 L18.6 10 L20.4 14.8 L18.8 18.4 L5.2 18.4 Z" fill="rgba(199, 243, 77, .13)" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+            <path d="M10 6.8 L11.6 12.4 L18.6 10" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" strokeLinecap="round" opacity=".55" />
+            <path d="M11.6 12.4 L8.6 18.4 M11.6 12.4 L15.2 18.4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity=".38" />
           </svg>
         </span>
         <div className="brand-copy"><strong>CMDB</strong><small>MODERNIZATION CONTROL</small></div>

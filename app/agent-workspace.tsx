@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ConfigurationItem, HealthData, Relationship, TimelineEvent } from "./cmdb-data";
 import { Icon } from "./icons";
 import type { CprPhaseId } from "./lib/cmdb/agent-workspace";
@@ -64,6 +64,10 @@ export function AgentWorkspaceView(props: {
         ? "SERVICENOW EVIDENCE UNAVAILABLE"
         : "DEMO FALLBACK";
 
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const openSummary = useCallback(() => setSummaryOpen(true), []);
+  const closeSummary = useCallback(() => setSummaryOpen(false), []);
+
   const openPhase = useCallback((phase: CprPhaseId | "verify") => {
     if (phase === "verify") {
       if (props.onOpenVerify) props.onOpenVerify();
@@ -73,15 +77,20 @@ export function AgentWorkspaceView(props: {
     props.onOpenPhase(phase);
   }, [props]);
 
+  const summaryModal = summaryOpen
+    ? <RunSummaryModal view={view} cis={props.cis} runLabel={props.runLabel} onClose={closeSummary} />
+    : null;
+
   if (props.focus === "approvals") {
     return <div className="page agent-workspace-page">
-      <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} />
+      <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} onOpenSummary={openSummary} />
       <ApprovalWorkspace view={view} onOpenRemediation={props.onOpenRemediation} />
+      {summaryModal}
     </div>;
   }
 
   return <div className="page agent-workspace-page">
-    <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} />
+    <FactoryHeader view={view} sourceLabel={sourceLabel} runLabel={props.runLabel} onRefresh={props.onRefresh} onOpenSummary={openSummary} />
 
     <RunJourneyBanner journey={journey} />
 
@@ -97,16 +106,20 @@ export function AgentWorkspaceView(props: {
         />
       ))}
     </ol>
+    {summaryModal}
   </div>;
 }
 
-function FactoryHeader({ view, sourceLabel, runLabel, onRefresh }: { view: WorkspaceViewState; sourceLabel: string; runLabel: string; onRefresh: () => void }) {
+function FactoryHeader({ view, sourceLabel, runLabel, onRefresh, onOpenSummary }: { view: WorkspaceViewState; sourceLabel: string; runLabel: string; onRefresh: () => void; onOpenSummary: () => void }) {
   return <section className="factory-header">
     <div className="factory-kicker"><span className={"api-dot " + statusToDot(view)} /> {sourceLabel}</div>
     <div className="factory-headline">
       <h1>{view.hasRun ? "Agent Workspace" : "Waiting for a run"}</h1>
       <div className="factory-actions">
         <span className="factory-run-tag">{runLabel || "NO RUN"}</span>
+        <button className="icon-command" title="Run summary" aria-label="Show run summary" onClick={onOpenSummary} disabled={!view.hasRun}>
+          <Icon name="graph" size={16} />
+        </button>
         <button className="icon-command" title="Refresh evidence" aria-label="Refresh evidence" onClick={onRefresh}>
           <Icon name="refresh" size={16} />
         </button>
@@ -353,4 +366,123 @@ function ApprovalWorkspace({ view, onOpenRemediation }: { view: WorkspaceViewSta
       <strong>Changes to staged data invalidate the approval.</strong>
     </aside>
   </section>;
+}
+
+const OPERATION_META: Record<string, { label: string; tone: "good" | "muted" | "warn" | "bad" }> = {
+  INSERT: { label: "Inserted", tone: "good" },
+  UPDATE: { label: "Updated", tone: "good" },
+  NO_CHANGE: { label: "No change", tone: "muted" },
+  INSERT_AS_INCOMPLETE: { label: "Held as incomplete", tone: "warn" },
+  REVIEW: { label: "Sent to review", tone: "warn" },
+  ERROR: { label: "Errored", tone: "bad" },
+};
+
+function RunSummaryModal({ view, cis, runLabel, onClose }: {
+  view: WorkspaceViewState;
+  cis: ConfigurationItem[];
+  runLabel: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const { snapshot, queue } = view;
+  const health = snapshot.health;
+
+  const operations = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const ci of cis) counts.set(ci.operation, (counts.get(ci.operation) ?? 0) + 1);
+    const order = Object.keys(OPERATION_META);
+    return [...counts.entries()]
+      .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+      .map(([op, count]) => ({ op, count, meta: OPERATION_META[op] ?? { label: op, tone: "muted" as const } }));
+  }, [cis]);
+
+  const verifiedCount = queue.items.filter(item => item.bucket === "verified").length;
+  const groupsResolved = snapshot.groups.filter(group => group.affected > 0 && group.realizedLift >= group.projectedLift).length;
+  const recent = snapshot.recentActivity.slice(-6).reverse();
+
+  const headline = view.hasRun
+    ? `${cis.length} configuration ${cis.length === 1 ? "item" : "items"} processed for ${runLabel || "this run"}.`
+    : "No run is loaded yet.";
+
+  return <div className="summary-backdrop" role="presentation" onClick={onClose}>
+    <div className="summary-modal" role="dialog" aria-modal="true" aria-label="Run summary" onClick={event => event.stopPropagation()}>
+      <div className="summary-top">
+        <div>
+          <small>WHAT HAPPENED TO THE DATA</small>
+          <h2>Run summary</h2>
+          <p>{headline}</p>
+        </div>
+        <button className="summary-close" aria-label="Close summary" onClick={onClose}><Icon name="x" size={16} /></button>
+      </div>
+
+      <div className="summary-health">
+        <div className="summary-health-cell">
+          <small>BASELINE</small>
+          <strong>{health.baseline}</strong>
+        </div>
+        <Icon name="arrow" size={14} />
+        <div className="summary-health-cell">
+          <small>VERIFIED NOW</small>
+          <strong className="verified">{health.verified}</strong>
+          <span>+{health.realizedLift} realized</span>
+        </div>
+        <Icon name="arrow" size={14} />
+        <div className="summary-health-cell">
+          <small>PROJECTED</small>
+          <strong className="projected">{health.projected}</strong>
+          <span>+{health.remainingLift} available</span>
+        </div>
+      </div>
+
+      <div className="summary-section">
+        <h3>Record outcomes</h3>
+        {operations.length > 0
+          ? <div className="summary-ops">
+              {operations.map(({ op, count, meta }) => <div key={op} className={"summary-op " + meta.tone}>
+                <strong>{count}</strong>
+                <small>{meta.label}</small>
+              </div>)}
+            </div>
+          : <p className="summary-empty">No staged records have been evaluated yet.</p>}
+      </div>
+
+      <div className="summary-section">
+        <h3>Governance & progress</h3>
+        <div className="summary-metrics">
+          <SummaryMetric label="Work groups ranked" value={snapshot.groups.length} />
+          <SummaryMetric label="Groups resolved" value={groupsResolved} />
+          <SummaryMetric label="Awaiting approval" value={snapshot.approvals.length} tone={snapshot.approvals.length > 0 ? "warn" : "muted"} />
+          <SummaryMetric label="Held / blocked" value={snapshot.blocked.length + view.heldCount} tone={snapshot.blocked.length + view.heldCount > 0 ? "warn" : "muted"} />
+          <SummaryMetric label="Verified" value={verifiedCount} tone={verifiedCount > 0 ? "good" : "muted"} />
+          <SummaryMetric label="Relationships ready" value={`${snapshot.relationships.ready}/${snapshot.relationships.total}`} />
+        </div>
+      </div>
+
+      {recent.length > 0 && <div className="summary-section">
+        <h3>Recent activity</h3>
+        <ul className="summary-activity">
+          {recent.map(event => <li key={event.id} className={"summary-activity-row " + event.status}>
+            <span className={"summary-activity-dot " + event.status} aria-hidden="true" />
+            <div>
+              <small>#{event.seq} · {event.actor}</small>
+              <strong>{event.title}</strong>
+              <p>{event.summary}</p>
+            </div>
+          </li>)}
+        </ul>
+      </div>}
+    </div>
+  </div>;
+}
+
+function SummaryMetric({ label, value, tone }: { label: string; value: number | string; tone?: "warn" | "good" | "muted" }) {
+  return <div className={"summary-metric " + (tone ?? "muted")}>
+    <strong>{value}</strong>
+    <small>{label}</small>
+  </div>;
 }
