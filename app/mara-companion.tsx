@@ -250,240 +250,94 @@ function MaraInsights({ view }: { view: WorkspaceViewState }) {
   </ul>;
 }
 
-function MaraLotusSvg({ state }: { state: MaraVisualState }) {
+// Pixel-art Mara: a chunky lotus mascot built on a 22x22 grid of solid cells,
+// painted in the app's lime/green theme so she reads clearly on the dark UI.
+// The grid is generated from symmetric ellipse math, so the sprite stays
+// pixel-crisp and perfectly mirrored.
+const MARA_PIX: Record<string, string> = {
+  O: "#0b0f08", // outline / dark
+  L: "#c7f34d", // lime petal (--lime)
+  D: "#8fbf3a", // petal shade
+  F: "#eef6d8", // pale face
+  G: "#5fca90", // leaf base (--green-ish)
+  E: "#0b0f08", // eyes
+  g: "#3f7d5c", // mouth
+  c: "#b5e35a", // cheeks
+};
+
+const MARA_GRID = 22;
+
+function buildMaraPixels(state: MaraVisualState): string[][] {
+  const N = MARA_GRID;
+  const grid: string[][] = Array.from({ length: N }, () => Array<string>(N).fill("."));
+  const inb = (x: number, y: number) => x >= 0 && x < N && y >= 0 && y < N;
+  const put = (x: number, y: number, k: string) => { if (inb(x, y)) grid[y][x] = k; };
+  const ell = (cx: number, cy: number, rx: number, ry: number, k: string) => {
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+      if (dx * dx + dy * dy <= 1) grid[y][x] = k;
+    }
+  };
   const sleeping = state === "sleeping";
-  const warning = state === "warning";
-  const awaiting = state === "awaiting_approval";
-  const blooming = state === "blooming";
   const error = state === "error";
-  const inspecting = state === "inspecting";
-  const petalScale = sleeping ? 0.82 : blooming ? 1.06 : 1;
-  const outerPetals = blooming ? 1 : sleeping ? 0.75 : 0.94;
-  // Sparkles float around when active — sleeping/error suppress them.
-  const showSparkles = !sleeping && !error;
+
+  // Petals (dark outline, then lime, with a shaded lower band).
+  ell(11, 6.5, 3.2, 4.8, "O"); ell(6.6, 8.5, 3.0, 3.9, "O"); ell(15.4, 8.5, 3.0, 3.9, "O");
+  ell(11, 6.5, 2.4, 4.0, "L"); ell(6.6, 8.5, 2.2, 3.1, "L"); ell(15.4, 8.5, 2.2, 3.1, "L");
+  ell(11, 8.6, 2.2, 2.0, "D");
+  // Head bulb (dark outline ring + pale face).
+  ell(11, 13, 7.0, 6.9, "O"); ell(11, 13, 6.1, 6.0, "F");
+  // Leaf cradle at the base.
+  ell(11, 19.3, 5.6, 2.7, "O"); ell(11, 19.3, 4.7, 1.9, "G");
+  // Round glasses: a 3x3 dark ring around each eye, cleared centre, bridge.
+  for (const ex of [8, 13]) {
+    for (let x = ex - 1; x <= ex + 1; x++) for (let y = 11; y <= 13; y++) put(x, y, "O");
+    put(ex, 12, "F");
+  }
+  put(10, 12, "O"); put(11, 12, "O"); // bridge
+  // Eyes.
+  if (sleeping) { put(8, 12, "O"); put(13, 12, "O"); }
+  else { put(8, 12, "E"); put(13, 12, "E"); }
+  // Cheeks.
+  if (!sleeping && !error) { put(7, 15, "c"); put(14, 15, "c"); }
+  // Mouth.
+  if (error) { put(10, 16, "g"); put(11, 16, "g"); put(9, 17, "g"); put(12, 17, "g"); }
+  else if (sleeping) { put(10, 16, "g"); put(11, 16, "g"); }
+  else { put(9, 16, "g"); put(12, 16, "g"); put(10, 17, "g"); put(11, 17, "g"); }
+
+  return grid;
+}
+
+function MaraLotusSvg({ state }: { state: MaraVisualState }) {
+  const grid = useMemo(() => buildMaraPixels(state), [state]);
+  const halo = state === "error" ? "#ff6542"
+    : state === "warning" || state === "awaiting_approval" ? "#e8b23d"
+      : state === "sleeping" ? "#59c58b"
+        : state === "blooming" ? "#7bd8a2"
+          : "#c7f34d";
 
   return (
     <svg
       className={`mara-svg mara-svg-${state.replace("_", "-")}`}
-      viewBox="0 0 96 96"
+      viewBox="-1 -1 24 24"
       xmlns="http://www.w3.org/2000/svg"
+      shapeRendering="crispEdges"
       aria-hidden="true"
       focusable="false"
     >
       <defs>
-        {/* Green ambient glow — the dominant aura */}
-        <radialGradient id="mara-halo-green" cx="50%" cy="50%" r="55%">
-          <stop offset="0%" stopColor="#7effb8" stopOpacity="0.55" />
-          <stop offset="45%" stopColor="#39ff9c" stopOpacity="0.28" />
-          <stop offset="85%" stopColor="#00ff88" stopOpacity="0.05" />
-          <stop offset="100%" stopColor="#00ff88" stopOpacity="0" />
-        </radialGradient>
-        {/* Inner pink accent, kept subtle */}
-        <radialGradient id="mara-halo-pink" cx="50%" cy="50%" r="42%">
-          <stop offset="0%" stopColor="#ffb3d9" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#ff5aa8" stopOpacity="0" />
-        </radialGradient>
-        <linearGradient id="mara-petal-outer" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#ffd7ea" />
-          <stop offset="55%" stopColor="#ff8ec1" />
-          <stop offset="100%" stopColor="#d63384" />
-        </linearGradient>
-        <linearGradient id="mara-petal-inner" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#fff2f8" />
-          <stop offset="60%" stopColor="#ffb3d9" />
-          <stop offset="100%" stopColor="#ec4899" />
-        </linearGradient>
-        <radialGradient id="mara-core" cx="50%" cy="38%" r="62%">
-          <stop offset="0%" stopColor="#ffffff" />
-          <stop offset="55%" stopColor="#ffe1ee" />
-          <stop offset="100%" stopColor="#f472b6" />
-        </radialGradient>
-        <linearGradient id="mara-notebook" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#fffdf2" />
-          <stop offset="100%" stopColor="#f5deb3" />
-        </linearGradient>
-        {/* Green rim light on the core */}
-        <radialGradient id="mara-core-rim" cx="50%" cy="90%" r="60%">
-          <stop offset="0%" stopColor="#39ff9c" stopOpacity="0.55" />
-          <stop offset="100%" stopColor="#39ff9c" stopOpacity="0" />
+        <radialGradient id="mara-halo" cx="50%" cy="50%" r="52%">
+          <stop offset="0%" stopColor={halo} stopOpacity="0.5" />
+          <stop offset="55%" stopColor={halo} stopOpacity="0.22" />
+          <stop offset="100%" stopColor={halo} stopOpacity="0" />
         </radialGradient>
       </defs>
-
-      {/* Layered halos: big green aura + inner pink warmth */}
-      <circle cx="48" cy="48" r="46" fill="url(#mara-halo-green)" className="mara-halo-ring mara-halo-green" />
-      <circle cx="48" cy="48" r="30" fill="url(#mara-halo-pink)" className="mara-halo-ring mara-halo-pink" />
-
-      {(inspecting || awaiting) && (
-        <g className="mara-orbit" aria-hidden="true">
-          <circle cx="48" cy="8" r="1.4" className="mara-orbit-dot" fill="#39ff9c" />
-          <circle cx="88" cy="48" r="1.2" className="mara-orbit-dot" fill="#39ff9c" />
-          <circle cx="48" cy="88" r="1.4" className="mara-orbit-dot" fill="#39ff9c" />
-          <circle cx="8" cy="48" r="1.2" className="mara-orbit-dot" fill="#39ff9c" />
-        </g>
+      <circle cx="11" cy="12" r="13" fill="url(#mara-halo)" className="mara-halo" />
+      {grid.flatMap((row, y) =>
+        row.map((k, x) => (k === "." ? null : (
+          <rect key={`${x}-${y}`} x={x} y={y} width="1.02" height="1.02" fill={MARA_PIX[k]} />
+        ))),
       )}
-
-      {/* Outer petals — 6 clean symmetric petals */}
-      <g
-        className="mara-outer-petals"
-        transform={`translate(48 44) scale(${petalScale}) translate(-48 -44)`}
-        style={{ opacity: outerPetals }}
-      >
-        {[0, 60, 120, 180, 240, 300].map(angle => (
-          <path
-            key={angle}
-            d="M48 12 C 42 18 40 26 42 34 C 44 38 46 40 48 40 C 50 40 52 38 54 34 C 56 26 54 18 48 12 Z"
-            fill="url(#mara-petal-outer)"
-            stroke="#a8215e"
-            strokeWidth="0.6"
-            transform={`rotate(${angle} 48 44)`}
-            className="mara-petal-outer-shape"
-          />
-        ))}
-      </g>
-
-      {/* Inner petals — smaller, offset by 30° */}
-      <g
-        className="mara-inner-petals"
-        transform={`translate(48 44) scale(${petalScale}) translate(-48 -44)`}
-      >
-        {[30, 90, 150, 210, 270, 330].map(angle => (
-          <path
-            key={angle}
-            d="M48 22 C 44 26 43 32 44 38 C 46 41 47 42 48 42 C 49 42 50 41 52 38 C 53 32 52 26 48 22 Z"
-            fill="url(#mara-petal-inner)"
-            stroke="#c73f83"
-            strokeWidth="0.5"
-            transform={`rotate(${angle} 48 44)`}
-            className="mara-petal-inner-shape"
-          />
-        ))}
-      </g>
-
-      {/* Face core — larger, rounder, chibi proportions */}
-      <circle cx="48" cy="44" r="16.5" fill="url(#mara-core)" className="mara-core" stroke="#e91e88" strokeWidth="0.8" />
-      {/* Green rim light on the underside */}
-      <circle cx="48" cy="44" r="16.5" fill="url(#mara-core-rim)" className="mara-core-rim" />
-
-      {/* Cheeks — bigger, blush-pink */}
-      {!sleeping && !error && <g className="mara-cheeks" aria-hidden="true">
-        <ellipse cx="36.5" cy="50" rx="3" ry="1.7" fill="#ff8ab8" opacity="0.75" />
-        <ellipse cx="59.5" cy="50" rx="3" ry="1.7" fill="#ff8ab8" opacity="0.75" />
-      </g>}
-
-      {/* Square nerd glasses — cleaner + slightly bigger */}
-      <g
-        className={`mara-glasses ${sleeping || error ? "mara-glasses-tilted" : ""}`}
-        transform={awaiting || warning ? "rotate(-4 48 43)" : error ? "rotate(6 48 43)" : undefined}
-      >
-        {/* Bridge */}
-        <path d="M45 43.5h6" stroke="#0a0d0a" strokeWidth="1.8" strokeLinecap="round" />
-        {/* Temples */}
-        <path d="M34 43.5h-2.5" stroke="#0a0d0a" strokeWidth="1.5" strokeLinecap="round" />
-        <path d="M62 43.5h2.5" stroke="#0a0d0a" strokeWidth="1.5" strokeLinecap="round" />
-        {/* Left square lens */}
-        <rect x="34" y="38.5" width="11" height="10" rx="0.8"
-          fill="rgba(255, 255, 255, 0.42)"
-          stroke="#0a0d0a" strokeWidth="1.9"
-          strokeLinejoin="miter" />
-        {/* Right square lens */}
-        <rect x="51" y="38.5" width="11" height="10" rx="0.8"
-          fill="rgba(255, 255, 255, 0.42)"
-          stroke="#0a0d0a" strokeWidth="1.9"
-          strokeLinejoin="miter" />
-        {/* Lens shine — diagonal streaks */}
-        <path d="M35.4 40.2l3.6 3.6" stroke="#ffffff" strokeWidth="1.1" strokeLinecap="round" opacity="0.85" />
-        <path d="M52.4 40.2l3.6 3.6" stroke="#ffffff" strokeWidth="1.1" strokeLinecap="round" opacity="0.85" />
-      </g>
-
-      {/* Eyes behind lenses — bigger sparkles */}
-      {sleeping ? (
-        <g className="mara-eyes-closed">
-          <path d="M36.5 44c1.6 1.2 4.8 1.2 6.5 0" stroke="#0a0d0a" strokeWidth="1.3" strokeLinecap="round" fill="none" />
-          <path d="M53 44c1.6 1.2 4.8 1.2 6.5 0" stroke="#0a0d0a" strokeWidth="1.3" strokeLinecap="round" fill="none" />
-        </g>
-      ) : (
-        <g className="mara-eyes">
-          <circle cx="39.5" cy={warning || awaiting ? "43" : "43.5"} r="1.9" fill="#0a0d0a" />
-          <circle cx="56.5" cy={warning || awaiting ? "43" : "43.5"} r="1.9" fill="#0a0d0a" />
-          {/* Big highlight + micro highlight */}
-          <circle cx="40.2" cy="42.9" r="0.75" fill="#ffffff" />
-          <circle cx="57.2" cy="42.9" r="0.75" fill="#ffffff" />
-          <circle cx="38.9" cy="44.1" r="0.35" fill="#ffffff" opacity="0.7" />
-          <circle cx="55.9" cy="44.1" r="0.35" fill="#ffffff" opacity="0.7" />
-        </g>
-      )}
-
-      {/* Smile */}
-      {!error && !sleeping && (
-        <path
-          d={awaiting || warning
-            ? "M43.5 53.5c2 1 7 1 9 0"
-            : blooming
-              ? "M41.5 53c2.5 2.5 10 2.5 12.5 0"
-              : "M42.5 53.5c2 1.6 8 1.6 10 0"}
-          stroke="#a8215e" strokeWidth="1.5" strokeLinecap="round" fill="none"
-        />
-      )}
-      {error && <path d="M42.5 55.5c2-1.5 8-1.5 10 0" stroke="#a8215e" strokeWidth="1.5" strokeLinecap="round" fill="none" />}
-
-      {/* Arms — soft pink noodle arms cradling the notebook */}
-      <g className="mara-arms" aria-hidden="true">
-        <path d="M32 60 C 33 66 38 70 44 68"
-          stroke="#e91e88" strokeWidth="3.4" strokeLinecap="round" fill="none" opacity="0.95" />
-        <path d="M64 60 C 63 66 58 70 52 68"
-          stroke="#e91e88" strokeWidth="3.4" strokeLinecap="round" fill="none" opacity="0.95" />
-      </g>
-
-      {/* Notebook — floating in front of chest with a green sticky tab */}
-      <g className="mara-notebook" aria-hidden="true">
-        {/* Notebook back cover for depth */}
-        <rect x="32.5" y="64" width="31" height="20.5" rx="2"
-          fill="#e0c080" stroke="#0a0d0a" strokeWidth="1.2" opacity="0.6" />
-        {/* Notebook front */}
-        <rect x="32" y="62.5" width="31" height="20.5" rx="2"
-          fill="url(#mara-notebook)" stroke="#0a0d0a" strokeWidth="1.5" />
-        {/* Green sticky tab — mint accent */}
-        <rect x="55" y="60" width="6" height="4" rx="0.5"
-          fill="#39ff9c" stroke="#0a5a2f" strokeWidth="0.6" />
-        {/* Spiral binding rings */}
-        <g fill="none" stroke="#0a0d0a" strokeWidth="0.9">
-          <circle cx="35.5" cy="63" r="1.1" />
-          <circle cx="40" cy="63" r="1.1" />
-          <circle cx="44.5" cy="63" r="1.1" />
-          <circle cx="49" cy="63" r="1.1" />
-          <circle cx="53.5" cy="63" r="1.1" />
-        </g>
-        {/* Ruled lines */}
-        <g stroke="#a67328" strokeWidth="0.7" strokeLinecap="round" opacity="0.7">
-          <path d="M35 70.5h25" />
-          <path d="M35 74.5h25" />
-          <path d="M35 78.5h18" />
-        </g>
-        {/* Pencil tucked under the notebook */}
-        <g className="mara-pencil">
-          <rect x="60" y="76" width="10" height="2.4" rx="0.4" fill="#ffcf40" stroke="#0a0d0a" strokeWidth="0.6" transform="rotate(-14 65 77)" />
-          <path d="M70.5 76.2l2.2 1v0.6z" fill="#333" transform="rotate(-14 65 77)" />
-        </g>
-      </g>
-
-      {/* Sparkles — subtle green + pink motes that gently float */}
-      {showSparkles && (
-        <g className="mara-sparkles" aria-hidden="true">
-          <circle cx="18" cy="26" r="1.1" fill="#39ff9c" opacity="0.85" className="mara-sparkle mara-sparkle-1" />
-          <circle cx="78" cy="22" r="0.9" fill="#7effb8" opacity="0.75" className="mara-sparkle mara-sparkle-2" />
-          <circle cx="82" cy="66" r="1.2" fill="#ffb3d9" opacity="0.7" className="mara-sparkle mara-sparkle-3" />
-          <circle cx="14" cy="58" r="0.8" fill="#39ff9c" opacity="0.8" className="mara-sparkle mara-sparkle-4" />
-          <path d="M76 40l1.2 -1.2M76 40l-1.2 1.2M76 40l1.2 1.2M76 40l-1.2 -1.2"
-            stroke="#39ff9c" strokeWidth="0.7" strokeLinecap="round" opacity="0.8" className="mara-sparkle mara-sparkle-5" />
-        </g>
-      )}
-
-      <rect
-        x="4" y="4" width="88" height="88" rx="44"
-        fill="none"
-        strokeWidth="1.6"
-        className={`mara-status-ring mara-status-ring-${state.replace("_", "-")}`}
-      />
     </svg>
   );
 }

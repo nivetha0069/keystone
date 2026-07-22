@@ -22,8 +22,8 @@ const MOBILE_KEY = "keystone.mara.pos.mobile";
 const DRAG_THRESHOLD_PX = 6;
 const KEY_STEP_PX = 24;
 const MOBILE_BREAKPOINT_PX = 640;
-const MASCOT_SIZE_DESKTOP = 108;
-const MASCOT_SIZE_MOBILE = 78;
+const MASCOT_SIZE_DESKTOP = 132;
+const MASCOT_SIZE_MOBILE = 96;
 const MARGIN_PX = 16;
 
 export type MascotPosition = { x: number; y: number };
