@@ -130,7 +130,8 @@ export function MaraCompanion(props: MaraCompanionProps) {
     const node = bubbleRef.current;
     if (!node) return;
     const nudge = () => {
-      node.style.transform = "";
+      node.style.setProperty("--mara-nudge-x", "0px");
+      node.style.setProperty("--mara-nudge-y", "0px");
       const rect = node.getBoundingClientRect();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
@@ -145,7 +146,8 @@ export function MaraCompanion(props: MaraCompanionProps) {
       const overBottom = rect.bottom - (vh - MARGIN);
       if (overTop > 0) dy = overTop;
       else if (overBottom > 0) dy = -overBottom;
-      if (dx !== 0 || dy !== 0) node.style.transform = `translate(${dx}px, ${dy}px)`;
+      node.style.setProperty("--mara-nudge-x", `${dx}px`);
+      node.style.setProperty("--mara-nudge-y", `${dy}px`);
     };
     nudge();
     window.addEventListener("resize", nudge);
