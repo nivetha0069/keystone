@@ -816,7 +816,7 @@ export function CmdbDashboard() {
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "hr" && <AgentHrView timeline={timeline} timelineLive={resourceState.timeline === "live"} cis={resourceState.cis === "live" ? cis : null} activeRunId={activeRunId} />}
       {section === "prioritize" && <PrioritizeView health={health} recalculating={apiState === "connecting"} onRecalculate={() => void loadData(activeRunId)} onFix={(fix) => { setQueuedFix(fix); setActionMessage(""); setSection("remediate"); }} />}
-      {section === "remediate" && <RemediateView key={activeRunId || "no-run"} health={health} cis={cis} timeline={timeline} findings={findings} reviews={reviews} activeRunId={activeRunId} apiState={apiState} queuedFix={queuedFix} initialStagedCiId={remediationTargetId} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} onRefresh={() => refreshRunResources(activeRunId)} />}
+      {section === "remediate" && <RemediateView key={activeRunId || "no-run"} health={health} cis={cis} timeline={timeline} findings={findings} reviews={reviews} activeRunId={activeRunId} runState={runRecord?.state ?? ""} apiState={apiState} queuedFix={queuedFix} initialStagedCiId={remediationTargetId} actionMessage={actionMessage} onSelect={(fix) => { setQueuedFix(fix); setActionMessage(""); }} onSubmit={submitRemediation} onRefresh={() => refreshRunResources(activeRunId)} />}
 
       <PageNavigation
         currentSection={currentNavId}
@@ -1109,6 +1109,7 @@ function RemediateView(props: {
   findings: RemediationFinding[];
   reviews: RemediationReview[];
   activeRunId: string;
+  runState: string;
   apiState: ApiState;
   queuedFix: HealthFix | null;
   initialStagedCiId?: string;
@@ -1122,7 +1123,7 @@ function RemediateView(props: {
   ) => void;
   onRefresh: () => Promise<void> | void;
 }) {
-  const { health, cis, timeline, findings, reviews, activeRunId, apiState, queuedFix, initialStagedCiId, actionMessage, onSelect, onSubmit, onRefresh } = props;
+  const { health, cis, timeline, findings, reviews, activeRunId, runState, apiState, queuedFix, initialStagedCiId, actionMessage, onSelect, onSubmit, onRefresh } = props;
   const selected = queuedFix || health.fixes[0];
   const stagedCis = cis.filter(ci => ci.id || ci.stagedCiId);
   const [selectedCiId, setSelectedCiId] = useState(() => stagedCis.find(ci => ci.id === initialStagedCiId || ci.stagedCiId === initialStagedCiId)?.id ?? stagedCis[0]?.id ?? "");
@@ -1150,7 +1151,9 @@ function RemediateView(props: {
   const drilldownItems = queue.items.slice(0, 100);
   const lifecycle = selectedQueueItem?.lifecycle ?? deriveIreLifecycleState(workbench);
   const simulationCorrelation = workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? selectedQueueItem?.simulationCorrelation;
-  const liveRunReady = Boolean(activeRunId && selectedCi && apiState !== "demo");
+  const RUN_STATES_BLOCKING_IRE = new Set(["queued", "importing", "analyzing", ""]);
+  const runReadyForIre = Boolean(runState) && !RUN_STATES_BLOCKING_IRE.has(runState);
+  const liveRunReady = Boolean(activeRunId && selectedCi && apiState !== "demo" && runReadyForIre);
   const approvable = lifecycle === "simulated_pending_approval" && Boolean(
     simulationCorrelation &&
     selectedQueueItem?.simulationFingerprint &&
@@ -1368,7 +1371,11 @@ function RemediateView(props: {
 
           <RunSummarySection timeline={timeline} queue={queue} />
 
-          {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions.</div>}
+          {!liveRunReady && <div className="ire-error"><Icon name="shield" size={15} />{
+            activeRunId && apiState !== "demo" && !runReadyForIre
+              ? `Pipeline still ${runState || "warming up"} — Simulate unlocks once ServiceNow leaves the analyzing state.`
+              : "Load a live ServiceNow migration run before sending IRE requests. Demo snapshots cannot execute governed actions."
+          }</div>}
           <IreResultPanel workbench={workbench} lifecycle={lifecycle} playback={selectedQueueItem} />
         </div>
         <div className="ire-action-footer">
@@ -2391,8 +2398,17 @@ function recordSlot(action: IreAction): keyof IreWorkbenchRecord {
 
 function errorFromIreHttp(status: number, payload: unknown): IreActionError {
   const row = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
+  const upstreamCode = typeof row.code === "string" ? row.code.toUpperCase() : "";
   const message = typeof row.error === "string" ? row.error : typeof row.message === "string" ? row.message : `IRE request failed with HTTP ${status}.`;
-  const code: IreActionError["code"] = status === 503 ? "NOT_CONFIGURED" : status === 400 ? "INVALID_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : status === 404 ? "NOT_FOUND" : status === 409 ? inferConflictCode(message) : "IRE_FAILED";
+  const looksLikeRunState = upstreamCode === "RUN_STATE_INVALID" || /run.?state|still analyzing|pipeline/i.test(message);
+  const code: IreActionError["code"] = looksLikeRunState ? "RUN_STATE_INVALID"
+    : status === 503 ? "NOT_CONFIGURED"
+    : status === 400 ? "INVALID_REQUEST"
+    : status === 401 ? "UNAUTHORIZED"
+    : status === 403 ? "FORBIDDEN"
+    : status === 404 ? "NOT_FOUND"
+    : status === 409 ? inferConflictCode(message)
+    : "IRE_FAILED";
   return { code, message, details: row.missing ?? row.detail ?? row.details };
 }
 

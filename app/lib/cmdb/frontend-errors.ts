@@ -41,6 +41,7 @@ const IRE_LABELS: Record<string, string> = {
   DUPLICATE_EXECUTION: "ServiceNow detected a duplicate idempotency key or prior execution.",
   VERIFY_MISMATCH: "Verification must use the specific execution correlation ID.",
   IRE_FAILED: "ServiceNow rejected the IRE action.",
+  RUN_STATE_INVALID: "The migration run is still analyzing. Simulate unlocks once the pipeline finishes.",
 };
 
 /**
