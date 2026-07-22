@@ -394,7 +394,7 @@ function ApprovalWorkspace({ view, onOpenRemediation }: { view: WorkspaceViewSta
   </section>;
 }
 
-const OPERATION_META: Record<string, { label: string; tone: "good" | "muted" | "warn" | "bad" }> = {
+export const OPERATION_META: Record<string, { label: string; tone: "good" | "muted" | "warn" | "bad" }> = {
   INSERT: { label: "Inserted", tone: "good" },
   UPDATE: { label: "Updated", tone: "good" },
   NO_CHANGE: { label: "No change", tone: "muted" },
@@ -541,7 +541,7 @@ function formatTouched(value: string) {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function SummaryMetric({ label, value, tone }: { label: string; value: number | string; tone?: "warn" | "good" | "muted" }) {
+export function SummaryMetric({ label, value, tone }: { label: string; value: number | string; tone?: "warn" | "good" | "muted" }) {
   return <div className={"summary-metric " + (tone ?? "muted")}>
     <strong>{value}</strong>
     <small>{label}</small>

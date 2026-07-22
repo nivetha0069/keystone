@@ -63,7 +63,7 @@ import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 import { MaraCompanion } from "./mara-companion";
-import { AgentWorkspaceView } from "./agent-workspace";
+import { AgentWorkspaceView, OPERATION_META, SummaryMetric } from "./agent-workspace";
 import { deriveWorkspaceViewState } from "./lib/cmdb/workspace-view-state";
 import { PageNavigation } from "./components/PageNavigation";
 import { formatTechnicalSource, parseMaraObservation } from "./lib/cmdb/mara-observation";
@@ -1754,7 +1754,7 @@ function PastSummariesView(props: {
       <div>
         <span className="eyebrow accent">PAST SUMMARIES</span>
         <h1>Recap the runs you&apos;ve finished.</h1>
-        <p>A quick read on every run this browser has touched. Open one to see the full summary.</p>
+        <p>Every run this browser has touched, rendered as its full summary. Click a card to jump back into the workspace.</p>
       </div>
       <div className="runs-page-actions">
         <button className="primary-button" onClick={onNewImport}>
@@ -1771,26 +1771,7 @@ function PastSummariesView(props: {
         </div>
       : <ul className="summaries-list">
           {sorted.map(entry => <li key={entry.id}>
-            <button
-              type="button"
-              className={"summary-card" + (entry.id === activeRunId ? " active" : "")}
-              onClick={() => onOpenRun(entry)}
-            >
-              <div className="summary-card-top">
-                <div>
-                  <span className="eyebrow">{entry.sourceSystem || "UNKNOWN SOURCE"}</span>
-                  <strong>{entry.label}</strong>
-                </div>
-                <span className="summary-card-time">{formatSummaryTouched(entry.touchedAt)}</span>
-              </div>
-              <p className="summary-card-body">
-                {entry.summary || "No summary recorded — open to load evidence from ServiceNow."}
-              </p>
-              <div className="summary-card-foot">
-                <span>{entry.runNumber || entry.id.slice(0, 8)}</span>
-                <span className="summary-card-open"><Icon name="arrow" size={13} /> Open</span>
-              </div>
-            </button>
+            <PastRunSummaryCard entry={entry} isActive={entry.id === activeRunId} onOpen={() => onOpenRun(entry)} />
           </li>)}
         </ul>}
   </div>;
@@ -1801,6 +1782,161 @@ function formatSummaryTouched(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+type PastRunFetchState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; cis: ConfigurationItem[]; timeline: TimelineEvent[]; health: HealthData };
+
+function PastRunSummaryCard({ entry, isActive, onOpen }: {
+  entry: RegistryEntry;
+  isActive: boolean;
+  onOpen: () => void;
+}) {
+  const [state, setState] = useState<PastRunFetchState>({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const qs = `?run=${encodeURIComponent(entry.id)}`;
+        const [cisRes, timelineRes, healthRes] = await Promise.all([
+          fetch(`/api/cmdb/cis${qs}`, { cache: "no-store" }),
+          fetch(`/api/cmdb/timeline${qs}`, { cache: "no-store" }),
+          fetch(`/api/cmdb/health${qs}`, { cache: "no-store" }),
+        ]);
+        if (!cisRes.ok || !timelineRes.ok || !healthRes.ok) {
+          throw new Error(`Upstream returned ${[cisRes.status, timelineRes.status, healthRes.status].join("/")}`);
+        }
+        const [cisBody, timelineBody, healthBody] = await Promise.all([cisRes.json(), timelineRes.json(), healthRes.json()]);
+        if (cancelled) return;
+        setState({
+          status: "ready",
+          cis: normalizeComprehendCis(cisBody),
+          timeline: normalizeComprehendTimeline(timelineBody),
+          health: normalizeComprehendHealth(healthBody),
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setState({ status: "error", message: err instanceof Error ? err.message : "Could not load summary evidence." });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [entry.id]);
+
+  return <article className={"past-summary-card" + (isActive ? " active" : "")}>
+    <header className="past-summary-header">
+      <div>
+        <span className="eyebrow accent">{entry.sourceSystem || "UNKNOWN SOURCE"}</span>
+        <h2>{entry.label}</h2>
+        <p>{entry.runNumber ? `${entry.runNumber} · ` : ""}{formatSummaryTouched(entry.touchedAt) || "Time not recorded"}</p>
+      </div>
+      <button type="button" className="ghost-button" onClick={onOpen}>
+        <Icon name="arrow" size={13} /> {isActive ? "Continue" : "Open run"}
+      </button>
+    </header>
+
+    {state.status === "loading" && <p className="past-summary-status">Loading evidence…</p>}
+    {state.status === "error" && <p className="past-summary-status error">Could not load evidence for this run — {state.message}</p>}
+    {state.status === "ready" && <PastRunSummaryBody cis={state.cis} timeline={state.timeline} health={state.health} entry={entry} />}
+  </article>;
+}
+
+function PastRunSummaryBody({ cis, timeline, health, entry }: {
+  cis: ConfigurationItem[];
+  timeline: TimelineEvent[];
+  health: HealthData;
+  entry: RegistryEntry;
+}) {
+  const baseline = Math.round(health.baselineScore ?? health.score);
+  const verified = Math.round(health.verifiedScore ?? health.score);
+  const projected = Math.round(health.projectedScore ?? Math.max(health.score, verified));
+  const realizedLift = Math.max(0, verified - baseline);
+  const remainingLift = Math.max(0, projected - verified);
+
+  const operations = (() => {
+    const counts = new Map<string, number>();
+    for (const ci of cis) counts.set(ci.operation, (counts.get(ci.operation) ?? 0) + 1);
+    const order = Object.keys(OPERATION_META);
+    return [...counts.entries()]
+      .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+      .map(([op, count]) => ({ op, count, meta: OPERATION_META[op] ?? { label: op, tone: "muted" as const } }));
+  })();
+
+  const workGroupCount = health.workGroupImpacts?.length ?? 0;
+  const groupsResolved = (health.workGroupImpacts ?? []).filter(g => g.realized >= g.projected && g.projected > 0).length;
+  const reviewCount = health.reviewCount ?? 0;
+  const staleRecords = health.staleRecords ?? 0;
+  const duplicates = health.duplicateCandidates ?? 0;
+  const relationshipCount = health.relationshipCount ?? 0;
+
+  const recent = [...timeline].sort((a, b) => b.seq - a.seq).slice(0, 6);
+  const headline = cis.length > 0
+    ? `${cis.length} configuration ${cis.length === 1 ? "item" : "items"} processed for ${entry.label}.`
+    : `${entry.label} — no configuration items recorded yet.`;
+
+  return <div className="past-summary-body">
+    <p className="past-summary-headline">{headline}</p>
+
+    <div className="summary-health">
+      <div className="summary-health-cell">
+        <small>BASELINE</small>
+        <strong>{baseline}</strong>
+        <span>at intake</span>
+      </div>
+      <Icon name="arrow" size={14} />
+      <div className="summary-health-cell">
+        <small>VERIFIED NOW</small>
+        <strong className="verified">{verified}</strong>
+        <span>+{realizedLift} realized</span>
+      </div>
+      <Icon name="arrow" size={14} />
+      <div className="summary-health-cell">
+        <small>PROJECTED</small>
+        <strong className="projected">{projected}</strong>
+        <span>+{remainingLift} available</span>
+      </div>
+    </div>
+
+    <div className="summary-section">
+      <h3>Record outcomes</h3>
+      {operations.length > 0
+        ? <div className="summary-ops">
+            {operations.map(({ op, count, meta }) => <div key={op} className={"summary-op " + meta.tone}>
+              <strong>{count}</strong>
+              <small>{meta.label}</small>
+            </div>)}
+          </div>
+        : <p className="summary-empty">No staged records were evaluated.</p>}
+    </div>
+
+    <div className="summary-section">
+      <h3>Governance &amp; progress</h3>
+      <div className="summary-metrics">
+        <SummaryMetric label="Work groups ranked" value={workGroupCount} />
+        <SummaryMetric label="Groups resolved" value={groupsResolved} tone={groupsResolved > 0 ? "good" : "muted"} />
+        <SummaryMetric label="Sent to review" value={reviewCount} tone={reviewCount > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Duplicate candidates" value={duplicates} tone={duplicates > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Stale records" value={staleRecords} tone={staleRecords > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Relationships" value={relationshipCount} />
+      </div>
+    </div>
+
+    {recent.length > 0 && <div className="summary-section">
+      <h3>Recent activity</h3>
+      <ul className="summary-activity">
+        {recent.map(event => <li key={event.id} className={"summary-activity-row " + event.status}>
+          <span className={"summary-activity-dot " + event.status} aria-hidden="true" />
+          <div>
+            <small>#{event.seq} · {event.source || event.className}</small>
+            <strong>{event.name || event.recordName}</strong>
+            <p>{event.reasoning}</p>
+          </div>
+        </li>)}
+      </ul>
+    </div>}
+  </div>;
 }
 
 function RunsQueueBucket(props: {
