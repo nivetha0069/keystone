@@ -23,7 +23,9 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/ire/execute` | `/ire/execute` | POST | Identifier-only status compatibility for the server-owned Phase D execution continuation; it cannot start IRE. |
 | `/api/cmdb/ire/verify` | `/ire/verify` | POST | Identifier-only status compatibility for the correlated server-owned verification continuation; it cannot start Verify. |
 | `/api/cmdb/remediation-campaign/plan` | existing GET resources | POST | Builds a stable homogeneous, server-derived plan of at most 20 staged CIs. |
+| `/api/cmdb/remediation-campaign/failure-groups` | existing GET resources | POST | Classifies persisted failed simulations into deterministic eligible, blocked, or retry-exhausted groups. |
 | `/api/cmdb/remediation-campaign/simulate` | `/ire/simulate` | POST | Simulates plan items with concurrency capped at three and isolates item failures. |
+| `/api/cmdb/remediation-campaign/retry` | `/ire/simulate` | POST | Re-simulates an eligible failure group sequentially with the single allowlisted class-alias strategy and a one-retry budget. |
 | `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `INSERT`, `UPDATE`, and `NO_CHANGE` items. |
 | `/api/cmdb/remediation-campaign/approve` | `/ire/approve` | POST | After the server-only safety gate is opened, recomputes the manifest and submits individual fingerprint-bound approvals sequentially. It never calls Execute or Verify. |
 | `/api/cmdb/remediation-campaign/status` | existing GET resources | POST | Reconstructs campaign execution and verification progress from persisted ServiceNow evidence. |
@@ -63,6 +65,17 @@ identifier-only `/remediate` proposal contract. It never approves the review or
 calls IRE. Proposal calls use deterministic campaign idempotency keys; after any
 ambiguous response the coordinator reloads ServiceNow evidence instead of
 blindly retrying.
+
+Failure grouping is reconstructed from staged records and Event Ledger evidence;
+the browser cannot name a strategy, mapping, class, payload, operation, or retry
+count. The first catalog entry is intentionally narrow:
+`normalize_known_class_alias` with mapping `class-alias-v1`. Only that group is
+retry eligible. Missing identity and every unrecognized failure remain blocked.
+The retry route uses deterministic correlation and idempotency prefixes,
+processes one record at a time, requires ServiceNow to return the exact strategy,
+mapping version, `retry_count=1`, and `max_retries=1` evidence, and refuses a
+second attempt. Isolated record failures continue; systemic authorization or
+configuration errors halt the group.
 
 ## ServiceNow table usage
 

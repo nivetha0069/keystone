@@ -57,14 +57,13 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 ### Missing Capabilities
 
 - No provider-neutral agent runtime is implemented.
-- No work queue exists as a first-class UI or derived orchestration model.
+- A deterministic evidence-derived work queue exists; a durable provider-neutral agent runtime remains open.
 - No autonomous Comprehend, Prioritize, or Remediation loop exists in this repository.
-- No frontend single-record IRE control panel exists for simulation, approval, execution, and verification.
-- No automated failure grouping, root-cause investigation, or allowed retry strategy loop exists.
+- The frontend single-record IRE workbench supports simulation, approval, and automatic Execute/Verify monitoring.
+- Deterministic failure grouping and a one-attempt class-alias retry loop now exist; broader strategies remain deferred.
 - No batch simulation or relationship promotion flow exists.
-- No project-owned unit or integration tests were found outside `node_modules`.
-- No local test harness exists for missing config, stale fingerprint, duplicate idempotency, double-click execution, missing approval, or wrong verification correlation.
-- No source-controlled ServiceNow scripts or update-set artifacts are present for the new IRE endpoints.
+- Project-owned smoke and acceptance harnesses cover campaign orchestration, work queues, playback, ServiceNow Phase C/D contracts, idempotency, stale fingerprints, and verification correlation; a conventional unit-test runner remains open.
+- Source-controlled ServiceNow Script Includes, Scripted REST resources, Script Actions, and export tooling are present; deployment still requires controlled promotion into the instance.
 - No durable observability layer exists for detailed agent traces outside compact ServiceNow event ledger metadata.
 
 ### Technical Debt
@@ -91,7 +90,7 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - Milestone 4: Complete. The fingerprint-bound Phase D continuation is deployed and live-validated; Execute and Verify are server-owned, correlated, and exposed to the browser only as status compatibility routes.
 - Milestone 5: Complete. The single-record workbench supports simulation, fingerprint-bound approval, automatic continuation monitoring, blockers, correlations, and verification results.
 - Milestone 6: Complete. The deterministic work queue and playback state reconstruct from ServiceNow evidence after refresh.
-- Milestone 7: Partially delivered. Phase E adds the first bounded bulk loop: stable homogeneous planning, three-wide simulation, frozen manifests, and sequential individual approvals for campaigns of at most 20 CIs. Broader retry strategies and live campaign acceptance remain open.
+- Milestone 7: Repository implementation complete. Phase E adds stable homogeneous planning, three-wide simulation, deterministic failure groups, one allowlisted bounded retry, frozen manifests, and sequential individual approvals for campaigns of at most 20 CIs. Live repeated-failure acceptance remains to be captured.
 
 ## 3. User Personas
 
@@ -576,7 +575,7 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 
 ### Milestone 7: Deterministic Failure Grouping And Retry Loop
 
-**Status: Partially delivered through Phase E.** The bounded campaign coordinator plans stable homogeneous groups of at most 20, simulates at concurrency three, isolates item failures, exposes only the allowlisted class-alias retry evidence, freezes a canonical SHA-256 manifest, and fans one confirmation into sequential Phase D approvals. `bounded-insert-v1` also admits unmatched, complete `cmdb_ci_linux_server` INSERT simulations while freezing the policy and identity evidence in the manifest. The broad retry catalog and live 3–5 item INSERT acceptance campaign remain deferred.
+**Status: Repository implementation complete through Phase E; live retry acceptance pending.** The bounded campaign coordinator plans stable homogeneous groups of at most 20, simulates at concurrency three, isolates item failures, classifies persisted failures into eligible, blocked, and exhausted groups, and permits exactly one sequential retry using `normalize_known_class_alias` with `class-alias-v1`. The UI exposes the failure group, investigation evidence, retry budget, mapping version, and re-simulation result. Missing identity and unsupported failures remain blocked. The coordinator also freezes a canonical SHA-256 manifest and fans one confirmation into sequential Phase D approvals. `bounded-insert-v1` admits unmatched, complete `cmdb_ci_linux_server` INSERT simulations while freezing policy and identity evidence in the manifest.
 
 - Objective: Demonstrate that Keystone can investigate repeated IRE failures and retry with allowed strategies.
 - User-visible outcome: A set of failed simulations is grouped by shared cause; Keystone selects an allowed alternative and re-simulates.
@@ -587,7 +586,7 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 - Dependencies: Fixture data with realistic repeated failures.
 - Acceptance criteria: At least one failure group is resolved by an allowed retry and one remains blocked for approval or data correction.
 - Risks: IRE errors may be too unstructured for reliable grouping.
-- Deferred: Broad retry strategy catalog.
+- Deferred: Broad retry strategy catalog and provider/model-selected explanations. Neither gains write authority.
 
 ### Milestone 8: Provider-Neutral Agent Harness
 

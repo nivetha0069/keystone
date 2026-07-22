@@ -43,8 +43,10 @@ import type {
   RemediationApprovalManifest,
   RemediationCampaignApprovalResult,
   RemediationCampaignPlan,
+  RemediationCampaignRetryResult,
   RemediationCampaignSimulationResult,
   RemediationCampaignStatus,
+  RemediationFailureGroupsResult,
 } from "./lib/cmdb/remediation-campaign";
 import { recoverLatestCampaignPlan } from "./lib/cmdb/remediation-campaign-recovery";
 
@@ -105,12 +107,15 @@ type IreWorkbenchRecord = {
 type CampaignPlanView = RemediationCampaignPlan & { approval_enabled?: boolean };
 type CampaignViewState = {
   plan?: CampaignPlanView;
+  failureGroups?: RemediationFailureGroupsResult;
   simulation?: RemediationCampaignSimulationResult;
+  retry?: RemediationCampaignRetryResult;
   manifest?: RemediationApprovalManifest;
   approval?: RemediationCampaignApprovalResult;
   status?: RemediationCampaignStatus;
   restored?: boolean;
 };
+type CampaignPendingAction = "plan" | "failure-groups" | "simulate" | "retry" | "prepare-approval" | "approve" | "status";
 
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
@@ -1152,10 +1157,11 @@ function RemediateView(props: {
   }, [ireRecords, ireStorageKey]);
   const [pendingAction, setPendingAction] = useState<"simulate" | "approve" | null>(null);
   const [campaign, setCampaign] = useState<CampaignViewState>({});
-  const [campaignPending, setCampaignPending] = useState<"plan" | "simulate" | "prepare-approval" | "approve" | "status" | null>(null);
+  const [campaignPending, setCampaignPending] = useState<CampaignPendingAction | null>(null);
   const [campaignError, setCampaignError] = useState("");
   const [manifestConfirmed, setManifestConfirmed] = useState(false);
   const campaignRecoveryAttempted = useRef("");
+  const failureGroupsLoadedRun = useRef("");
   const demoFallback = !activeRunId && apiState === "demo";
 
   const selectedCi = stagedCis.find(ci => ci.id === selectedCiId) ?? stagedCis[0];
@@ -1214,7 +1220,7 @@ function RemediateView(props: {
         });
         const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
         if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Campaign recovery failed with HTTP ${response.status}.`);
-        setCampaign({ plan: { ...recoveredCampaignPlan, approval_enabled: false }, status: payload as RemediationCampaignStatus, restored: true });
+        setCampaign(current => ({ ...current, plan: { ...recoveredCampaignPlan, approval_enabled: false }, status: payload as RemediationCampaignStatus, restored: true }));
         setCampaignError("");
       } catch (error) {
         setCampaignError(error instanceof Error ? error.message : "Campaign recovery failed.");
@@ -1224,6 +1230,34 @@ function RemediateView(props: {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [campaign.plan, campaignPending, recoveredCampaignPlan]);
+
+  const loadFailureGroups = useCallback(async () => {
+    if (!activeRunId) return;
+    const response = await fetch("/api/cmdb/remediation-campaign/failure-groups", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ migration_run_id: activeRunId, limit: 20 }),
+    });
+    const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Failure grouping failed with HTTP ${response.status}.`);
+    setCampaign(current => ({ ...current, failureGroups: payload as RemediationFailureGroupsResult }));
+  }, [activeRunId]);
+
+  useEffect(() => {
+    if (!activeRunId || campaignPending || (recoveredCampaignPlan && !campaign.plan) || failureGroupsLoadedRun.current === activeRunId) return;
+    failureGroupsLoadedRun.current = activeRunId;
+    const timer = window.setTimeout(async () => {
+      setCampaignPending("failure-groups");
+      try {
+        await loadFailureGroups();
+      } catch (error) {
+        setCampaignError(error instanceof Error ? error.message : "Failure grouping failed.");
+      } finally {
+        setCampaignPending(null);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeRunId, campaign.plan, campaignPending, loadFailureGroups, recoveredCampaignPlan]);
 
   const campaignRequestBody = useCallback((includeManifest = false) => {
     const plan = campaign.plan;
@@ -1264,7 +1298,7 @@ function RemediateView(props: {
     return () => window.clearInterval(timer);
   }, [activeRunId, lifecycle, onRefresh, workbench.approval?.success]);
 
-  const campaignStage = campaign.status?.stage ?? campaign.approval?.stage ?? campaign.manifest?.stage ?? campaign.simulation?.stage ?? campaign.plan?.stage;
+  const campaignStage = campaign.status?.stage ?? campaign.approval?.stage ?? campaign.manifest?.stage ?? campaign.retry?.stage ?? campaign.simulation?.stage ?? campaign.plan?.stage;
   useEffect(() => {
     if (!activeRunId || !campaign.plan || !["approving", "executing", "verifying"].includes(campaignStage ?? "")) return;
     const timer = window.setInterval(() => {
@@ -1329,7 +1363,7 @@ function RemediateView(props: {
     });
   }
 
-  async function runCampaignAction(action: "plan" | "simulate" | "prepare-approval" | "approve") {
+  async function runCampaignAction(action: "plan" | "simulate" | "retry" | "prepare-approval" | "approve", requestedSignature?: string) {
     if (!activeRunId || campaignPending) return;
     setCampaignPending(action);
     setCampaignError("");
@@ -1337,12 +1371,15 @@ function RemediateView(props: {
       const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(campaignRequestBody(action === "approve")),
+        body: JSON.stringify(action === "plan" && requestedSignature
+          ? { migration_run_id: activeRunId, work_group_signature: requestedSignature, limit: 20 }
+          : campaignRequestBody(action === "approve")),
       });
       const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
       if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Campaign ${action} failed with HTTP ${response.status}.`);
-      if (action === "plan") setCampaign({ plan: payload as CampaignPlanView });
+      if (action === "plan") setCampaign(current => ({ failureGroups: current.failureGroups, plan: payload as CampaignPlanView }));
       else if (action === "simulate") setCampaign(current => ({ ...current, simulation: payload as RemediationCampaignSimulationResult, manifest: undefined, approval: undefined, status: undefined }));
+      else if (action === "retry") setCampaign(current => ({ ...current, retry: payload as RemediationCampaignRetryResult, simulation: undefined, manifest: undefined, approval: undefined, status: undefined }));
       else if (action === "prepare-approval") {
         setManifestConfirmed(false);
         setCampaign(current => ({ ...current, manifest: payload as RemediationApprovalManifest, approval: undefined, status: undefined }));
@@ -1350,6 +1387,7 @@ function RemediateView(props: {
         setCampaign(current => ({ ...current, approval: payload as RemediationCampaignApprovalResult }));
       }
       await onRefresh();
+      if (action === "retry") await loadFailureGroups();
     } catch (error) {
       setCampaignError(error instanceof Error ? error.message : `Campaign ${action} failed.`);
     } finally {
@@ -1374,7 +1412,17 @@ function RemediateView(props: {
       confirmed={manifestConfirmed}
       onConfirmed={setManifestConfirmed}
       onPlan={() => void runCampaignAction("plan")}
+      onPlanFailure={signature => void runCampaignAction("plan", signature)}
+      onRefreshFailures={() => {
+        if (campaignPending) return;
+        setCampaignPending("failure-groups");
+        setCampaignError("");
+        void loadFailureGroups()
+          .catch(error => setCampaignError(error instanceof Error ? error.message : "Failure grouping failed."))
+          .finally(() => setCampaignPending(null));
+      }}
       onSimulate={() => void runCampaignAction("simulate")}
+      onRetry={() => void runCampaignAction("retry")}
       onPrepare={() => void runCampaignAction("prepare-approval")}
       onApprove={() => void runCampaignAction("approve")}
       onRefresh={() => void refreshCampaignStatus()}
@@ -1459,24 +1507,28 @@ function RemediateView(props: {
 function AgentCampaignPanel(props: {
   activeRunId: string;
   campaign: CampaignViewState;
-  pending: "plan" | "simulate" | "prepare-approval" | "approve" | "status" | null;
+  pending: CampaignPendingAction | null;
   error: string;
   confirmed: boolean;
   onConfirmed: (confirmed: boolean) => void;
   onPlan: () => void;
+  onPlanFailure: (signature: string) => void;
+  onRefreshFailures: () => void;
   onSimulate: () => void;
+  onRetry: () => void;
   onPrepare: () => void;
   onApprove: () => void;
   onRefresh: () => void;
 }) {
-  const { activeRunId, campaign, pending, error, confirmed, onConfirmed, onPlan, onSimulate, onPrepare, onApprove, onRefresh } = props;
+  const { activeRunId, campaign, pending, error, confirmed, onConfirmed, onPlan, onPlanFailure, onRefreshFailures, onSimulate, onRetry, onPrepare, onApprove, onRefresh } = props;
   const plan = campaign.plan;
   const manifest = campaign.manifest;
-  const summary = campaign.status?.summary ?? campaign.approval?.summary ?? manifest?.summary ?? campaign.simulation?.summary;
-  const stage = campaign.status?.stage ?? campaign.approval?.stage ?? manifest?.stage ?? campaign.simulation?.stage ?? plan?.stage ?? "planning";
+  const summary = campaign.status?.summary ?? campaign.approval?.summary ?? manifest?.summary ?? campaign.retry?.summary ?? campaign.simulation?.summary;
+  const stage = campaign.status?.stage ?? campaign.approval?.stage ?? manifest?.stage ?? campaign.retry?.stage ?? campaign.simulation?.stage ?? plan?.stage ?? "planning";
   const exclusions = manifest?.exclusions ?? plan?.exclusions ?? [];
   const insertItems = manifest?.items.filter(item => item.operation === "INSERT") ?? [];
-  const canPrepare = Boolean(plan && campaign.simulation && !manifest);
+  const retryPlan = Boolean(plan?.strategy_id);
+  const canPrepare = Boolean(plan && (campaign.simulation || campaign.retry?.summary.succeeded) && !manifest);
   const canApprove = Boolean(manifest?.manifest_id && manifest.stage === "review_ready" && confirmed && plan?.approval_enabled);
 
   return <section className="panel agent-campaign-panel">
@@ -1487,7 +1539,9 @@ function AgentCampaignPanel(props: {
 
     <div className="campaign-controls">
       <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} /> {pending === "plan" ? "Planning…" : plan ? "Replan" : "Plan campaign"}</button>
-      <button className="ghost-button" disabled={!plan || Boolean(pending)} onClick={onSimulate}><Icon name="spark" size={15} /> {pending === "simulate" ? "Simulating…" : "Simulate group"}</button>
+      <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onRefreshFailures}><Icon name="refresh" size={15} /> {pending === "failure-groups" ? "Grouping failures…" : "Refresh failures"}</button>
+      <button className="ghost-button" disabled={!plan || retryPlan || Boolean(pending)} onClick={onSimulate}><Icon name="spark" size={15} /> {pending === "simulate" ? "Simulating…" : retryPlan ? "Use bounded retry" : "Simulate group"}</button>
+      {retryPlan && <button className="ghost-button" disabled={!plan || Boolean(pending)} onClick={onRetry}><Icon name="refresh" size={15} /> {pending === "retry" ? "Retrying once…" : `Retry ${plan?.items.length ?? 0} once`}</button>}
       <button className="ghost-button" disabled={!canPrepare || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} /> {pending === "prepare-approval" ? "Freezing…" : "Freeze approval"}</button>
       <button className="ghost-button" disabled={!plan || Boolean(pending)} onClick={onRefresh}><Icon name="refresh" size={15} /> {pending === "status" ? "Refreshing…" : "Refresh status"}</button>
     </div>
@@ -1495,6 +1549,31 @@ function AgentCampaignPanel(props: {
     {!activeRunId && <div className="campaign-notice"><Icon name="shield" size={15} />Select a live migration run to create a server-derived campaign plan.</div>}
     {error && <div className="ire-error"><Icon name="x" size={15} />{error}</div>}
     {campaign.restored && <div className="campaign-notice"><Icon name="refresh" size={15} />Campaign progress restored from persisted ServiceNow approval, execution, and verification evidence.</div>}
+
+    {campaign.failureGroups && <div className="campaign-columns campaign-failure-groups">
+      <div className="campaign-list">
+        <div className="campaign-list-head"><strong>Deterministic failure groups</strong><span>{campaign.failureGroups.summary.records} records</span></div>
+        {campaign.failureGroups.groups.map(group => {
+          const selectedFailureGroup = retryPlan && plan?.work_group_signature === group.work_group_signature;
+          return <div className="campaign-row" key={group.work_group_signature}>
+            <Icon name={group.state === "eligible" ? "refresh" : "x"} size={14} />
+            <div><strong>{group.title}</strong><small>{group.items.length} records · {group.class_name} · {group.state}</small></div>
+            {group.state === "eligible" && <button className="ghost-button" disabled={Boolean(pending)} onClick={() => selectedFailureGroup ? onRetry() : onPlanFailure(group.work_group_signature)}>{selectedFailureGroup ? `Retry ${group.items.length} once` : "Plan retry"}</button>}
+          </div>;
+        })}
+        {!campaign.failureGroups.groups.length && <div className="campaign-empty">No failed simulation evidence requires deterministic grouping.</div>}
+      </div>
+      <div className="campaign-list exclusions">
+        <div className="campaign-list-head"><strong>Retry evidence</strong><span>{campaign.failureGroups.summary.eligible} eligible</span></div>
+        {campaign.failureGroups.groups.flatMap(group => group.items.map(item => <div className="campaign-row" key={`${group.work_group_signature}:${item.staged_ci_id}`}>
+          <Icon name={item.retry_eligible ? "check" : "shield"} size={14} />
+          <div><strong>{item.name}</strong><small>{item.error_code} · retry {item.retry_count}/{group.max_retries} · {item.message}</small></div>
+        </div>)).slice(0, 50)}
+        {campaign.failureGroups.groups.some(group => group.blocker) && <div className="campaign-empty">{campaign.failureGroups.groups.filter(group => group.blocker).map(group => group.blocker).join(" ")}</div>}
+      </div>
+    </div>}
+
+    {campaign.retry && <div className="campaign-notice"><Icon name={campaign.retry.success ? "check" : "x"} size={15} />Bounded retry finished: {campaign.retry.summary.succeeded} succeeded, {campaign.retry.summary.failed + campaign.retry.summary.blocked} unresolved. Strategy {campaign.retry.strategy_id}, mapping {campaign.retry.mapping_version}, concurrency {campaign.retry.concurrency}.</div>}
 
     {plan && <div className="campaign-identity">
       <div><small>SELECTED GROUP</small><strong>{plan.group_title}</strong></div>

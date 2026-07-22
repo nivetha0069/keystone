@@ -9,6 +9,9 @@ export const CAMPAIGN_LIMIT = 20;
 export const CAMPAIGN_SIMULATION_CONCURRENCY = 3;
 export const CAMPAIGN_INSERT_POLICY_VERSION = "bounded-insert-v1";
 export const CAMPAIGN_INSERT_CLASS_ALLOWLIST = ["cmdb_ci_linux_server"] as const;
+export const CAMPAIGN_RETRY_STRATEGY_ID = "normalize_known_class_alias" as const;
+export const CAMPAIGN_RETRY_MAPPING_VERSION = "class-alias-v1" as const;
+export const CAMPAIGN_MAX_RETRIES = 1;
 const INSERT_CLASS_ALLOWLIST = new Set<string>(CAMPAIGN_INSERT_CLASS_ALLOWLIST);
 
 export type RemediationCampaignStage =
@@ -68,6 +71,10 @@ export type RemediationCampaignActionItem = {
   message?: string;
   simulation_correlation_id?: string;
   simulation_fingerprint?: string;
+  strategy_id?: typeof CAMPAIGN_RETRY_STRATEGY_ID;
+  mapping_version?: typeof CAMPAIGN_RETRY_MAPPING_VERSION;
+  retry_count?: number;
+  max_retries?: number;
 };
 
 export type RemediationCampaignSimulationResult = {
@@ -77,6 +84,50 @@ export type RemediationCampaignSimulationResult = {
   campaign_id: string;
   work_group_signature: string;
   concurrency: 3;
+  items: RemediationCampaignActionItem[];
+  summary: CampaignSummary;
+  halted?: { code: string; message: string };
+};
+
+export type RemediationFailureGroupItem = {
+  staged_ci_id: string;
+  name: string;
+  error_code: string;
+  message: string;
+  retry_count: number;
+  retry_eligible: boolean;
+};
+
+export type RemediationFailureGroup = {
+  work_group_signature: string;
+  title: string;
+  category: string;
+  class_name: string;
+  state: "eligible" | "blocked" | "exhausted";
+  strategy_id?: typeof CAMPAIGN_RETRY_STRATEGY_ID;
+  mapping_version?: typeof CAMPAIGN_RETRY_MAPPING_VERSION;
+  max_retries: 1;
+  blocker?: string;
+  items: RemediationFailureGroupItem[];
+};
+
+export type RemediationFailureGroupsResult = {
+  success: true;
+  stage: "planning";
+  migration_run_id: string;
+  groups: RemediationFailureGroup[];
+  summary: { groups: number; records: number; eligible: number; blocked: number; exhausted: number };
+};
+
+export type RemediationCampaignRetryResult = {
+  success: boolean;
+  stage: "simulating" | "blocked";
+  migration_run_id: string;
+  campaign_id: string;
+  work_group_signature: string;
+  concurrency: 1;
+  strategy_id: typeof CAMPAIGN_RETRY_STRATEGY_ID;
+  mapping_version: typeof CAMPAIGN_RETRY_MAPPING_VERSION;
   items: RemediationCampaignActionItem[];
   summary: CampaignSummary;
   halted?: { code: string; message: string };
@@ -463,6 +514,116 @@ export function remediationCampaignStatus(snapshot: RemediationCampaignSnapshot,
   };
 }
 
+export function remediationFailureGroups(snapshot: RemediationCampaignSnapshot): RemediationFailureGroupsResult {
+  const context = campaignContext(snapshot);
+  const failedById = new Map(context.queueItems
+    .filter(item => item.bucket === "simulation_failed" || item.bucket === "blocked")
+    .flatMap(item => [[item.stagedCiId, item], [item.id, item]]));
+  const groups: RemediationFailureGroup[] = [];
+  for (const group of context.groups) {
+    const queueItems = group.stagedCiIds.flatMap(id => failedById.get(id) ?? []);
+    if (!queueItems.length) continue;
+    const items = queueItems.map(item => {
+      const evidence = latestRetryEvidence(snapshot.timeline, item);
+      const retryCount = Math.max(0, evidence.retry_count ?? 0);
+      return {
+        staged_ci_id: item.stagedCiId,
+        name: item.ci.name,
+        error_code: evidence.error_code || failureCode(item.reason),
+        message: evidence.message || item.reason,
+        retry_count: retryCount,
+        retry_eligible: group.strategy === CAMPAIGN_RETRY_STRATEGY_ID && retryCount < CAMPAIGN_MAX_RETRIES,
+      };
+    }).sort((left, right) => left.staged_ci_id.localeCompare(right.staged_ci_id));
+    const strategy = group.strategy === CAMPAIGN_RETRY_STRATEGY_ID ? CAMPAIGN_RETRY_STRATEGY_ID : undefined;
+    const eligible = items.some(item => item.retry_eligible);
+    const exhausted = Boolean(strategy) && items.every(item => item.retry_count >= CAMPAIGN_MAX_RETRIES);
+    groups.push({
+      work_group_signature: group.signature,
+      title: group.title,
+      category: group.category,
+      class_name: group.targetClass,
+      state: eligible ? "eligible" : exhausted ? "exhausted" : "blocked",
+      strategy_id: strategy,
+      mapping_version: strategy ? CAMPAIGN_RETRY_MAPPING_VERSION : undefined,
+      max_retries: CAMPAIGN_MAX_RETRIES,
+      blocker: eligible ? undefined : exhausted ? "The one-retry budget is exhausted." : group.blocker || "No allowlisted deterministic retry strategy is available.",
+      items,
+    });
+  }
+  groups.sort((left, right) => stateRank(left.state) - stateRank(right.state) || right.items.length - left.items.length || left.work_group_signature.localeCompare(right.work_group_signature));
+  return {
+    success: true,
+    stage: "planning",
+    migration_run_id: snapshot.migrationRunId,
+    groups,
+    summary: {
+      groups: groups.length,
+      records: groups.reduce((sum, group) => sum + group.items.length, 0),
+      eligible: groups.filter(group => group.state === "eligible").reduce((sum, group) => sum + group.items.filter(item => item.retry_eligible).length, 0),
+      blocked: groups.filter(group => group.state === "blocked").reduce((sum, group) => sum + group.items.length, 0),
+      exhausted: groups.filter(group => group.state === "exhausted").reduce((sum, group) => sum + group.items.length, 0),
+    },
+  };
+}
+
+export async function retryRemediationCampaign(
+  snapshot: RemediationCampaignSnapshot,
+  selection: CampaignSelection,
+  simulate: (item: RemediationCampaignItem, request: { correlation_id: string; idempotency_key: string }) => Promise<IreActionResponse>,
+): Promise<RemediationCampaignRetryResult> {
+  const plan = validateCampaignSelection(snapshot, selection);
+  const failureGroup = remediationFailureGroups(snapshot).groups.find(group => group.work_group_signature === plan.work_group_signature);
+  if (!failureGroup || failureGroup.strategy_id !== CAMPAIGN_RETRY_STRATEGY_ID) {
+    throw campaignError("CAMPAIGN_RETRY_NOT_ALLOWED", "The selected failure group has no allowlisted deterministic retry strategy.");
+  }
+  const failureItems = new Map(failureGroup.items.map(item => [item.staged_ci_id, item]));
+  const results: RemediationCampaignActionItem[] = [];
+  let halted: RemediationCampaignRetryResult["halted"];
+  for (const item of plan.items) {
+    const failure = failureItems.get(item.staged_ci_id);
+    if (!failure?.retry_eligible) {
+      results.push({ staged_ci_id: item.staged_ci_id, name: item.name, success: false, state: "blocked", error_code: "RETRY_LIMIT_REACHED", message: failure?.message || "No retry evidence is available.", retry_count: failure?.retry_count ?? CAMPAIGN_MAX_RETRIES, max_retries: CAMPAIGN_MAX_RETRIES });
+      continue;
+    }
+    try {
+      const token = itemToken(item.staged_ci_id);
+      const response = await simulate(item, {
+        correlation_id: `ks-campaign:${plan.campaign_id}:retry:${token}:1`,
+        idempotency_key: `keystone:campaign:${plan.campaign_id}:retry:${item.staged_ci_id}:1`,
+      });
+      const result = actionItem(item, response);
+      if (response.success && (response.strategy_id !== CAMPAIGN_RETRY_STRATEGY_ID || response.mapping_version !== CAMPAIGN_RETRY_MAPPING_VERSION || response.retry_count !== 1 || response.max_retries !== CAMPAIGN_MAX_RETRIES)) {
+        results.push({ ...result, success: false, state: "blocked", error_code: "RETRY_EVIDENCE_MISSING", message: "ServiceNow did not return the exact allowlisted retry evidence." });
+        continue;
+      }
+      results.push(result);
+      if (!result.success && result.error_code && SYSTEMIC_ERROR_CODES.has(result.error_code)) {
+        halted = { code: result.error_code, message: result.message || "Campaign halted after a systemic retry failure." };
+        break;
+      }
+    } catch (error) {
+      halted = { code: "UPSTREAM_UNREACHABLE", message: error instanceof Error ? error.message : "Retry request failed." };
+      results.push(failedActionItem(item, halted.code, halted.message));
+      break;
+    }
+  }
+  const summary = summaryFromActions(results, plan.exclusions.length);
+  return {
+    success: results.some(item => item.success) && !halted,
+    stage: halted || !results.some(item => item.success) ? "blocked" : "simulating",
+    migration_run_id: plan.migration_run_id,
+    campaign_id: plan.campaign_id,
+    work_group_signature: plan.work_group_signature,
+    concurrency: 1,
+    strategy_id: CAMPAIGN_RETRY_STRATEGY_ID,
+    mapping_version: CAMPAIGN_RETRY_MAPPING_VERSION,
+    items: results,
+    summary,
+    halted,
+  };
+}
+
 /**
  * Status follows the identifiers frozen into the reviewed campaign instead of
  * replanning the current simulation queue. Successful records intentionally
@@ -681,6 +842,10 @@ function actionItem(item: { staged_ci_id: string; name: string }, response: IreA
     message: response.error?.message,
     simulation_correlation_id: response.simulation_correlation_id ?? response.correlation_id,
     simulation_fingerprint: response.simulation_fingerprint,
+    strategy_id: response.strategy_id === CAMPAIGN_RETRY_STRATEGY_ID ? CAMPAIGN_RETRY_STRATEGY_ID : undefined,
+    mapping_version: response.mapping_version === CAMPAIGN_RETRY_MAPPING_VERSION ? CAMPAIGN_RETRY_MAPPING_VERSION : undefined,
+    retry_count: response.retry_count,
+    max_retries: response.max_retries,
   };
 }
 
@@ -763,6 +928,35 @@ export function parseCampaignEventDetail(value: string): Partial<AgentEventDetai
 
 function itemToken(stagedCiId: string) {
   return createHash("sha256").update(stagedCiId.toLowerCase()).digest("hex").slice(0, 12);
+}
+
+function latestRetryEvidence(timeline: TimelineEvent[], item: WorkQueueItem) {
+  const events = sortTimelineByFreshness(timeline.filter(event => {
+    const detail = parseCampaignEventDetail(event.reasoning);
+    return detail?.staged_ci_id?.toLowerCase() === item.stagedCiId.toLowerCase();
+  }));
+  let retryCount = 0;
+  let errorCode = "";
+  let message = "";
+  for (const event of events) {
+    const detail = parseCampaignEventDetail(event.reasoning);
+    if (!detail) continue;
+    retryCount = Math.max(retryCount, typeof detail.retry_count === "number" ? detail.retry_count : 0);
+    if (detail.action === "ire_simulation_failed") {
+      errorCode = typeof detail.error_code === "string" ? detail.error_code : errorCode;
+      message = detail.summary || event.reasoning || message;
+    }
+  }
+  return { retry_count: retryCount, error_code: errorCode, message };
+}
+
+function failureCode(value: string) {
+  const match = value.match(/\b(?:error[_ ]?code[=: ]+)?([A-Z][A-Z0-9_]{3,})\b/);
+  return match?.[1] || "IRE_FAILED";
+}
+
+function stateRank(state: RemediationFailureGroup["state"]) {
+  return state === "eligible" ? 0 : state === "blocked" ? 1 : 2;
 }
 
 function clampLimit(value: number) {
