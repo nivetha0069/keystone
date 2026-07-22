@@ -907,19 +907,22 @@ function ComprehendView(props: {
           const seekTo = nodeStates.firstFrameForNode[node.id];
           const disabled = status === "untouched" || seekTo === undefined;
           const cls = status === "active" ? "current"
-            : status === "related" ? "parallel"
             : status === "done" ? "done"
             : status === "untouched" ? "pending"
             : "";
+          // Fill the connector only between two consecutive reached stages, so a
+          // skipped stage never draws a completed track through it.
+          const next = PLAYBACK_NODES[index + 1];
+          const connectorFilled = status === "done" && next
+            && (nodeStates.states[next.id] === "done" || nodeStates.states[next.id] === "active");
           return <button key={node.id} disabled={disabled} title={disabled ? `${node.label} has not occurred in this run` : node.label} className={cls} onClick={() => { if (seekTo !== undefined) setActiveStep(seekTo); }}>
-            <span className="step-top"><span className="step-node">{status === "done" ? <Icon name="check" size={13} /> : index + 1}</span>{index < PLAYBACK_NODES.length - 1 && <span className="step-line"><i /></span>}</span><span className="step-label">{node.label}</span>
+            <span className="step-top"><span className="step-node">{status === "done" ? <Icon name="check" size={13} /> : index + 1}</span>{index < PLAYBACK_NODES.length - 1 && <span className="step-line"><i className={connectorFilled ? "filled" : ""} /></span>}</span><span className="step-label">{node.label}</span>
           </button>;
         })}
       </div>
-      {nodeStates.parallel && <div className="playback-parallel"><span className="playback-parallel-dot" aria-hidden="true" /> Parallel activity · {nodeStates.activeNodeIds.map(id => playbackNodeLabel(id)).join(" + ")}</div>}
       <div className="event-detail">
         <div className="event-number">{String(activeFrame?.seq ?? frameIndex + 1).padStart(2, "0")}</div><div className="event-copy"><span>{activeFrame?.time || "—"} · {activeFrame?.actor || "Comprehend"}{activeFrame?.derived && <em className="event-derived-badge">DERIVED UI EVIDENCE</em>}</span><h3>{activeFrame?.title || "No ledger event recorded"}</h3><p>{activeFrame?.detail || "ServiceNow returned no Event Ledger entries for this run."}</p></div>
-        <div className="event-meta"><div><small>ACTOR</small><strong>{activeFrame?.actor || "—"}</strong></div><div><small>NODE</small><strong className="lime-text">{playbackNodeLabel(activeFrame?.primaryNodeId)}</strong></div><div><small>STATUS</small><strong>{(activeFrame?.status ?? "pending").replaceAll("_", " ").toUpperCase()}</strong></div></div>
+        <div className="event-meta"><div><small>ACTOR</small><strong>{activeFrame?.actor || "—"}</strong></div><div><small>STAGE</small><strong className="lime-text">{playbackNodeLabel(nodeStates.activeNodeId)}</strong></div><div><small>STATUS</small><strong>{(activeFrame?.status ?? "pending").replaceAll("_", " ").toUpperCase()}</strong></div></div>
       </div>
     </section>
 

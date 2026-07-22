@@ -94,7 +94,7 @@ const maraMap = mapPlaybackEventToNodes(mara);
 assert.equal(maraMap.primaryNodeId, undefined, "oversight actor owns no workflow node");
 assert.deepEqual(maraMap.relatedNodeIds, []);
 
-// --- 5. A parallel frame highlights only the declared related nodes -------
+// --- 5. A parallel frame reaches the furthest of its declared nodes -------
 const pAtlas = ev({ id: "p-atlas", seq: 10, time: "06:10:00", source: "Atlas", reasoning: "Action: scan_classes" });
 const pSentry = ev({ id: "p-sentry", seq: 10, time: "06:10:00", source: "Sentry", reasoning: "Action: apply_confidence_gate" });
 const parallelFrames = buildPlaybackTimeline({ timeline: [pAtlas, pSentry], stagedCiCount: 0 });
@@ -102,9 +102,9 @@ assert.equal(parallelFrames.length, 1, "same seq+time collapse into one recorded
 assert.equal(parallelFrames[0].primaryNodeId, "ai-read");
 assert.deepEqual(parallelFrames[0].relatedNodeIds, ["confidence-gate"]);
 const parallelStates = derivePlaybackNodeStates(parallelFrames, 0);
-assert.equal(parallelStates.parallel, true, "parallel flag set");
-assert.equal(parallelStates.states["ai-read"], "active");
-assert.equal(parallelStates.states["confidence-gate"], "related");
+assert.equal(parallelStates.activeNodeId, "confidence-gate", "light advances to the furthest declared node");
+assert.equal(parallelStates.states["ai-read"], "done");
+assert.equal(parallelStates.states["confidence-gate"], "active");
 assert.equal(parallelStates.states["staging"], "untouched", "unrelated nodes stay dark");
 assert.equal(parallelStates.states["ire"], "untouched");
 
@@ -112,7 +112,7 @@ assert.equal(parallelStates.states["ire"], "untouched");
 const unknown = ev({ id: "e-unknown", step: 0, source: "Zorp", name: "???", reasoning: "opaque payload" });
 assert.equal(mapPlaybackEventToNodes(unknown).primaryNodeId, undefined);
 
-// --- 7. Highlight progression: completed nodes stay completed -------------
+// --- 7. Monotonic progression: light only moves right, never blanks -------
 const s0 = derivePlaybackNodeStates(framesStaged, 0);
 assert.equal(s0.states["staging"], "active", "restart / frame 0 sits on Staging");
 assert.equal(s0.states["ai-read"], "upcoming");
@@ -122,12 +122,26 @@ assert.equal(s1.states["staging"], "done");
 assert.equal(s1.states["ai-read"], "active");
 
 const s3 = derivePlaybackNodeStates(framesStaged, 3); // Sentry frame
-assert.equal(s3.states["ai-read"], "done", "an earlier node remains visually completed");
+assert.equal(s3.states["ai-read"], "done", "an earlier reached stage stays completed");
 assert.equal(s3.states["confidence-gate"], "active");
 
 const sEnd = derivePlaybackNodeStates(framesStaged, framesStaged.length - 1); // Mara frame (no node)
-assert.deepEqual(sEnd.activeNodeIds, [], "unknown/oversight final frame lights no node");
-assert.equal(sEnd.states["event-log"], "done", "final completed state stays visible");
+assert.equal(sEnd.activeNodeId, "event-log", "oversight final frame keeps the light on the furthest stage");
+assert.equal(sEnd.states["ire"], "untouched", "a skipped stage is never shown as completed");
+assert.equal(sEnd.states["cmdb"], "untouched");
+
+// The light never rewinds even when a later event revisits an earlier stage.
+const backslide = buildPlaybackTimeline({
+  timeline: [
+    ev({ id: "b-atlas", seq: 1, source: "Atlas", reasoning: "Action: scan_classes" }),
+    ev({ id: "b-sentry", seq: 2, source: "Sentry", reasoning: "Action: apply_confidence_gate" }),
+    ev({ id: "b-atlas2", seq: 3, source: "Atlas", reasoning: "Action: scan_duplicates" }),
+  ],
+  stagedCiCount: 0,
+});
+const backslideEnd = derivePlaybackNodeStates(backslide, backslide.length - 1); // last frame is an ai-read event
+assert.equal(backslideEnd.activeNodeId, "confidence-gate", "light stays on the furthest stage reached");
+assert.equal(backslideEnd.states["ai-read"], "done");
 
 // --- 8. Polling appends without disturbing existing frames ----------------
 const appended = ev({ id: "e-extra", seq: 6, source: "Ledger", reasoning: "Action: write_summary" });

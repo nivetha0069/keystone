@@ -289,15 +289,14 @@ export function buildPlaybackTimeline({
   return frames;
 }
 
-export type PlaybackNodeStatus = "active" | "related" | "done" | "upcoming" | "untouched";
+export type PlaybackNodeStatus = "active" | "done" | "upcoming" | "untouched";
 
 export type PlaybackNodeStates = {
   states: Record<PlaybackNodeId, PlaybackNodeStatus>;
   /** First frame index at which each node becomes active (for click-to-seek). */
   firstFrameForNode: Partial<Record<PlaybackNodeId, number>>;
-  activeNodeIds: PlaybackNodeId[];
-  /** True when more than one node is active in the current frame. */
-  parallel: boolean;
+  /** The single stage the progress light sits on (furthest stage reached). */
+  activeNodeId?: PlaybackNodeId;
 };
 
 function activeNodesOfFrame(frame: PlaybackFrame | undefined): PlaybackNodeId[] {
@@ -308,14 +307,23 @@ function activeNodesOfFrame(frame: PlaybackFrame | undefined): PlaybackNodeId[] 
   return nodes;
 }
 
+const NODE_ORDER = new Map<PlaybackNodeId, number>(PLAYBACK_NODES.map((node, index) => [node.id, index]));
+
 /**
- * Compute each workflow node's visual status for the frame at `activeIndex`.
+ * Compute each workflow node's visual status for the frame at `activeIndex`,
+ * as a clean left-to-right pipeline progression.
  *
- * - The current frame's primary node is `active`; explicitly-related nodes are
- *   `related` (parallel highlight).
- * - A node that was active in an earlier frame stays `done`.
- * - A node that is only ever active in a later frame is `upcoming` (reachable
- *   but not yet highlighted); a node that never occurs is `untouched`.
+ * The progress light sits on the *furthest stage reached* so far. Because that
+ * is a running maximum over the stages that have actually occurred, the light
+ * only ever advances rightward and never blanks — an oversight/unknown frame
+ * (which owns no node) simply leaves it where it was while the detail panel
+ * continues through the real ledger event.
+ *
+ * - Stages that occurred and sit before the light are `done`.
+ * - The furthest reached stage is `active`.
+ * - Stages that occur only later are `upcoming`.
+ * - Stages that never occur in this run stay `untouched` (even when the light is
+ *   already past them), so a skipped stage is never falsely shown as completed.
  */
 export function derivePlaybackNodeStates(
   frames: PlaybackFrame[],
@@ -327,31 +335,28 @@ export function derivePlaybackNodeStates(
       if (firstFrameForNode[node] === undefined) firstFrameForNode[node] = index;
     }
   });
+  const occurred = new Set<PlaybackNodeId>(Object.keys(firstFrameForNode) as PlaybackNodeId[]);
 
   const clamped = frames.length ? Math.min(Math.max(activeIndex, 0), frames.length - 1) : -1;
-  const activeFrame = clamped >= 0 ? frames[clamped] : undefined;
-  const primary = activeFrame?.primaryNodeId;
-  const related = activeFrame?.relatedNodeIds ?? [];
-  const activeSet = new Set<PlaybackNodeId>(activeNodesOfFrame(activeFrame));
 
-  const doneSet = new Set<PlaybackNodeId>();
-  for (let i = 0; i < clamped; i += 1) {
-    for (const node of activeNodesOfFrame(frames[i])) doneSet.add(node);
+  // Furthest stage reached through the current frame (monotonic, never rewinds).
+  let progressOrder = -1;
+  for (let i = 0; i <= clamped; i += 1) {
+    for (const node of activeNodesOfFrame(frames[i])) {
+      const order = NODE_ORDER.get(node);
+      if (order !== undefined && order > progressOrder) progressOrder = order;
+    }
   }
 
   const states = {} as Record<PlaybackNodeId, PlaybackNodeStatus>;
+  let activeNodeId: PlaybackNodeId | undefined;
   for (const { id } of PLAYBACK_NODES) {
-    if (id === primary) states[id] = "active";
-    else if (activeSet.has(id)) states[id] = "related";
-    else if (doneSet.has(id)) states[id] = "done";
-    else if (firstFrameForNode[id] !== undefined) states[id] = "upcoming";
-    else states[id] = "untouched";
+    const order = NODE_ORDER.get(id) as number;
+    if (!occurred.has(id)) states[id] = "untouched";
+    else if (progressOrder < 0 || order > progressOrder) states[id] = "upcoming";
+    else if (order === progressOrder) { states[id] = "active"; activeNodeId = id; }
+    else states[id] = "done";
   }
 
-  return {
-    states,
-    firstFrameForNode,
-    activeNodeIds: Array.from(activeSet),
-    parallel: related.length >= 1,
-  };
+  return { states, firstFrameForNode, activeNodeId };
 }

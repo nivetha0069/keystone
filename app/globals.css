@@ -222,19 +222,14 @@ button { color: inherit; }
 .step-label { color: var(--muted); font-size: 10.5px; line-height: 1.2; white-space: nowrap; }
 .step-line { flex: 1; min-width: 0; height: 1px; margin-left: 4px; background: var(--line-strong); }
 .step-line i { display: block; width: 0; height: 100%; background: var(--lime); transition: width .4s ease; }
-.stepper button.done .step-line i { width: 100%; }
+.step-line i.filled { width: 100%; }
 .stepper button.done .step-node { background: var(--lime); border-color: var(--lime); color: #12160c; }
 .stepper button.current .step-node { color: var(--lime); border-color: var(--lime); box-shadow: 0 0 0 5px rgba(199, 243, 77, .07), 0 0 22px rgba(199, 243, 77, .18); }
 .stepper button.current .step-label { color: var(--ink); }
 .stepper button.pending { cursor: not-allowed; opacity: .38; }
 .stepper button.pending .step-node { border-style: dashed; }
-/* Parallel (related) nodes: highlighted alongside the primary, in amber. */
-.stepper button.parallel .step-node { color: var(--amber); border-color: var(--amber); box-shadow: 0 0 0 4px rgba(232, 178, 61, .07), 0 0 18px rgba(232, 178, 61, .16); }
-.stepper button.parallel .step-label { color: var(--ink); }
 .playback-step { height: 34px; width: 34px; padding: 0; }
 .playback-prev svg { transform: rotate(180deg); }
-.playback-parallel { display: flex; align-items: center; gap: 7px; margin: 0 22px 14px; color: var(--amber); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-.playback-parallel-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 8px rgba(232, 178, 61, .6); }
 .event-derived-badge { margin-left: 8px; padding: 1px 6px; border: 1px solid rgba(232, 178, 61, .5); color: var(--amber); font-style: normal; font-size: 8px; letter-spacing: .1em; }
 .event-detail { display: grid; grid-template-columns: 60px minmax(240px, 1fr) minmax(390px, .9fr); align-items: center; gap: 18px; min-height: 119px; margin: 0 18px 18px; padding: 15px 17px; background: #0d100d; border: 1px solid var(--line); border-left: 2px solid var(--lime); }
 .event-number { font-family: var(--display); font-size: 36px; color: var(--line-strong); }
