@@ -13,7 +13,8 @@ import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from 
 const ACTIONS = new Set(["plan", "simulate", "prepare-approval", "approve", "status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
-  "operation", "payload", "proposed_class", "rationale", "strategy", "strategy_id", "values",
+  "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
+  "source_identifier", "strategy", "strategy_id", "values",
 ]);
 
 export async function GET() {

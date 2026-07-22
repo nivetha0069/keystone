@@ -24,7 +24,7 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/ire/verify` | `/ire/verify` | POST | Identifier-only status compatibility for the correlated server-owned verification continuation; it cannot start Verify. |
 | `/api/cmdb/remediation-campaign/plan` | existing GET resources | POST | Builds a stable homogeneous, server-derived plan of at most 20 staged CIs. |
 | `/api/cmdb/remediation-campaign/simulate` | `/ire/simulate` | POST | Simulates plan items with concurrency capped at three and isolates item failures. |
-| `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `UPDATE` and `NO_CHANGE` items. |
+| `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `INSERT`, `UPDATE`, and `NO_CHANGE` items. |
 | `/api/cmdb/remediation-campaign/approve` | `/ire/approve` | POST | After the server-only safety gate is opened, recomputes the manifest and submits individual fingerprint-bound approvals sequentially. It never calls Execute or Verify. |
 | `/api/cmdb/remediation-campaign/status` | existing GET resources | POST | Reconstructs campaign execution and verification progress from persisted ServiceNow evidence. |
 
@@ -38,9 +38,16 @@ Campaign requests accept only the migration run, work-group signature, campaign
 ID, frozen manifest ID, staged-record IDs, and the bounded limit. Classes,
 mappings, operations, payloads, and CMDB values are reread and derived on the
 server. The coordinator deduplicates and deterministically orders the selected
-group, enforces a 20-item maximum, and accepts only fresh successful `UPDATE`
-or `NO_CHANGE` simulations with an actionable finding, deferred review,
+group, enforces a 20-item maximum, and accepts only fresh successful `INSERT`,
+`UPDATE`, or `NO_CHANGE` simulations with an actionable finding, deferred review,
 canonical 64-character fingerprint, and no blocker.
+
+`INSERT` is additionally governed by `bounded-insert-v1`: the authoritative
+simulation must report no existing CMDB match, the proposed class must be
+`cmdb_ci_linux_server`, and the staged record must be complete and healthy.
+Browser requests cannot supply the operation, class, policy version, identity
+evidence, source identity, payload, or CMDB values. INSERT manifests use the
+v2 hash domain and freeze the policy version plus `ire_unmatched` evidence.
 
 The approval manifest is SHA-256 over sorted staged CI, finding, review,
 simulation correlation, fingerprint, and operation tuples. The approval route

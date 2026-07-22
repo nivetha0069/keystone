@@ -1438,6 +1438,7 @@ function AgentCampaignPanel(props: {
   const summary = campaign.status?.summary ?? campaign.approval?.summary ?? manifest?.summary ?? campaign.simulation?.summary;
   const stage = campaign.status?.stage ?? campaign.approval?.stage ?? manifest?.stage ?? campaign.simulation?.stage ?? plan?.stage ?? "planning";
   const exclusions = manifest?.exclusions ?? plan?.exclusions ?? [];
+  const insertItems = manifest?.items.filter(item => item.operation === "INSERT") ?? [];
   const canPrepare = Boolean(plan && campaign.simulation && !manifest);
   const canApprove = Boolean(manifest?.manifest_id && manifest.stage === "review_ready" && confirmed && plan?.approval_enabled);
 
@@ -1489,6 +1490,7 @@ function AgentCampaignPanel(props: {
 
     {manifest?.manifest_id && <div className="campaign-manifest">
       <div className="campaign-manifest-head"><div><span className="eyebrow accent">FROZEN APPROVAL MANIFEST</span><strong>{manifest.manifest_id}</strong></div><span>{manifest.items.length} items</span></div>
+      {insertItems.length > 0 && <div className="campaign-notice"><Icon name="database" size={15} />This manifest will create {insertItems.length} new Linux Server {insertItems.length === 1 ? "CI" : "CIs"}. Every item has authoritative unmatched-identity evidence under {insertItems[0].policy_version}.</div>}
       <div className="manifest-items">{manifest.items.map(item => <div key={item.staged_ci_id}><strong>{item.name}</strong><span>{item.operation}</span><small title={item.simulation_fingerprint}>{item.simulation_fingerprint.slice(0, 16)}… · retry {item.retry_count}{item.mapping_version ? ` · mapping ${item.mapping_version}` : ""}</small></div>)}</div>
       <label className="campaign-confirmation"><input type="checkbox" checked={confirmed} onChange={event => onConfirmed(event.target.checked)} /><span>I confirm this exact manifest, its staged CI identifiers, operations, and canonical simulation fingerprints.</span></label>
       {!plan?.approval_enabled && <div className="campaign-notice"><Icon name="shield" size={15} />Grouped approval is safety-gated. Set the server-only campaign approval flag only for an explicitly authorized live manifest.</div>}
@@ -1771,7 +1773,8 @@ function PastSummariesView(props: {
   const [entries, setEntries] = useState<RegistryEntry[]>(() => (typeof window === "undefined" ? [] : readRegistry()));
 
   useEffect(() => {
-    setEntries(readRegistry());
+    const timer = window.setTimeout(() => setEntries(readRegistry()), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const sorted = [...entries].sort((a, b) => (b.touchedAt || "").localeCompare(a.touchedAt || ""));

@@ -7,6 +7,9 @@ import { deriveRemediationWorkQueue, isCiScopedTimelineEvent, sortTimelineByFres
 
 export const CAMPAIGN_LIMIT = 20;
 export const CAMPAIGN_SIMULATION_CONCURRENCY = 3;
+export const CAMPAIGN_INSERT_POLICY_VERSION = "bounded-insert-v1";
+export const CAMPAIGN_INSERT_CLASS_ALLOWLIST = ["cmdb_ci_linux_server"] as const;
+const INSERT_CLASS_ALLOWLIST = new Set<string>(CAMPAIGN_INSERT_CLASS_ALLOWLIST);
 
 export type RemediationCampaignStage =
   | "planning"
@@ -86,7 +89,9 @@ export type RemediationApprovalManifestItem = {
   review_decision_id: string;
   simulation_correlation_id: string;
   simulation_fingerprint: string;
-  operation: "UPDATE" | "NO_CHANGE";
+  operation: "INSERT" | "UPDATE" | "NO_CHANGE";
+  policy_version?: typeof CAMPAIGN_INSERT_POLICY_VERSION;
+  identity_evidence?: "ire_unmatched";
   strategy_id?: "normalize_known_class_alias";
   mapping_version?: string;
   retry_count: number;
@@ -299,7 +304,11 @@ export function prepareRemediationApprovalManifest(
       review_decision_id: queueItem.review!.id,
       simulation_correlation_id: evidence!.simulation_correlation_id!,
       simulation_fingerprint: evidence!.simulation_fingerprint!,
-      operation: evidence!.operation as "UPDATE" | "NO_CHANGE",
+      operation: evidence!.operation as "INSERT" | "UPDATE" | "NO_CHANGE",
+      ...(evidence!.operation === "INSERT" ? {
+        policy_version: CAMPAIGN_INSERT_POLICY_VERSION,
+        identity_evidence: "ire_unmatched" as const,
+      } : {}),
       strategy_id: evidence!.strategy_id,
       mapping_version: evidence!.mapping_version,
       retry_count: evidence!.retry_count ?? 0,
@@ -458,6 +467,7 @@ export function remediationCampaignStatus(snapshot: RemediationCampaignSnapshot,
 }
 
 export function approvalManifestHash(campaignId: string, items: RemediationApprovalManifestItem[]) {
+  const includesInsert = items.some(item => item.operation === "INSERT");
   const canonical = [...items]
     .sort((left, right) => left.staged_ci_id.localeCompare(right.staged_ci_id))
     .map(item => [
@@ -467,9 +477,11 @@ export function approvalManifestHash(campaignId: string, items: RemediationAppro
       item.simulation_correlation_id,
       item.simulation_fingerprint.toUpperCase(),
       item.operation,
+      ...(item.operation === "INSERT" ? [item.policy_version ?? "", item.identity_evidence ?? ""] : []),
     ].join("|"))
     .join("\n");
-  return createHash("sha256").update(`keystone.campaign.manifest.v1|${campaignId}|${canonical}`).digest("hex").toUpperCase();
+  const version = includesInsert ? "keystone.campaign.manifest.v2" : "keystone.campaign.manifest.v1";
+  return createHash("sha256").update(`${version}|${campaignId}|${canonical}`).digest("hex").toUpperCase();
 }
 
 function campaignContext(snapshot: RemediationCampaignSnapshot): CampaignContext {
@@ -523,14 +535,10 @@ function simulationExclusion(item: WorkQueueItem, strategy?: string) {
 }
 
 function approvalExclusion(item: WorkQueueItem, evidence: ReturnType<typeof latestSimulationEvidence>) {
-  if (!evidence) return "No completed canonical simulation was found.";
-  if (!evidence.simulation_correlation_id) return "Simulation correlation is missing.";
-  if (!/^[0-9A-F]{64}$/.test(evidence.simulation_fingerprint ?? "")) return "Canonical simulation fingerprint is missing or malformed.";
-  if (evidence.operation !== "UPDATE" && evidence.operation !== "NO_CHANGE") return `${evidence.operation || "Unknown"} is not eligible for group approval.`;
-  if (!evidence.finding_id || !/^[0-9a-f]{32}$/i.test(evidence.finding_id)) return "Actionable finding evidence is missing.";
+  const reason = preReviewExclusion(item, evidence);
+  if (reason) return reason;
   if (!item.review || !/^[0-9a-f]{32}$/i.test(item.review.id)) return "Deferred review evidence is missing.";
   if (item.review.decision !== "deferred") return `Review is ${item.review.decision || "unknown"}; only deferred reviews may enter a new manifest.`;
-  if (item.bucket === "blocked" || item.bucket === "simulation_failed") return "Latest persisted evidence is blocked.";
   return "";
 }
 
@@ -538,7 +546,15 @@ function preReviewExclusion(item: WorkQueueItem, evidence: ReturnType<typeof lat
   if (!evidence) return "No completed canonical simulation was found.";
   if (!evidence.simulation_correlation_id) return "Simulation correlation is missing.";
   if (!/^[0-9A-F]{64}$/.test(evidence.simulation_fingerprint ?? "")) return "Canonical simulation fingerprint is missing or malformed.";
-  if (evidence.operation !== "UPDATE" && evidence.operation !== "NO_CHANGE") return (evidence.operation || "Unknown") + " is not eligible for group approval.";
+  if (evidence.operation !== "INSERT" && evidence.operation !== "UPDATE" && evidence.operation !== "NO_CHANGE") return (evidence.operation || "Unknown") + " is not eligible for group approval.";
+  if (evidence.operation === "INSERT") {
+    if (!INSERT_CLASS_ALLOWLIST.has(item.ci.className)) return item.ci.className + " is not allowlisted by " + CAMPAIGN_INSERT_POLICY_VERSION + ".";
+    if (evidence.simulation_matched_ci === undefined) return "Authoritative unmatched-identity evidence is missing for INSERT.";
+    if (evidence.simulation_matched_ci) return "IRE found an existing CMDB match; INSERT is not eligible.";
+    if (item.ci.status !== "live" || item.ci.operation === "INSERT_AS_INCOMPLETE") return "Incomplete staged records cannot enter an INSERT campaign.";
+    if (!item.ci.name.trim() || /^unnamed\b/i.test(item.ci.name)) return "A stable server-derived CI name is required for INSERT.";
+    if (!item.ci.source.trim()) return "A server-derived source is required for INSERT.";
+  }
   if (!evidence.finding_id || !/^[0-9a-f]{32}$/i.test(evidence.finding_id)) return "Actionable finding evidence is missing.";
   if (item.bucket === "blocked" || item.bucket === "simulation_failed") return "Latest persisted evidence is blocked.";
   return "";
@@ -557,6 +573,7 @@ function latestSimulationEvidence(timeline: TimelineEvent[], item: WorkQueueItem
       simulation_fingerprint: detail.simulation_fingerprint?.toUpperCase(),
       finding_id: detail.finding_id || item.finding?.id,
       operation: detail.operation?.toUpperCase(),
+      simulation_matched_ci: detail.simulation_matched_ci,
       strategy_id: detail.strategy_id === "normalize_known_class_alias" ? "normalize_known_class_alias" as const : undefined,
       mapping_version: detail.mapping_version,
       retry_count: detail.retry_count,
@@ -593,7 +610,7 @@ function campaignLifecycleEvidence(timeline: TimelineEvent[], item: WorkQueueIte
     if (detail.action === "approval_recorded" || detail.action === "approval_resume_prepared") {
       return { lifecycle: "approved_for_execution", bucket: "ready_to_execute" };
     }
-    if (detail.action === "ire_simulation_completed") return detail.operation === "UPDATE" || detail.operation === "NO_CHANGE"
+    if (detail.action === "ire_simulation_completed") return detail.operation === "UPDATE" || detail.operation === "NO_CHANGE" || insertLifecycleEligible(item, detail)
       ? { lifecycle: "simulated_pending_approval", bucket: "needs_approval" }
       : { lifecycle: "simulated_pending_approval", bucket: "blocked" };
     if (detail.action === "ire_simulation_failed") return { lifecycle: "simulation_failed", bucket: "simulation_failed" };
@@ -675,6 +692,13 @@ function normalizeIds(values?: string[]) {
 
 function safeOperationFamily(operation: string) {
   return operation === "UPDATE" || operation === "NO_CHANGE" ? "safe-update" : operation.toLowerCase();
+}
+
+function insertLifecycleEligible(item: WorkQueueItem, detail: Partial<AgentEventDetailV1>) {
+  return detail.operation === "INSERT" &&
+    detail.simulation_matched_ci === "" &&
+    INSERT_CLASS_ALLOWLIST.has(item.ci.className) &&
+    item.ci.status === "live";
 }
 
 const CAMPAIGN_LEDGER_ACTIONS = new Set([

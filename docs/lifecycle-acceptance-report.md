@@ -97,9 +97,13 @@ records do not conflict with the new sequences 75-78.
 Phase E implements the first Milestone 7 bulk-remediation loop without adding
 ServiceNow schema or write APIs. The deterministic coordinator plans one stable
 homogeneous group of at most 20 staged CIs, simulates with concurrency capped
-at three, isolates record-level failures, and prepares only fresh safe-update
-evidence. A frozen SHA-256 manifest binds every staged CI to its finding,
+at three, isolates record-level failures, and prepares fresh `INSERT`, `UPDATE`,
+or `NO_CHANGE` evidence. A frozen SHA-256 manifest binds every staged CI to its finding,
 deferred review, simulation correlation, canonical fingerprint, and operation.
+`bounded-insert-v1` additionally requires an unmatched authoritative IRE
+simulation, an allowlisted `cmdb_ci_linux_server` class, and a complete healthy
+staged record. INSERT manifests freeze the policy and `ire_unmatched` evidence
+in the v2 hash domain.
 
 One UI confirmation is translated into sequential individual ServiceNow
 approvals. The campaign route has no Execute or Verify invocation; Phase D owns
@@ -111,10 +115,18 @@ duplicate-safe correlations, refresh reconstruction, and direct Execute/Verify
 route exclusion.
 
 Milestone 5 and Milestone 6 are complete. Milestone 7 is partially delivered
-through this bounded campaign loop. No live grouped approval has been sent. The
-server-only group-approval gate remains closed pending a fresh GET-derived 3–5
-record manifest and explicit action-time authorization naming its run,
-campaign ID, manifest hash, item count, staged CI IDs, and fingerprints.
+through this bounded campaign loop. A one-item UPDATE campaign completed one
+approval, one server-owned Execute, and one correlated Verify; IRE returned
+`NO_CHANGE` and verification passed. A separate individually authorized unique
+Cloudflare CI completed a real INSERT and correlated Verify into
+`cmdb_ci_linux_server` target `aedcafacf416475096f1afc526d5d742`.
+
+The bounded INSERT acceptance then planned and simulated five records from run
+`065821a42b1e835060aefba6b891bf53`. All five returned authoritative unmatched
+INSERT results and froze manifest
+`DF250504D415F29F812520E483858B899AE791D4034909EFA5831F2706BE860C`
+for campaign `E13502447BB1861877644F6B`, with zero exclusions. No grouped INSERT
+approval was sent and the server-only approval gate remained closed.
 
 ## CPR End-to-End Handoff Repair
 
@@ -128,5 +140,6 @@ The source-controlled repair restores explicit dual dispatch and adds a
 completed-analysis recovery path. Agent Workspace now detects this evidence
 gap, keeps Prioritize active instead of presenting Remediate as runnable, and
 offers `Resume agents`. Recovery reuses persisted Comprehend evidence and must
-not duplicate analysis or findings. The repair is repository-validated but is
-not yet installed in ServiceNow.
+not duplicate analysis or findings. The repair was installed in ServiceNow;
+the stranded stress run resumed through Mara and Prioritize to
+`awaiting_approval` without duplicate Comprehend analysis.

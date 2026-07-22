@@ -576,7 +576,7 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 
 ### Milestone 7: Deterministic Failure Grouping And Retry Loop
 
-**Status: Partially delivered through Phase E.** The bounded campaign coordinator plans stable homogeneous groups of at most 20, simulates at concurrency three, isolates item failures, exposes only the allowlisted class-alias retry evidence, freezes a canonical SHA-256 manifest, and fans one confirmation into sequential Phase D approvals. The broad retry catalog and live 3–5 item acceptance campaign remain deferred.
+**Status: Partially delivered through Phase E.** The bounded campaign coordinator plans stable homogeneous groups of at most 20, simulates at concurrency three, isolates item failures, exposes only the allowlisted class-alias retry evidence, freezes a canonical SHA-256 manifest, and fans one confirmation into sequential Phase D approvals. `bounded-insert-v1` also admits unmatched, complete `cmdb_ci_linux_server` INSERT simulations while freezing the policy and identity evidence in the manifest. The broad retry catalog and live 3–5 item INSERT acceptance campaign remain deferred.
 
 - Objective: Demonstrate that Keystone can investigate repeated IRE failures and retry with allowed strategies.
 - User-visible outcome: A set of failed simulations is grouped by shared cause; Keystone selects an allowed alternative and re-simulates.

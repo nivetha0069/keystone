@@ -122,6 +122,7 @@ const timeline = successful.map((item, index) => ({
     summary: "Simulation completed", migration_run_id: RUN, staged_ci_id: item.staged_ci_id,
     finding_id: findings[index].id, simulation_correlation_id: `ks-sim-${item.staged_ci_id}`,
     simulation_fingerprint: fp(index + 1), operation: index === 0 ? "INSERT" : "UPDATE",
+    simulation_matched_ci: "",
     strategy_id: index === 1 ? "normalize_known_class_alias" : undefined,
     mapping_version: index === 1 ? "class-alias-v1" : undefined,
     retry_count: index === 1 ? 1 : 0 }),
@@ -140,12 +141,14 @@ const manifest = campaign.prepareRemediationApprovalManifest(approvalSnapshot, {
   staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
 });
 assert.equal(manifest.stage, "review_ready");
-assert.equal(manifest.items.length, 18, "failed simulation and INSERT are excluded");
+assert.equal(manifest.items.length, 19, `failed simulation is excluded while an unmatched allowlisted INSERT is eligible: ${JSON.stringify(manifest.exclusions)}`);
 assert.ok(/^[0-9A-F]{64}$/.test(manifest.manifest_id));
 assert.equal(campaign.approvalManifestHash(manifest.campaign_id, [...manifest.items].reverse()), manifest.manifest_id, "manifest hash is order-independent");
-assert.equal(manifest.items[0].operation, "UPDATE");
+assert.ok(manifest.items.some(item => item.operation === "UPDATE"));
 assert.ok(manifest.items.some(item => item.strategy_id === "normalize_known_class_alias" && item.mapping_version === "class-alias-v1" && item.retry_count === 1));
-assert.ok(manifest.exclusions.some(item => /INSERT/.test(item.reason)));
+const insertManifestItem = manifest.items.find(item => item.operation === "INSERT");
+assert.equal(insertManifestItem.policy_version, campaign.CAMPAIGN_INSERT_POLICY_VERSION);
+assert.equal(insertManifestItem.identity_evidence, "ire_unmatched");
 
 const missingReviewManifest = campaign.prepareRemediationApprovalManifest({ ...approvalSnapshot, reviews: reviews.filter(review => review.id !== manifest.items[0].review_decision_id) }, {
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
@@ -156,13 +159,53 @@ const pendingProposals = campaign.pendingRemediationReviewProposals({ ...approva
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
   staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
 });
-assert.equal(pendingProposals.length, 18, "fresh UPDATE simulations without reviews become deterministic proposal requests");
+assert.equal(pendingProposals.length, 19, "fresh safe UPDATE and INSERT simulations without reviews become deterministic proposal requests");
 assert.ok(pendingProposals.every(item => /^[0-9A-F]{64}$/.test(item.simulation_fingerprint)));
-assert.equal(pendingProposals.some(item => item.staged_ci_id === successful[0].staged_ci_id), false, "INSERT simulations never create review proposals");
+assert.equal(pendingProposals.some(item => item.staged_ci_id === successful[0].staged_ci_id), true, "unmatched allowlisted INSERT simulations create review proposals");
 assert.equal(campaign.pendingRemediationReviewProposals(approvalSnapshot, {
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
   staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
 }).length, 0, "existing reviews make proposal preparation idempotent");
+
+const matchedInsertTimeline = timeline.map(event => {
+  const detail = JSON.parse(event.reasoning);
+  return detail.staged_ci_id === successful[0].staged_ci_id
+    ? { ...event, reasoning: JSON.stringify({ ...detail, simulation_matched_ci: sysId(901) }) }
+    : event;
+});
+const matchedInsertManifest = campaign.prepareRemediationApprovalManifest({ ...approvalSnapshot, timeline: matchedInsertTimeline }, {
+  migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
+  staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
+});
+assert.equal(matchedInsertManifest.items.some(item => item.operation === "INSERT"), false, "INSERT is rejected when IRE reports an existing match");
+assert.ok(matchedInsertManifest.exclusions.some(item => /existing CMDB match/.test(item.reason)));
+
+const unsupportedCi = { ...cis[0], className: "cmdb_ci_database", operation: "INSERT" };
+const unsupportedFinding = { id: sysId(950), number: "DWF950", stagedCiId: unsupportedCi.stagedCiId, type: "data_quality", recommendation: "Review new CI" };
+const unsupportedReview = { id: sysId(951), findingId: unsupportedFinding.id, decision: "deferred", rationale: "Awaiting approval", policyApproved: false };
+const unsupportedEvent = {
+  id: sysId(952), seq: 1, step: 5, name: "simulated", recordName: unsupportedCi.name,
+  className: unsupportedCi.className, operation: "INSERT", source: "Remediate", confidence: 0.95,
+  time: "2026-07-22 12:00:00", status: "complete",
+  reasoning: JSON.stringify({ schema: "keystone.agent.v1", phase: "remediate", actor: "Remediate",
+    decision_source: "deterministic", action: "ire_simulation_completed", status: "completed",
+    summary: "Simulation completed", migration_run_id: RUN, staged_ci_id: unsupportedCi.stagedCiId,
+    finding_id: unsupportedFinding.id, simulation_correlation_id: "ks-sim-unsupported",
+    simulation_fingerprint: fp(950), operation: "INSERT", simulation_matched_ci: "", retry_count: 0 }),
+};
+const unsupportedSnapshot = { ...base, cis: [unsupportedCi], timeline: [unsupportedEvent], findings: [unsupportedFinding], reviews: [unsupportedReview] };
+const unsupportedPlan = campaign.planRemediationCampaign(unsupportedSnapshot, undefined, 1);
+const unsupportedManifest = campaign.prepareRemediationApprovalManifest(unsupportedSnapshot, {
+  migration_run_id: RUN, work_group_signature: unsupportedPlan.work_group_signature, campaign_id: unsupportedPlan.campaign_id,
+  staged_ci_ids: unsupportedPlan.items.map(item => item.staged_ci_id), limit: 1,
+});
+assert.equal(unsupportedManifest.stage, "blocked");
+assert.ok(unsupportedManifest.exclusions.some(item => /not allowlisted/.test(item.reason)), "INSERT class allowlist is enforced");
+assert.notEqual(
+  campaign.approvalManifestHash(manifest.campaign_id, manifest.items),
+  campaign.approvalManifestHash(manifest.campaign_id, manifest.items.map(item => item.operation === "INSERT" ? { ...item, policy_version: "" } : item)),
+  "INSERT policy evidence is frozen into the v2 manifest hash",
+);
 
 await assert.rejects(
   campaign.approveRemediationCampaign(approvalSnapshot, {
@@ -203,8 +246,8 @@ const approved = await campaign.approveRemediationCampaign(approvalSnapshot, {
 });
 assert.equal(maxApprovals, 1, "approvals are strictly sequential");
 assert.deepEqual(approvalOrder, manifest.items.map(item => item.staged_ci_id));
-assert.equal(approved.items.length, 18);
-assert.equal(approved.summary.approved, 18);
+assert.equal(approved.items.length, 19);
+assert.equal(approved.summary.approved, 19);
 
 let systemicCalls = 0;
 const systemicallyBlocked = await campaign.approveRemediationCampaign(approvalSnapshot, {
@@ -234,8 +277,8 @@ const status = campaign.remediationCampaignStatus({ ...approvalSnapshot, timelin
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
   staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
 });
-assert.equal(status.summary.verified, 18);
-assert.equal(status.summary.blocked, 2);
+assert.equal(status.summary.verified, 19);
+assert.equal(status.summary.blocked, 1);
 assert.equal(status.stage, "completed", "mixed campaigns complete when every item is verified or terminally blocked");
 
 const route = fs.readFileSync(path.join(root, "app/api/cmdb/remediation-campaign/[action]/route.ts"), "utf8");
@@ -243,6 +286,9 @@ assert.match(route, /CMDB_AGENT_BATCH_APPROVAL_ENABLED/);
 assert.equal(/invokeCampaignIre\("execute"|invokeCampaignIre\("verify"/.test(route), false, "campaign route never invokes Execute or Verify");
 assert.match(route, /FORBIDDEN_EXECUTABLE_FIELDS/);
 assert.match(route, /rejectExecutableFields\(incoming\)/);
+assert.match(route, /"identity_evidence"/);
+assert.match(route, /"source_identifier"/);
+assert.match(route, /"policy_version"/);
 assert.match(route, /invokeCampaignProposal/);
 assert.match(route, /loadCampaignSnapshot\(selection\.migration_run_id\)/, "proposal preparation reloads authoritative ServiceNow evidence");
 assert.equal(/operation: item\.operation/.test(route), false, "campaign route never forwards a browser operation");
@@ -250,6 +296,8 @@ assert.equal(/operation: item\.operation/.test(route), false, "campaign route ne
 const dashboard = fs.readFileSync(path.join(root, "app/cmdb-dashboard.tsx"), "utf8");
 assert.match(dashboard, /function AgentCampaignPanel/);
 assert.match(dashboard, /Execute \+ Verify are automatic/);
+assert.match(dashboard, /This manifest will create/);
+assert.match(dashboard, /authoritative unmatched-identity evidence/);
 assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashboard), false, "UI never triggers Execute or Verify");
 
 console.log("remediation campaign smoke passed");
