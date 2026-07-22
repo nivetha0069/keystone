@@ -67,14 +67,15 @@ export function rememberRunEntry(input: Partial<RegistryEntry> & { id: string; l
   const now = input.touchedAt || new Date().toISOString();
   const existing = readRegistry();
   const filtered = existing.filter(entry => entry.id.toLowerCase() !== input.id.toLowerCase());
+  const prev = existing.find(e => e.id.toLowerCase() === input.id.toLowerCase());
   const merged: RegistryEntry = {
     id: input.id.toLowerCase(),
-    label: input.label || existing.find(e => e.id.toLowerCase() === input.id.toLowerCase())?.label || `RUN-${input.id.slice(0, 8).toUpperCase()}`,
-    summary: input.summary,
-    sourceSystem: input.sourceSystem,
-    runNumber: input.runNumber,
+    label: input.label || prev?.label || `RUN-${input.id.slice(0, 8).toUpperCase()}`,
+    summary: input.summary ?? prev?.summary,
+    sourceSystem: input.sourceSystem ?? prev?.sourceSystem,
+    runNumber: input.runNumber ?? prev?.runNumber,
     touchedAt: now,
-    imported: Boolean(input.imported),
+    imported: input.imported !== undefined ? Boolean(input.imported) : prev?.imported ?? false,
   };
   const next = [merged, ...filtered];
   writeRegistry(next);
