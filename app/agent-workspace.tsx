@@ -15,6 +15,7 @@ import {
   type JourneyChapter,
   type JourneyChapterId,
 } from "./lib/cmdb/run-journey";
+import { readRegistry, type RegistryEntry } from "./lib/cmdb/run-registry";
 
 type WorkspaceFocus = "overview" | "approvals";
 
@@ -35,6 +36,7 @@ export function AgentWorkspaceView(props: {
   onOpenVerify?: () => void;
   onOpenRemediation: (stagedCiId?: string) => void;
   onOpenEvidence: () => void;
+  onOpenRun?: (entry: { id: string; label: string }) => void;
   onRefresh: () => void;
 }) {
   const view = useMemo(() => deriveWorkspaceViewState({
@@ -77,8 +79,20 @@ export function AgentWorkspaceView(props: {
     props.onOpenPhase(phase);
   }, [props]);
 
+  const openPastRun = useCallback((entry: { id: string; label: string }) => {
+    closeSummary();
+    props.onOpenRun?.(entry);
+  }, [closeSummary, props]);
+
   const summaryModal = summaryOpen
-    ? <RunSummaryModal view={view} cis={props.cis} runLabel={props.runLabel} onClose={closeSummary} />
+    ? <RunSummaryModal
+        view={view}
+        cis={props.cis}
+        runLabel={props.runLabel}
+        runId={props.runId}
+        onClose={closeSummary}
+        onOpenRun={props.onOpenRun ? openPastRun : undefined}
+      />
     : null;
 
   if (props.focus === "approvals") {
@@ -377,17 +391,27 @@ const OPERATION_META: Record<string, { label: string; tone: "good" | "muted" | "
   ERROR: { label: "Errored", tone: "bad" },
 };
 
-function RunSummaryModal({ view, cis, runLabel, onClose }: {
+function RunSummaryModal({ view, cis, runLabel, runId, onClose, onOpenRun }: {
   view: WorkspaceViewState;
   cis: ConfigurationItem[];
   runLabel: string;
+  runId?: string;
   onClose: () => void;
+  onOpenRun?: (entry: { id: string; label: string }) => void;
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Past runs come entirely from the client-side registry — no extra
+  // ServiceNow calls. The modal is client-only (behind a click) and
+  // readRegistry() guards for a missing window, so a lazy initializer is safe.
+  const [pastRuns] = useState<RegistryEntry[]>(() => {
+    const current = (runId || "").toLowerCase();
+    return readRegistry().filter(entry => entry.id.toLowerCase() !== current);
+  });
 
   const { snapshot, queue } = view;
   const health = snapshot.health;
@@ -424,6 +448,7 @@ function RunSummaryModal({ view, cis, runLabel, onClose }: {
         <div className="summary-health-cell">
           <small>BASELINE</small>
           <strong>{health.baseline}</strong>
+          <span>at intake</span>
         </div>
         <Icon name="arrow" size={14} />
         <div className="summary-health-cell">
@@ -476,8 +501,32 @@ function RunSummaryModal({ view, cis, runLabel, onClose }: {
           </li>)}
         </ul>
       </div>}
+
+      {onOpenRun && pastRuns.length > 0 && <div className="summary-section">
+        <h3>Past runs</h3>
+        <ul className="summary-runs">
+          {pastRuns.map(run => <li key={run.id}>
+            <button type="button" className="summary-run-row" onClick={() => onOpenRun({ id: run.id, label: run.label })}>
+              <span className="summary-run-icon"><Icon name="clock" size={14} /></span>
+              <div>
+                <strong>{run.label}</strong>
+                <small>{[run.sourceSystem, formatTouched(run.touchedAt)].filter(Boolean).join(" · ") || run.id.slice(0, 8)}</small>
+              </div>
+              <Icon name="arrow" size={14} />
+            </button>
+          </li>)}
+        </ul>
+        <p className="summary-runs-note">Opening a past run loads its evidence, then its summary is available here.</p>
+      </div>}
     </div>
   </div>;
+}
+
+function formatTouched(value: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function SummaryMetric({ label, value, tone }: { label: string; value: number | string; tone?: "warn" | "good" | "muted" }) {

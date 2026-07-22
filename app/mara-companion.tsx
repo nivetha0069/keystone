@@ -1,48 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConfigurationItem, HealthData, HealthFix, TimelineEvent } from "./cmdb-data";
-import {
-  buildMaraMessage,
-  deriveMaraState,
-  type MaraFindingLike,
-  type MaraReviewLike,
-  type MaraSection,
-} from "./lib/cmdb/mara-companion-state";
+import type { MaraSection } from "./lib/cmdb/mara-companion-state";
 import type {
   MaraActionKey,
   MaraLive,
-  MaraLiveState,
   MaraVisualState,
   WorkspaceViewState,
 } from "./lib/cmdb/workspace-view-state";
 import { useDraggableMascot } from "./lib/ui/use-draggable-mascot";
 
 const MUTE_STORAGE_KEY = "keystone.mara.muted";
+// The bubble opens only when the user clicks Mara, and auto-collapses after
+// this idle interval unless it is hovered or holds focus.
 const AUTO_COLLAPSE_MS = 12000;
 
-// The bubble opens only when the user clicks Mara. We used to auto-open on
-// state transitions (approvals, warnings, completion) but that overflowed on
-// small viewports and forced users to hunt for the close control.
-const AUTO_OPEN_STATES = new Set<MaraLiveState>();
-
-type ApiState = "connecting" | "live" | "partial" | "demo" | "error";
-type AnalysisState = "idle" | "starting" | "started" | "error";
-
 export type MaraCompanionProps = {
-  section: MaraSection;
   activeRunId: string;
   activeRunLabel: string;
-  runState: string;
-  analysisState: AnalysisState;
-  apiState: ApiState;
-  timeline: TimelineEvent[];
-  cis: ConfigurationItem[];
-  health: HealthData;
-  findings: MaraFindingLike[];
-  reviews: MaraReviewLike[];
-  queuedFix: HealthFix | null;
-  view?: WorkspaceViewState;
+  view: WorkspaceViewState;
   onNavigate: (section: MaraSection) => void;
   onOpenLedger: () => void;
   onOpenApprovals?: () => void;
@@ -54,38 +30,13 @@ type MaraAction = { key: MaraActionKey; label: string; onSelect: () => void };
 
 export function MaraCompanion(props: MaraCompanionProps) {
   const {
-    section, activeRunId, activeRunLabel, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, queuedFix, view,
+    activeRunId, activeRunLabel, view,
     onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue,
   } = props;
 
-  const topFixTitle = queuedFix?.title ?? health.fixes[0]?.title;
-
-  // Fallback derivation for surfaces that don't hand us a workspace view yet.
-  // The dashboard always passes `view`, so this is defensive only.
-  const fallbackDerivation = useMemo(() => deriveMaraState({
-    section, activeRunId, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, topFixTitle,
-  }), [
-    section, activeRunId, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, topFixTitle,
-  ]);
-  const fallbackMessage = useMemo(() => buildMaraMessage({
-    section, activeRunId, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, topFixTitle,
-  }, fallbackDerivation), [
-    fallbackDerivation, section, activeRunId, runState, analysisState, apiState,
-    timeline, cis, health, findings, reviews, topFixTitle,
-  ]);
-
-  const live: MaraLive = view?.mara ?? {
-    state: fallbackDerivation.state === "blooming" ? "completed" : fallbackDerivation.state as MaraLiveState,
-    visualState: fallbackDerivation.state,
-    headline: fallbackHeadline(fallbackDerivation.state),
-    message: fallbackMessage.primary,
-    secondary: fallbackMessage.secondary,
-    actions: ["watch_activity"],
-  };
+  // Single source of truth: Mara only ever reflects the live workspace view,
+  // so the mascot cannot show stale or divergent ("false") state.
+  const live: MaraLive = view.mara;
 
   const actions = useMemo<MaraAction[]>(() => {
     const aiUsageHref = activeRunId
@@ -99,10 +50,8 @@ export function MaraCompanion(props: MaraCompanionProps) {
       switch (key) {
         case "start_rescue":
           return activeRunId ? null : { key, label: "Start a rescue", onSelect: () => onNavigate("import") };
-        case "watch_agents":
         case "watch_activity":
           return { key, label: "Watch activity", onSelect: () => onNavigate("live") };
-        case "open_team": return { key, label: "Team", onSelect: () => onNavigate("hr") };
         case "review_findings": return { key, label: "Review findings", onSelect: () => onShowReviewQueue() };
         case "open_approvals": return { key, label: "Open approvals", onSelect: openApprovals };
         case "open_remediation": return { key, label: "Open remediation", onSelect: openRemediation };
@@ -124,21 +73,9 @@ export function MaraCompanion(props: MaraCompanionProps) {
     } catch { return false; }
   });
   const [open, setOpen] = useState(false);
-  // Meaningful transition key: state + latest event id. Polling with the same
-  // (state, event) will not re-open the bubble.
-  const transitionKey = `${live.state}:${live.latestEventId ?? "0"}`;
-  const [lastTransitionKey, setLastTransitionKey] = useState(transitionKey);
   const [openedAt, setOpenedAt] = useState(0);
   const autoCloseTimerRef = useRef<number | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
-
-  if (transitionKey !== lastTransitionKey) {
-    setLastTransitionKey(transitionKey);
-    if (!muted && AUTO_OPEN_STATES.has(live.state)) {
-      setOpen(true);
-      setOpenedAt(value => value + 1);
-    }
-  }
 
   useEffect(() => {
     try {
@@ -311,17 +248,6 @@ function MaraInsights({ view }: { view: WorkspaceViewState }) {
       </li>
     ))}
   </ul>;
-}
-
-function fallbackHeadline(state: MaraVisualState): string {
-  switch (state) {
-    case "sleeping": return "Resting";
-    case "inspecting": return "Inspecting";
-    case "warning": return "Attention needed";
-    case "awaiting_approval": return "Awaiting decision";
-    case "blooming": return "Verified";
-    case "error": return "Interrupted";
-  }
 }
 
 function MaraLotusSvg({ state }: { state: MaraVisualState }) {

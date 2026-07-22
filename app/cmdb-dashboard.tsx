@@ -803,7 +803,7 @@ export function CmdbDashboard() {
         onOpenRun={(entry) => openRun({ id: entry.id, label: entry.label })}
         onNewImport={() => setSection("import")}
       />}
-      {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runId={activeRunId} runState={runRecord?.state ?? ""} apiState={apiState} analysisState={analysisState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenVerify={() => setSection("evidence")} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onRefresh={() => void loadData(activeRunId)} />}
+      {(section === "workspace" || section === "approvals") && <AgentWorkspaceView runLabel={activeRunLabel} runId={activeRunId} runState={runRecord?.state ?? ""} apiState={apiState} analysisState={analysisState} cis={cis} timeline={timeline} relationships={relationships} findings={findings} reviews={reviews} health={health} focus={section === "approvals" ? "approvals" : "overview"} onOpenPhase={phase => setSection(phase)} onOpenVerify={() => setSection("evidence")} onOpenRemediation={stagedCiId => { setRemediationTargetId(stagedCiId ?? ""); setSection("remediate"); }} onOpenEvidence={() => setSection("evidence")} onOpenRun={(entry) => openRun({ id: entry.id, label: entry.label })} onRefresh={() => void loadData(activeRunId)} />}
       {section === "evidence" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
       {section === "comprehend" && <ComprehendView health={health} timeline={timeline} frames={playbackFrames} relationships={relationships} cis={filteredCis} allCis={cis} selectedCi={selectedCi} setSelectedCi={setSelectedCi} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} playing={playing} activeStep={clampedActiveStep} startPlayback={startPlayback} setActiveStep={setActiveStep} onStepFrame={stepFrame} onRestartPlayback={restartPlayback} apiState={apiState} resourceState={resourceState} activeRunId={activeRunId} runDraft={runDraft} setRunDraft={setRunDraft} loadRun={loadRunFromDraft} clearRun={() => { setRunDraft(""); openRun({ id: "", label: "" }); }} analysisState={analysisState} analysisMessage={analysisMessage} runState={runRecord?.state ?? ""} onStartAnalysis={() => activeRunId && void startComprehend(activeRunId)} />}
       {section === "live" && <LiveOpsView timeline={timeline} activeRunId={activeRunId} apiState={apiState} resourceStatus={resourceState.timeline} paused={livePaused} refreshing={liveRefreshing} refreshCount={liveRefreshCount} onPausedChange={setLivePaused} onRefresh={() => void refreshLiveTimeline()} />}
@@ -821,18 +821,8 @@ export function CmdbDashboard() {
     {selectedCi && <ProvenancePanel ci={selectedCi} onClose={() => setSelectedCi(null)} onOpenLedger={openEventLedger} />}
 
     <MaraCompanion
-      section={section === "workspace" ? "comprehend" : section === "approvals" ? "remediate" : section === "evidence" ? "live" : section}
       activeRunId={activeRunId}
       activeRunLabel={activeRunLabel}
-      runState={runRecord?.state ?? ""}
-      analysisState={analysisState}
-      apiState={apiState}
-      timeline={timeline}
-      cis={cis}
-      health={health}
-      findings={findings}
-      reviews={reviews}
-      queuedFix={queuedFix}
       view={workspaceView}
       onNavigate={next => setSection(next)}
       onOpenLedger={openEventLedger}
