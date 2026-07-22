@@ -49,8 +49,6 @@ export type MaraVisualState =
 
 export type MaraActionKey =
   | "start_rescue"
-  | "watch_agents"
-  | "open_team"
   | "review_findings"
   | "open_approvals"
   | "open_remediation"
