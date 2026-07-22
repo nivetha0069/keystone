@@ -931,7 +931,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .mara-companion.mara-inspecting .mara-petals-inner { animation: mara-spin 26s linear infinite; }
 .mara-companion.mara-blooming .mara-petals-outer { animation: mara-breathe 3.2s ease-in-out infinite; }
 
-.mara-bubble { width: min(288px, calc(100vw - 32px)); max-width: min(288px, calc(100vw - 32px)); min-width: 0; max-height: calc(100vh - 200px); overflow-y: auto; overscroll-behavior: contain; padding: 13px 14px 12px; border: 1px solid rgba(199, 243, 77, .32); background: rgba(17, 20, 16, .96); backdrop-filter: blur(12px); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--lime); color: var(--ink); animation: mara-bubble-in .22s ease both; box-sizing: border-box; }
+.mara-bubble { width: min(300px, calc(100vw - 32px)); max-width: min(300px, calc(100vw - 32px)); min-width: 0; max-height: calc(100vh - 200px); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 16px 14px; border: 1px solid rgba(199, 243, 77, .32); background: rgba(17, 20, 16, .96); backdrop-filter: blur(12px); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--lime); color: var(--ink); animation: mara-bubble-in .22s ease both; box-sizing: border-box; word-wrap: break-word; overflow-wrap: anywhere; }
 .mara-companion.mara-warning .mara-bubble, .mara-companion.mara-awaiting-approval .mara-bubble { border-color: rgba(232, 178, 61, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--amber); }
 .mara-companion.mara-error .mara-bubble { border-color: rgba(255, 101, 66, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--coral); }
 .mara-companion.mara-blooming .mara-bubble { border-color: rgba(89, 197, 139, .35); box-shadow: 0 16px 40px rgba(0, 0, 0, .55), inset 2px 0 var(--green); }
@@ -945,9 +945,11 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .mara-mute:hover, .mara-close:hover { color: var(--ink); border-color: rgba(199, 243, 77, .45); background: rgba(199, 243, 77, .06); }
 .mara-mute[aria-pressed="true"] { color: var(--amber); border-color: rgba(232, 178, 61, .45); }
 .mara-bubble-body { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-.mara-primary { margin: 0; font-size: 13px; line-height: 1.42; color: var(--ink); }
-.mara-secondary { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
-.mara-status { margin: 4px 0 0; display: flex; align-items: center; gap: 7px; font: 10px var(--mono); letter-spacing: .12em; color: var(--faint); text-transform: uppercase; }
+.mara-primary { margin: 0; font-size: 13px; line-height: 1.42; color: var(--ink); overflow-wrap: anywhere; word-break: break-word; }
+.mara-secondary { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; }
+.mara-status { margin: 6px 0 0; display: flex; align-items: center; gap: 7px; font: 10px var(--mono); letter-spacing: .12em; color: var(--faint); text-transform: uppercase; min-width: 0; overflow-wrap: anywhere; }
+.mara-status > span:last-child { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.mara-status-dot { flex: 0 0 auto; }
 .mara-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .mara-status-dot.mara-status-sleeping { background: var(--faint); }
 .mara-status-dot.mara-status-inspecting { background: var(--lime); box-shadow: 0 0 8px rgba(199, 243, 77, .55); }
@@ -956,10 +958,10 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .mara-status-dot.mara-status-blooming { background: var(--green); box-shadow: 0 0 8px rgba(89, 197, 139, .55); }
 .mara-status-dot.mara-status-error { background: var(--coral); box-shadow: 0 0 8px rgba(255, 101, 66, .55); }
 
-.mara-insights { list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); gap: 5px; }
-.mara-insight { display: flex; flex-direction: column; gap: 1px; padding: 5px 7px; border: 1px solid rgba(199, 243, 77, .22); background: rgba(199, 243, 77, .06); border-radius: 3px; min-width: 0; overflow: hidden; }
+.mara-insights { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 6px; }
+.mara-insight { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid rgba(199, 243, 77, .22); background: rgba(199, 243, 77, .06); border-radius: 3px; min-width: 0; overflow: hidden; }
 .mara-insight small { font: 9px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mara-insight strong { font-size: 14px; color: var(--ink); line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mara-insight strong { font-size: 14px; color: var(--ink); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mara-insight.warn { border-color: rgba(232, 178, 61, .35); background: rgba(232, 178, 61, .07); }
 .mara-insight.warn strong { color: var(--amber); }
 .mara-insight.good { border-color: rgba(89, 197, 139, .35); background: rgba(89, 197, 139, .07); }
@@ -1182,10 +1184,10 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 
 /* Mara shrinks while bubble is open so it doesn't cover content */
 .mara-companion.mara-open .mara-toggle { width: 54px; height: 54px; }
-.mara-companion .mara-bubble { max-width: 300px; }
+.mara-companion .mara-bubble { max-width: min(300px, calc(100vw - 32px)); }
 @media (max-width: 1200px) {
   .mara-companion { right: 16px; bottom: 16px; }
-  .mara-companion .mara-bubble { max-width: 260px; font-size: 11px; }
+  .mara-companion .mara-bubble { max-width: min(280px, calc(100vw - 32px)); font-size: 12px; }
   .mara-toggle { width: 72px; height: 72px; }
 }
 
@@ -1645,23 +1647,25 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .factory-sub { margin: 0; color: var(--muted); font-size: 13px; }
 
 .journey-banner {
-  display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px;
-  padding: 16px 20px; margin-bottom: 20px;
+  display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 14px 20px;
+  padding: 18px 22px 20px; margin-bottom: 20px;
   background: linear-gradient(135deg, rgba(199, 243, 77, .06), rgba(199, 243, 77, .01));
   border: 1px solid rgba(199, 243, 77, .22);
-  align-items: center;
+  align-items: start;
 }
-.journey-banner-mara { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.journey-banner-avatar { width: 44px; height: 44px; display: grid; place-items: center; font-size: 24px;
+.journey-banner-mara { display: flex; align-items: center; gap: 12px; min-width: 0; grid-row: 1 / span 2; align-self: center; }
+.journey-banner-avatar { width: 44px; height: 44px; display: grid; place-items: center; font-size: 24px; flex: 0 0 44px;
   background: rgba(199, 243, 77, .08); border: 1px solid rgba(199, 243, 77, .32); border-radius: 50%; }
 .journey-banner-mara small { color: var(--lime); font: 8.5px var(--mono); letter-spacing: .12em; }
-.journey-banner-mara strong { display: block; margin-top: 2px; color: var(--ink); font-size: 14px; }
-.journey-banner-message { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.55; grid-column: 2; overflow-wrap: anywhere; }
-.journey-banner-summary { grid-column: 2; margin: 0; color: var(--muted); font: 10.5px var(--mono); letter-spacing: .05em; }
+.journey-banner-mara strong { display: block; margin-top: 3px; color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
+.journey-banner-message { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.55; grid-column: 2; grid-row: 1; overflow-wrap: anywhere; align-self: end; }
+.journey-banner-summary { grid-column: 2; grid-row: 2; margin: 0; color: var(--muted); font: 10.5px var(--mono); letter-spacing: .05em; overflow-wrap: anywhere; align-self: start; }
 
 @media (max-width: 900px) {
-  .journey-banner { grid-template-columns: 1fr; }
-  .journey-banner-message, .journey-banner-summary { grid-column: 1; }
+  .journey-banner { grid-template-columns: 1fr; padding: 14px 16px 16px; }
+  .journey-banner-mara { grid-row: 1; grid-column: 1; }
+  .journey-banner-message { grid-column: 1; grid-row: 2; }
+  .journey-banner-summary { grid-column: 1; grid-row: 3; }
 }
 
 .journey-spine {

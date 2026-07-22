@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MaraSection } from "./lib/cmdb/mara-companion-state";
 import type {
   MaraActionKey,
@@ -117,6 +117,40 @@ export function MaraCompanion(props: MaraCompanionProps) {
   const debugOn = typeof process !== "undefined" && process.env?.NODE_ENV !== "production"
     && typeof window !== "undefined"
     && (window.location?.search?.includes("mara-debug=1") ?? false);
+
+  // Keep the bubble inside the viewport regardless of where the mascot was dragged.
+  // The mascot's container is anchored by its own coord; the wider bubble can
+  // overflow, so nudge it back into view with a translate.
+  const anchorLeft = style.left;
+  const anchorTop = style.top;
+  const anchorRight = style.right;
+  const anchorBottom = style.bottom;
+  useLayoutEffect(() => {
+    if (!open) return;
+    const node = bubbleRef.current;
+    if (!node) return;
+    const nudge = () => {
+      node.style.transform = "";
+      const rect = node.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const MARGIN = 12;
+      let dx = 0;
+      let dy = 0;
+      const overRight = rect.right - (vw - MARGIN);
+      const overLeft = MARGIN - rect.left;
+      if (overRight > 0) dx = -overRight;
+      else if (overLeft > 0) dx = overLeft;
+      const overTop = MARGIN - rect.top;
+      const overBottom = rect.bottom - (vh - MARGIN);
+      if (overTop > 0) dy = overTop;
+      else if (overBottom > 0) dy = -overBottom;
+      if (dx !== 0 || dy !== 0) node.style.transform = `translate(${dx}px, ${dy}px)`;
+    };
+    nudge();
+    window.addEventListener("resize", nudge);
+    return () => { window.removeEventListener("resize", nudge); };
+  }, [open, live.message, live.secondary, anchorLeft, anchorTop, anchorRight, anchorBottom]);
 
   const visualState: MaraVisualState = live.visualState;
   const stateSlug = visualState.replace("_", "-");
