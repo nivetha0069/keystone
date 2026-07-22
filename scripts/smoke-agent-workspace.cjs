@@ -82,6 +82,43 @@ assert.equal(handoffView.handoffGap, true);
 assert.equal(handoffView.prioritizeStatus, "working", "locally derived groups cannot impersonate live Prioritize evidence");
 assert.equal(handoffView.activePhase, "prioritize");
 
+const historicalPacketView = deriveWorkspaceViewState({
+  runLabel: "RUN-HISTORICAL-PACKET",
+  runId,
+  runState: "analyzing",
+  apiState: "live",
+  cis: [
+    ci(cis[0].id, "linux-a", "Linux Srv", "live"),
+    ci("33333333333333333333333333333333", "linux-ready", "Linux Srv", "live"),
+  ],
+  timeline: [
+    ...timeline,
+    event(6, "Approval packet prepared", "Mara", "Prepared bounded approval packet for prior work."),
+  ],
+  relationships: [],
+  findings: Array.from({ length: 51 }, (_, index) => ({
+    id: `historical-finding-${index}`,
+    number: `DWF-H-${index}`,
+    stagedCiId: cis[0].id,
+    type: "orphan_rel",
+    severity: "warning",
+    recommendation: "Historical evidence only.",
+  })),
+  reviews: Array.from({ length: 71 }, (_, index) => ({
+    id: `historical-review-${index}`,
+    findingId: `historical-finding-${index % 51}`,
+    decision: index < 20 ? "approved" : "deferred",
+  })),
+  health: { ...health, ciCount: 2, reviewCount: 71 },
+});
+assert.equal(historicalPacketView.approvalPacketPrepared, true, "historical packet evidence remains visible");
+assert.equal(historicalPacketView.requiresApproval, false, "historical packet evidence must not reopen approval");
+assert.equal(historicalPacketView.approvalCount, 0, "evidence row counts must not masquerade as CI approvals");
+assert.equal(historicalPacketView.heldCount, 0, "evidence row counts must not masquerade as held CIs");
+assert.equal(historicalPacketView.readyToSimulateCount, 2, "current CI lifecycle rows should be presented as ready to simulate");
+assert.equal(historicalPacketView.activePhase, "remediate", "remaining simulation work must keep Agent Workspace on Remediate");
+assert.equal(historicalPacketView.mara.headline, "Ready for simulation");
+
 const execute = sanitizeIreRequest("execute", {
   migration_run_id: runId,
   staged_ci_id: cis[0].id,

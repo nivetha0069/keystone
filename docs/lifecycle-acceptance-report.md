@@ -170,13 +170,57 @@ operation `INSERT`, and canonical fingerprint
 The missing-identity record remained isolated in a blocked group. No approval,
 Execute, Verify, or CMDB write was performed.
 
-The next acceptance target is Milestone 8A, not a repeat of Milestone 7. It
-must freeze a parent approval packet over multiple existing 20-record campaign
-manifests, obtain one explicit human confirmation for that exact packet, fan
-out individually auditable ServiceNow approvals, and prove one correlated
-Phase D terminal chain per successful CI. The initial packet cap is 100–200
-homogeneous records. AI planning may prepare and explain the packet but may not
-authorize it.
+## Milestone 8A Repository Build Status
+
+Milestone 8A now adds a deterministic parent approval packet over at most five
+existing 20-record Phase E manifests and 100 homogeneous records. The parent
+SHA-256 binds the v1 policy, migration run, ordered child campaign/manifest
+hashes, item counts, operation families, and a freshness boundary derived as
+30 minutes after the oldest included completed simulation.
+
+Planning is GET-backed and preparation may create only missing identifier-bound
+deferred reviews through the existing proposal contract. Approval remains
+locked unless `CMDB_AGENT_APPROVAL_PACKET_HASH` exactly matches the recomputed
+parent hash. Fan-out is sequential and individual, duplicate-safe packet
+approvals are reconciled from Event Ledger evidence, and the packet route has
+no Execute or Verify invocation. Phase D retains the only execution and
+correlated verification authority.
+
+Local smoke coverage proves the 100/5/20 bounds, deterministic hash and sample
+selection, expiry, drift rejection, sequential approval, isolated failures,
+systemic halt, ambiguous-outcome reconciliation, duplicate-click safety, and
+refresh reconstruction.
+
+### Live exact-hash acceptance
+
+Live acceptance completed on 2026-07-22 for migration run
+`e0ac4df32b82871060aefba6b891bf5b` and packet
+`D0C641EADD8E04BAADC9EB04`. The operator explicitly authorized parent hash
+`DC6E599FF11D13201A3F6F428D3E6C27DFF2120CD624E85F407F3E2570FAC89D`.
+The packet contained one homogeneous `INSERT` for staged CI
+`6cac4df32b82871060aefba6b891bf5c`; `web-prod-01` remained excluded because it
+belonged to a different operation-risk family.
+
+ServiceNow Event Ledger sequence 87 recorded the exact packet approval,
+sequence 92 recorded server-owned `ire_execution_completed`, and sequence 94
+recorded `verification_passed`. The IRE `INSERT` created target CI
+`faab20b022de0b505a8cdde22cb29aac`. The packet route invoked neither Execute
+nor Verify; existing Phase D performed both actions. Refresh reconstructed
+`1 verified`, `0 blocked`, and `1 total` from ServiceNow evidence. The temporary
+exact-hash gate was cleared immediately after terminal evidence was captured.
+
+### Local demo acceptance (fixture only)
+
+The timer-safe harness `npm run demo:approval-packet` was exercised through the
+in-app browser on 2026-07-22. The real packet UI planned and froze 100 records
+across five 20-record children, required the complete 64-character fixture
+hash, submitted 100 sequential individual fixture approvals, and reconstructed
+100 verified with zero blockers. Browser console errors were zero.
+
+This is repository/demo evidence only. The launcher removes inherited
+`CMDB_*` configuration and exposes only loopback fixture endpoints, so this run
+sent no ServiceNow approval, Execute, Verify, or CMDB write. Live fan-out still
+requires separate authorization naming the exact fresh production packet hash.
 
 ## CPR End-to-End Handoff Repair
 

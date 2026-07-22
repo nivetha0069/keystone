@@ -215,6 +215,15 @@ export type CampaignSelection = {
   limit?: number;
 };
 
+export type RemediationCampaignPlanSet = {
+  migration_run_id: string;
+  work_group_signature: string;
+  group_title: string;
+  plans: RemediationCampaignPlan[];
+  exclusions: RemediationCampaignExclusion[];
+  deferred_count: number;
+};
+
 type CampaignContext = {
   queueItems: WorkQueueItem[];
   groups: AgentWorkGroup[];
@@ -262,6 +271,87 @@ export function planRemediationCampaign(
     max_items: limit,
     deferred_count: deferredCount,
     items,
+    exclusions,
+  };
+}
+
+/**
+ * Internal Phase E composition primitive used by bounded approval packets.
+ * It deliberately selects only the stable class/operation fallback group and
+ * partitions it without changing the existing single-campaign planner.
+ */
+export function planRemediationCampaignChildren(
+  snapshot: RemediationCampaignSnapshot,
+  requestedSignature?: string,
+  requestedTotal = Number.MAX_SAFE_INTEGER,
+): RemediationCampaignPlanSet {
+  const context = campaignContext(snapshot);
+  const available = campaignGroups(context.queueItems, context.groups)
+    .filter(group => group.signature.startsWith("eligible:"));
+  const selected = requestedSignature
+    ? available.find(group => group.signature === requestedSignature)
+    : available.find(group => group.items.some(item => simulationEligible(item, group.strategy)));
+  if (!selected) throw campaignError("CAMPAIGN_GROUP_NOT_FOUND", "No homogeneous remediation group is available for this run.");
+
+  const sorted = [...selected.items].sort((left, right) => left.stagedCiId.localeCompare(right.stagedCiId));
+  const items: RemediationCampaignItem[] = [];
+  const exclusions: RemediationCampaignExclusion[] = [];
+  const seen = new Set<string>();
+  const totalLimit = Math.max(1, Math.min(sorted.length, Number.isFinite(requestedTotal) ? Math.floor(requestedTotal) : sorted.length));
+  let deferredCount = 0;
+  for (const item of sorted) {
+    const reason = seen.has(item.stagedCiId)
+      ? "Duplicate staged CI identifier was removed from the campaign."
+      : item.ci.migrationRunId && item.ci.migrationRunId.toLowerCase() !== snapshot.migrationRunId.toLowerCase()
+        ? "Staged CI belongs to a different migration run."
+        : simulationExclusion(item, selected.strategy);
+    seen.add(item.stagedCiId);
+    if (reason) exclusions.push(exclusion(item, reason));
+    else if (items.length < totalLimit) items.push(campaignItem(item));
+    else deferredCount++;
+  }
+  if (!items.length) throw campaignError("CAMPAIGN_EMPTY", "The selected group has no records eligible for bounded simulation.");
+
+  const plans: RemediationCampaignPlan[] = [];
+  for (let index = 0; index < items.length; index += CAMPAIGN_LIMIT) {
+    plans.push(buildRemediationCampaignPlan(
+      snapshot.migrationRunId,
+      selected.signature,
+      selected.title,
+      items.slice(index, index + CAMPAIGN_LIMIT),
+      index === 0 ? exclusions : [],
+      Math.max(0, items.length - index - CAMPAIGN_LIMIT) + deferredCount,
+    ));
+  }
+  return {
+    migration_run_id: snapshot.migrationRunId,
+    work_group_signature: selected.signature,
+    group_title: selected.title,
+    plans,
+    exclusions,
+    deferred_count: deferredCount,
+  };
+}
+
+export function buildRemediationCampaignPlan(
+  migrationRunId: string,
+  workGroupSignature: string,
+  groupTitle: string,
+  items: RemediationCampaignItem[],
+  exclusions: RemediationCampaignExclusion[] = [],
+  deferredCount = 0,
+): RemediationCampaignPlan {
+  const ordered = [...items].sort((left, right) => left.staged_ci_id.localeCompare(right.staged_ci_id));
+  return {
+    success: true,
+    stage: "planning",
+    migration_run_id: migrationRunId,
+    campaign_id: campaignHash(migrationRunId, workGroupSignature, ordered.map(item => item.staged_ci_id)),
+    work_group_signature: workGroupSignature,
+    group_title: groupTitle,
+    max_items: CAMPAIGN_LIMIT,
+    deferred_count: deferredCount,
+    items: ordered,
     exclusions,
   };
 }
@@ -332,6 +422,13 @@ export function prepareRemediationApprovalManifest(
   selection: CampaignSelection,
 ): RemediationApprovalManifest {
   const plan = validateCampaignSelection(snapshot, selection);
+  return prepareRemediationApprovalManifestFromPlan(snapshot, plan);
+}
+
+export function prepareRemediationApprovalManifestFromPlan(
+  snapshot: RemediationCampaignSnapshot,
+  plan: RemediationCampaignPlan,
+): RemediationApprovalManifest {
   const context = campaignContext(snapshot);
   const byId = new Map(context.queueItems.map(item => [item.stagedCiId, item]));
   const items: RemediationApprovalManifestItem[] = [];
@@ -343,7 +440,8 @@ export function prepareRemediationApprovalManifest(
       continue;
     }
     const evidence = latestSimulationEvidence(snapshot.timeline, queueItem);
-    const reason = approvalExclusion(queueItem, evidence);
+    const review = simulationBoundReview(snapshot, queueItem, evidence);
+    const reason = approvalExclusion(queueItem, evidence, review);
     if (reason) {
       exclusions.push(exclusion(queueItem, reason));
       continue;
@@ -352,7 +450,7 @@ export function prepareRemediationApprovalManifest(
       staged_ci_id: queueItem.stagedCiId,
       name: queueItem.ci.name,
       finding_id: evidence!.finding_id!,
-      review_decision_id: queueItem.review!.id,
+      review_decision_id: review!.id,
       simulation_correlation_id: evidence!.simulation_correlation_id!,
       simulation_fingerprint: evidence!.simulation_fingerprint!,
       operation: evidence!.operation as "INSERT" | "UPDATE" | "NO_CHANGE",
@@ -395,14 +493,22 @@ export function pendingRemediationReviewProposals(
   selection: CampaignSelection,
 ): RemediationReviewProposalItem[] {
   const plan = validateCampaignSelection(snapshot, selection);
+  return pendingRemediationReviewProposalsFromPlan(snapshot, plan);
+}
+
+export function pendingRemediationReviewProposalsFromPlan(
+  snapshot: RemediationCampaignSnapshot,
+  plan: RemediationCampaignPlan,
+): RemediationReviewProposalItem[] {
   const context = campaignContext(snapshot);
   const byId = new Map(context.queueItems.map(item => [item.stagedCiId, item]));
   const items: RemediationReviewProposalItem[] = [];
   for (const planned of plan.items) {
     const queueItem = byId.get(planned.staged_ci_id);
-    if (!queueItem || queueItem.review) continue;
+    if (!queueItem) continue;
     const evidence = latestSimulationEvidence(snapshot.timeline, queueItem);
     if (preReviewExclusion(queueItem, evidence)) continue;
+    if (simulationBoundReview(snapshot, queueItem, evidence)) continue;
     items.push({
       staged_ci_id: queueItem.stagedCiId,
       name: queueItem.ci.name,
@@ -726,12 +832,37 @@ function simulationExclusion(item: WorkQueueItem, strategy?: string) {
   return "";
 }
 
-function approvalExclusion(item: WorkQueueItem, evidence: ReturnType<typeof latestSimulationEvidence>) {
+function approvalExclusion(
+  item: WorkQueueItem,
+  evidence: ReturnType<typeof latestSimulationEvidence>,
+  review: RemediationReview | undefined,
+) {
   const reason = preReviewExclusion(item, evidence);
   if (reason) return reason;
-  if (!item.review || !/^[0-9a-f]{32}$/i.test(item.review.id)) return "Deferred review evidence is missing.";
-  if (item.review.decision !== "deferred") return `Review is ${item.review.decision || "unknown"}; only deferred reviews may enter a new manifest.`;
+  if (!review || !/^[0-9a-f]{32}$/i.test(review.id)) return "A deferred review bound to the latest simulation is missing.";
+  if (review.decision !== "deferred") return `Review is ${review.decision || "unknown"}; only deferred reviews may enter a new manifest.`;
   return "";
+}
+
+function simulationBoundReview(
+  snapshot: RemediationCampaignSnapshot,
+  item: WorkQueueItem,
+  evidence: ReturnType<typeof latestSimulationEvidence>,
+) {
+  if (!evidence?.finding_id || !evidence.simulation_correlation_id || !evidence.simulation_fingerprint) return undefined;
+  const marker = sortTimelineByFreshness(snapshot.timeline.filter(event => {
+    const detail = parseCampaignEventDetail(event.reasoning);
+    return detail?.action === "approval_review_deferred" &&
+      detail.migration_run_id?.toLowerCase() === snapshot.migrationRunId.toLowerCase() &&
+      detail.staged_ci_id?.toLowerCase() === item.stagedCiId.toLowerCase() &&
+      detail.finding_id?.toLowerCase() === evidence.finding_id!.toLowerCase() &&
+      detail.simulation_correlation_id === evidence.simulation_correlation_id &&
+      detail.simulation_fingerprint?.toUpperCase() === evidence.simulation_fingerprint!.toUpperCase() &&
+      /^[0-9a-f]{32}$/i.test(detail.review_decision_id ?? "");
+  }))[0];
+  if (!marker) return undefined;
+  const detail = parseCampaignEventDetail(marker.reasoning);
+  return snapshot.reviews.find(review => review.id.toLowerCase() === detail?.review_decision_id?.toLowerCase());
 }
 
 function preReviewExclusion(item: WorkQueueItem, evidence: ReturnType<typeof latestSimulationEvidence>) {

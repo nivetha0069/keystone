@@ -410,6 +410,29 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .campaign-manifest-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }.campaign-manifest-head > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; }.campaign-manifest-head strong { overflow-wrap: anywhere; color: var(--lime); font: 9px/1.4 var(--mono); }.campaign-manifest-head > span { color: var(--muted); font: 9px var(--mono); white-space: nowrap; }
 .manifest-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 13px 0; background: var(--line); border: 1px solid var(--line); }.manifest-items > div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 9px; background: #0d100d; }.manifest-items strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.manifest-items span { color: var(--green); font: 8px var(--mono); }.manifest-items small { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--faint); font: 8px/1.4 var(--mono); }
 .campaign-confirmation { display: flex; align-items: flex-start; gap: 9px; margin: 12px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }.campaign-confirmation input { margin-top: 2px; accent-color: var(--lime); }
+.approval-packet-panel { overflow: hidden; margin-bottom: 24px; border-color: rgba(199, 243, 77, .22); background: linear-gradient(150deg, rgba(199, 243, 77, .025), transparent 36%), var(--panel); }
+.packet-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 14px 18px; border: 1px solid var(--line); background: var(--line); }
+.packet-overview > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 11px; background: #0d100d; }
+.packet-overview small, .packet-risk-grid small, .packet-child-grid small { color: var(--faint); font: 8px var(--mono); letter-spacing: .08em; }
+.packet-overview strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.packet-summary { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.packet-freeze { margin: 18px; padding: 14px; border: 1px solid rgba(199, 243, 77, .28); background: #0d100d; }
+.packet-risk-grid { display: grid; grid-template-columns: 1.2fr 1.5fr 1fr; gap: 1px; margin: 13px 0; border: 1px solid var(--line); background: var(--line); }
+.packet-risk-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px; background: #10140f; }
+.packet-risk-grid strong { overflow-wrap: anywhere; color: var(--ink); font: 9px/1.45 var(--mono); }
+.packet-child-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 12px 0; }
+.packet-child-grid > div { min-width: 0; display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); background: #10140f; }
+.packet-child-grid strong { color: var(--lime); font: 10px var(--mono); }.packet-child-grid span { color: var(--muted); font-size: 9px; }.packet-child-grid code { overflow-wrap: anywhere; color: var(--faint); font: 7.5px/1.4 var(--mono); }
+.packet-evidence { max-height: 330px; overflow: auto; margin: 12px 0; border: 1px solid var(--line); }.packet-evidence.exclusions svg { color: var(--coral); }
+.packet-confirmation { display: grid; gap: 8px; margin: 14px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.packet-confirmation input { width: 100%; padding: 10px; color: var(--lime); background: #090b09; border: 1px solid rgba(199, 243, 77, .3); outline: none; font: 9px var(--mono); text-transform: uppercase; }
+.packet-confirmation input:focus { border-color: var(--lime); }
+.packet-demo-notice { align-items: center; display: flex; gap: 10px; }
+.packet-demo-notice > span { flex: 1; }
+.packet-demo-notice .ghost-button { flex: 0 0 auto; }
+.packet-progress { margin: 14px 18px 18px; border: 1px solid var(--line); background: #0d100d; }
+.packet-progress-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }.packet-progress-row:last-child { border-bottom: 0; }
+.packet-progress-row strong { color: var(--ink); font: 9px var(--mono); }.packet-progress-row span { color: var(--muted); font-size: 9px; }.packet-progress-row code { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--faint); font: 7.5px var(--mono); }
 .ire-auto-continuation { flex: 2 1 300px; display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 7px 11px; color: var(--lime); border: 1px solid rgba(199, 243, 77, .2); background: rgba(199, 243, 77, .035); }.ire-auto-continuation span { display: flex; flex-direction: column; gap: 2px; }.ire-auto-continuation strong { color: var(--ink); font-size: 10px; }.ire-auto-continuation small { color: var(--faint); font-size: 8.5px; line-height: 1.35; }
 .source-pill { padding: 5px 8px; color: var(--muted); border: 1px solid var(--line-strong); font: 8px var(--mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
 .source-pill.live { color: var(--green); border-color: rgba(89, 197, 139, .3); background: rgba(89, 197, 139, .05); }
@@ -867,7 +890,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .health-hero { grid-template-columns: 1fr; padding: 20px; }.health-copy { padding: 0; }.health-dimensions { grid-template-columns: 1fr 1fr; }.priority-layout { grid-template-columns: 1fr; }.fix-row { grid-template-columns: 26px 4px 1fr 65px; }.fix-row > button { grid-column: 3 / -1; }.fix-impact { grid-column: 4; grid-row: 1; }
   .remediation-flow { grid-template-columns: 1fr 1fr; }.tool-grid { grid-template-columns: 1fr; }.remediate-layout, .workbench-layout, .workbench-body, .selected-ci-card { grid-template-columns: 1fr; }
   .queue-buckets, .queue-evidence { grid-template-columns: 1fr; }
-  .campaign-identity, .campaign-summary, .campaign-columns, .manifest-items { grid-template-columns: 1fr; }
+  .campaign-identity, .campaign-summary, .campaign-columns, .manifest-items, .packet-overview, .packet-risk-grid, .packet-child-grid { grid-template-columns: 1fr; }
   .campaign-controls button { width: 100%; }
   .queue-bucket, .queue-bucket:nth-child(2n) { border-right: 0; }
   .queue-evidence > div:last-child { justify-content: flex-start; }

@@ -181,6 +181,18 @@ function lifecycleFromStaging(ci: ConfigurationItem): IreLifecycleState {
 
 function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null {
   for (const event of [...events].reverse()) {
+    const structuredAction = structuredLifecycleAction(event.reasoning);
+    if (structuredAction === "approval_review_deferred") return "simulated_pending_approval";
+    if (["approval_recorded", "approval_resume_claimed", "approval_resume_prepared"].includes(structuredAction)) return "approved_for_execution";
+    if (structuredAction === "ire_execution_claimed") return "executing";
+    if (structuredAction === "ire_execution_completed") return "executed_pending_verification";
+    if (structuredAction === "ire_execution_reconciliation_required") return "execution_reconciliation_required";
+    if (structuredAction === "ire_execution_failed") return "execution_reconciliation_required";
+    if (structuredAction === "ire_verification_claimed") return "executed_pending_verification";
+    if (structuredAction === "verification_passed") return "verified";
+    if (structuredAction === "verification_failed") return "verification_failed";
+    if (structuredAction === "ire_simulation_completed") return "simulated_pending_approval";
+    if (["ire_simulation_failed", "ire_simulation_blocked"].includes(structuredAction)) return "simulation_failed";
     const text = `${event.name} ${event.reasoning} ${event.operation} ${event.status}`.toLowerCase();
     if (text.includes("verification") && (text.includes("failed") || text.includes("mismatch") || event.status === "error")) return "verification_failed";
     if (text.includes("verification") && (text.includes("passed") || text.includes("verified") || text.includes("successful") || text.includes("read-back"))) return "verified";
@@ -192,6 +204,17 @@ function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null 
     if (text.includes("simulation") || text.includes("simulated") || text.includes("ire reconciled")) return "simulated_pending_approval";
   }
   return null;
+}
+
+function structuredLifecycleAction(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{")) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    return typeof parsed.action === "string" ? parsed.action : "";
+  } catch {
+    return "";
+  }
 }
 
 function lifecycleFromPersistedEvidence(

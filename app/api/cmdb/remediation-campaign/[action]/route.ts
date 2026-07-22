@@ -10,9 +10,18 @@ import {
   simulateRemediationCampaign,
   type CampaignSelection,
 } from "../../../../lib/cmdb/remediation-campaign";
+import {
+  approveApprovalPacket,
+  approvalPacketStatus,
+  pendingApprovalPacketProposals,
+  planApprovalPacket,
+  prepareApprovalPacket,
+  recoverLatestApprovalPacketSelection,
+  type ApprovalPacketSelection,
+} from "../../../../lib/cmdb/approval-packet";
 import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from "../../../../lib/cmdb/server-campaign-bridge";
 
-const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status"]);
+const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "approve-packet", "packet-status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
   "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
@@ -29,6 +38,9 @@ export async function POST(request: Request, context: { params: Promise<{ action
   const incoming = await request.json().catch(() => ({})) as Record<string, unknown>;
   try {
     rejectExecutableFields(incoming);
+    if (action.endsWith("packet") || action === "packet-status") {
+      return await handlePacketAction(action, incoming);
+    }
     const selection = campaignSelection(incoming);
     const snapshot = await loadCampaignSnapshot(selection.migration_run_id);
     if (action === "plan") {
@@ -102,6 +114,62 @@ export async function POST(request: Request, context: { params: Promise<{ action
   }
 }
 
+async function handlePacketAction(action: string, incoming: Record<string, unknown>) {
+  let selection = packetSelection(incoming);
+  let snapshot = await loadCampaignSnapshot(selection.migration_run_id);
+  if (action === "plan-packet") {
+    const plan = planApprovalPacket(snapshot);
+    return Response.json({ ...plan, approval_enabled: false, demo_mode: packetDemoMode() });
+  }
+  if (action === "prepare-packet") {
+    const plan = planApprovalPacket(snapshot);
+    const pending = pendingApprovalPacketProposals(snapshot);
+    for (const item of pending) {
+      const response = await invokeCampaignProposal({
+        migration_run_id: selection.migration_run_id,
+        staged_ci_id: item.staged_ci_id,
+        finding_id: item.finding_id,
+        simulation_correlation_id: item.simulation_correlation_id,
+        simulation_fingerprint: item.simulation_fingerprint,
+        correlation_id: `ks-packet:${plan.packet_id}:prepare:${item.staged_ci_id}`,
+        idempotency_key: `keystone:packet:${plan.packet_id}:prepare:${item.staged_ci_id}`,
+      });
+      if (!response.success && systemicProposalFailure(response.error?.code)) break;
+    }
+    snapshot = pending.length ? await loadCampaignSnapshot(selection.migration_run_id) : snapshot;
+    const packet = prepareApprovalPacket(snapshot, selection);
+    return Response.json({
+      ...packet,
+      approval_enabled: packet.packet_hash ? exactPacketHashGate(packet.packet_hash) : false,
+      demo_mode: packetDemoMode(),
+    });
+  }
+  if (action === "packet-status") {
+    if (!selection.packet_id || !selection.packet_hash) {
+      selection = recoverLatestApprovalPacketSelection(snapshot) ?? selection;
+    }
+    return Response.json(approvalPacketStatus(snapshot, selection));
+  }
+  if (!selection.packet_id || !selection.packet_hash || !selection.child_manifest_ids?.length || !selection.staged_ci_ids?.length) {
+    throw campaignError("INVALID_REQUEST", "Packet id, exact hash, child manifest hashes, and frozen staged CI identifiers are required.");
+  }
+  const recomputed = prepareApprovalPacket(snapshot, selection);
+  if (!recomputed.packet_hash || !exactPacketHashGate(recomputed.packet_hash)) {
+    return Response.json({ error: "Packet approval is locked until this exact hash is authorized server-side.", code: "PACKET_APPROVAL_DISABLED" }, { status: 403 });
+  }
+  const result = await approveApprovalPacket(snapshot, selection, (item, generated) => invokeCampaignIre("approve", {
+    migration_run_id: selection.migration_run_id,
+    staged_ci_id: item.staged_ci_id,
+    finding_id: item.finding_id,
+    review_decision_id: item.review_decision_id,
+    simulation_correlation_id: item.simulation_correlation_id,
+    simulation_fingerprint: item.simulation_fingerprint,
+    correlation_id: generated.correlation_id,
+    idempotency_key: generated.idempotency_key,
+  }), () => loadCampaignSnapshot(selection.migration_run_id));
+  return Response.json(result);
+}
+
 function systemicProposalFailure(code?: string) {
   return ["NOT_CONFIGURED", "UNAUTHORIZED", "FORBIDDEN", "UPSTREAM_UNREACHABLE"].includes(code || "");
 }
@@ -131,6 +199,59 @@ function campaignSelection(incoming: Record<string, unknown>): CampaignSelection
     limit: numericLimit(incoming.limit),
   };
 }
+
+function packetSelection(incoming: Record<string, unknown>): ApprovalPacketSelection {
+  const migrationRunId = identifier(incoming.migration_run_id ?? incoming.migrationRunId);
+  if (!migrationRunId) throw campaignError("INVALID_REQUEST", "A canonical migration_run_id is required.");
+  const stagedIds = stringArray(incoming.staged_ci_ids, value => identifier(value));
+  const childManifestIds = stringArray(incoming.child_manifest_ids, value => hex(value, 64));
+  if (stagedIds.length > 100 || childManifestIds.length > 5) {
+    throw campaignError("INVALID_REQUEST", "Approval packets contain at most 100 records and five child manifests.");
+  }
+  if (new Set(stagedIds).size !== stagedIds.length || new Set(childManifestIds).size !== childManifestIds.length) {
+    throw campaignError("INVALID_REQUEST", "Packet identifiers must be unique.");
+  }
+  return {
+    migration_run_id: migrationRunId,
+    packet_id: hex(incoming.packet_id, 24),
+    packet_hash: hex(incoming.packet_hash, 64),
+    child_manifest_ids: childManifestIds,
+    staged_ci_ids: stagedIds,
+  };
+}
+
+function stringArray(value: unknown, normalize: (entry: unknown) => string | undefined) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw campaignError("INVALID_REQUEST", "Packet identifier collections must be arrays.");
+  const normalized = value.map(normalize);
+  if (normalized.some(entry => !entry)) throw campaignError("INVALID_REQUEST", "Packet identifier collection contains a malformed value.");
+  return normalized as string[];
+}
+
+function exactPacketHashGate(packetHash: string) {
+  return (process.env.CMDB_AGENT_APPROVAL_PACKET_HASH || "").trim().toUpperCase() === packetHash.toUpperCase();
+}
+
+function packetDemoMode() {
+  if (process.env.CMDB_APPROVAL_PACKET_DEMO_MODE !== "true") return false;
+  const endpoints = [
+    process.env.CMDB_API_BASE_URL,
+    process.env.CMDB_IRE_BASE_URL,
+    process.env.CMDB_IRE_APPROVE_URL,
+    process.env.CMDB_REMEDIATE_URL,
+  ].filter((value): value is string => Boolean(value));
+  return endpoints.length > 0 && endpoints.every(loopbackUrl);
+}
+
+function loopbackUrl(value: string) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 
 function identifier(value: unknown) {
   const candidate = typeof value === "string" ? value.trim().toLowerCase() : "";

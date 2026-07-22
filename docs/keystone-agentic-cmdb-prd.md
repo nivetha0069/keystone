@@ -91,7 +91,7 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - Milestone 5: Complete. The single-record workbench supports simulation, fingerprint-bound approval, automatic continuation monitoring, blockers, correlations, and verification results.
 - Milestone 6: Complete. The deterministic work queue and playback state reconstruct from ServiceNow evidence after refresh.
 - Milestone 7: Complete and live-accepted. Phase E adds stable homogeneous planning, three-wide simulation, deterministic failure groups, one allowlisted bounded retry, frozen manifests, and sequential individual approvals for campaigns of at most 20 CIs. Live acceptance proved one resolved class-alias retry and one isolated missing-identity blocker without approval, Execute, Verify, or a CMDB write.
-- Milestone 8A: Planned. Bounded approval packets will let one explicit human confirmation authorize an exact parent hash covering several already-frozen 20-record campaign manifests. The initial packet cap is 100–200 homogeneous records; ServiceNow still records and enforces one individual approval and one Phase D continuation per CI. No model receives approval or write authority.
+- Milestone 8A: Complete and live-accepted. Bounded approval packets let one explicit human confirmation authorize an exact parent hash covering up to five already-frozen 20-record campaign manifests and 100 homogeneous records. ServiceNow still records and enforces one individual approval and one Phase D continuation per CI. Live acceptance proved one exact-hash `INSERT` through correlated verification with the packet route invoking neither Execute nor Verify. No model receives approval or write authority.
 
 ## 3. User Personas
 
@@ -591,13 +591,13 @@ Visible activity must be grounded. Demo fixtures are acceptable only when clearl
 
 ### Milestone 8A: Bounded Approval Packets
 
-**Status: Planned; this is the next implementation objective.** A packet is a
+**Status: Complete and live-accepted.** A packet is a
 governance envelope over several completed Phase E campaign manifests. It is
 not a larger IRE request and does not let an agent approve its own work.
 
 - Objective: Reduce hundreds of repetitive approval clicks while preserving exact, individually auditable ServiceNow enforcement.
 - User-visible outcome: Keystone prepares several homogeneous 20-record campaigns, shows aggregate risk and exclusions, and asks for one confirmation over an exact parent packet.
-- Initial bound: 100–200 records per packet, composed only from frozen campaign manifests whose combined item count remains within the configured cap.
+- Initial bound: 100 records per packet across at most five children, composed only from frozen campaign manifests whose combined item count remains within the configured cap.
 - Parent hash: SHA-256 over the versioned policy, run ID, deterministic ordered child manifest IDs and hashes, item counts, operation families, and expiry/freshness boundary.
 - Approval authority: A human explicitly confirms the exact packet hash and scope. The AI may explain, prioritize, simulate, and prepare the packet but cannot confirm it.
 - Execution: The server recomputes the packet and every child manifest, then fans out sequential individual ServiceNow approvals. Existing Phase D continuation alone owns one IRE Execute and one correlated Verify per CI.

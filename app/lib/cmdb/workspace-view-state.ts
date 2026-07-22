@@ -172,13 +172,18 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
   const hasRun = Boolean(input.runId || input.runLabel);
   const runStateLower = (input.runState || "").toLowerCase();
 
-  const heldCiCount = input.cis.filter(ci => ci.status !== "live").length;
   const openReviewCount = input.reviews.filter(r => {
     const decision = (r.decision || "").toLowerCase();
     return !decision || decision === "pending" || decision === "open" || decision === "deferred";
   }).length;
-  const unresolvedFindingCount = input.findings.length;
-  const heldCount = Math.max(heldCiCount, openReviewCount, unresolvedFindingCount, input.health.reviewCount || 0);
+  // Findings, reviews, and health summaries are evidence rows, not distinct
+  // CIs. A single staged CI can own several of each, so counting those rows
+  // makes the workspace claim that more records need attention than exist in
+  // the run. The work queue has already reconciled that evidence to one
+  // lifecycle state per staged CI; use only its actual hold/failure buckets.
+  const heldCount = queue.items.filter(item =>
+    item.bucket === "blocked" || item.bucket === "simulation_failed"
+  ).length;
 
   const readyToSimulateCount = queue.items.filter(item => item.bucket === "ready_to_simulate").length;
   const workGroupCount = snapshot.groups.length;
@@ -189,10 +194,11 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
 
   const requiresApproval =
     queueApprovalCount > 0
-    || runStateLower === "awaiting_approval"
-    || approvalPacketPrepared
     || (criticalUnresolvedFindings > 0 && openReviewCount === 0 && queueApprovalCount === 0 && heldCount > 0);
-  const approvalCount = Math.max(queueApprovalCount, requiresApproval ? Math.max(1, heldCount) : 0);
+  // A historical packet event is durable audit evidence, not an active gate.
+  // Active approval scope comes from current per-CI queue evidence (or an
+  // explicit run state when the queue has not caught up yet).
+  const approvalCount = requiresApproval ? Math.max(1, queueApprovalCount) : 0;
 
   const requiresReview = requiresApproval || heldCount > 0;
 
@@ -213,6 +219,7 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
     remediateStatus,
     verifyStatus,
     requiresApproval,
+    readyToSimulateCount,
     hasRun,
     handoffGap,
   });
@@ -248,6 +255,7 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
     heldCount,
     executingCount,
     verifiedCount,
+    readyToSimulateCount,
     prioritizeStatus,
     remediateStatus,
     verifyStatus,
@@ -368,9 +376,11 @@ function deriveRemediateStatus(input: {
   // Approval takes precedence over any "ready" queue items — Mara is paused.
   if (input.requiresApproval) return "approval_required";
   if (input.executingCount > 0) return "working";
-  if (input.verifiedCount > 0) return "complete";
   const blocked = input.queue.items.filter(item => item.bucket === "blocked" || item.bucket === "simulation_failed").length;
   if (blocked > 0) return "blocked";
+  const ready = input.queue.items.filter(item => item.bucket === "ready_to_simulate").length;
+  if (ready > 0) return "waiting";
+  if (input.verifiedCount > 0) return "complete";
   // No approvals, no executions, no verifications, no blockers: Remediation
   // has not started. That is "waiting", never "working", until backend
   // evidence of an execution appears.
@@ -394,12 +404,14 @@ function pickActivePhase(input: {
   remediateStatus: PhaseStatus;
   verifyStatus: PhaseStatus;
   requiresApproval: boolean;
+  readyToSimulateCount: number;
   hasRun: boolean;
   handoffGap: boolean;
 }): WorkspacePhaseId {
   if (!input.hasRun) return "comprehend";
   if (input.handoffGap) return "prioritize";
   if (input.requiresApproval || input.remediateStatus === "approval_required") return "remediate";
+  if (input.readyToSimulateCount > 0) return "remediate";
   if (input.verifyStatus === "working") return "verify";
   if (input.remediateStatus === "working" || input.remediateStatus === "blocked") return "remediate";
   if (input.prioritizeStatus === "working") return "prioritize";
@@ -615,6 +627,7 @@ export function deriveMaraLiveState(input: {
   heldCount: number;
   executingCount: number;
   verifiedCount: number;
+  readyToSimulateCount?: number;
   prioritizeStatus: PhaseStatus;
   remediateStatus: PhaseStatus;
   verifyStatus: PhaseStatus;
@@ -689,6 +702,19 @@ export function deriveMaraLiveState(input: {
       headline: "Verifying",
       message: "The changes landed. I'm verifying the ServiceNow records now.",
       actions: ["watch_activity", "open_evidence"],
+      latestEventId,
+      updatedAt,
+    };
+  }
+
+  if ((input.readyToSimulateCount ?? 0) > 0) {
+    const count = input.readyToSimulateCount ?? 0;
+    return {
+      state: "prioritizing",
+      visualState: "inspecting",
+      headline: "Ready for simulation",
+      message: `${count} eligible ${count === 1 ? "record is" : "records are"} ready for governed simulation.`,
+      actions: ["open_remediation", "watch_activity"],
       latestEventId,
       updatedAt,
     };

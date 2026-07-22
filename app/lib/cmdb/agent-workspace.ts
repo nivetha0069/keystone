@@ -26,6 +26,7 @@ export type AgentEventDetailV1 = {
   staged_ci_id?: string;
   migration_run_id?: string;
   finding_id?: string;
+  review_decision_id?: string;
   strategy_id?: string;
   correlation_id?: string;
   simulation_correlation_id?: string;

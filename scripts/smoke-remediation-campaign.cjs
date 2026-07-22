@@ -211,6 +211,16 @@ const timeline = successful.map((item, index) => ({
     mapping_version: index === 1 ? "class-alias-v1" : undefined,
     retry_count: index === 1 ? 1 : 0 }),
 }));
+timeline.push(...successful.map((item, index) => ({
+  id: sysId(500 + index), seq: 100 + index, step: 5, name: "review deferred", recordName: item.name,
+  className: item.class_name, operation: "UPDATE", source: "Remediate", confidence: 0.95,
+  time: `2026-07-22 12:${String(index).padStart(2, "0")}:01`, status: "complete",
+  reasoning: JSON.stringify({ schema: "keystone.agent.v1", phase: "remediate", actor: "Remediate",
+    decision_source: "deterministic", action: "approval_review_deferred", status: "approval_required",
+    summary: "Review bound to simulation", migration_run_id: RUN, staged_ci_id: item.staged_ci_id,
+    finding_id: findings[index].id, review_decision_id: reviews[index].id,
+    simulation_correlation_id: `ks-sim-${item.staged_ci_id}`, simulation_fingerprint: fp(index + 1) }),
+})));
 timeline.push({
   id: sysId(450), seq: 90, step: 5, name: "simulation failed", recordName: plan.items[4].name,
   className: plan.items[4].class_name, operation: "ERROR", source: "Remediate", confidence: 0.95,
@@ -250,6 +260,14 @@ assert.equal(campaign.pendingRemediationReviewProposals(approvalSnapshot, {
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
   staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
 }).length, 0, "existing reviews make proposal preparation idempotent");
+const staleReviewTimeline = timeline.filter(event => {
+  const detail = JSON.parse(event.reasoning);
+  return detail.staged_ci_id !== successful[0].staged_ci_id || detail.action !== "approval_review_deferred";
+});
+assert.equal(campaign.pendingRemediationReviewProposals({ ...approvalSnapshot, timeline: staleReviewTimeline }, {
+  migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
+  staged_ci_ids: plan.items.map(item => item.staged_ci_id), limit: 20,
+}).some(item => item.staged_ci_id === successful[0].staged_ci_id), true, "a stale deferred review is reproposed for the latest simulation binding");
 
 const matchedInsertTimeline = timeline.map(event => {
   const detail = JSON.parse(event.reasoning);

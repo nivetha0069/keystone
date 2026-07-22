@@ -92,6 +92,22 @@ const structuredVerification = deriveRemediationWorkQueue({ cis: [ci], timeline:
 }] });
 assert.equal(structuredVerification.items[0]?.bucket, "verified", "structured per-CI Phase D JSON is lifecycle evidence, not a Mara summary");
 
+const structuredDeferredReview = deriveRemediationWorkQueue({ cis: [ci], timeline: [{
+  ...simulationEvent,
+  id: "ev-review-deferred",
+  seq: 11,
+  name: "Approved",
+  status: "complete",
+  reasoning: JSON.stringify({
+    action: "approval_review_deferred", status: "approval_required", migration_run_id: runId,
+    staged_ci_id: ci.id, finding_id: "finding-1", review_decision_id: "review-1",
+    simulation_correlation_id: "ks-simulate-current", simulation_fingerprint: "A".repeat(64),
+  }),
+}], findings: [{ id: "finding-1", number: "DWF0001136", stagedCiId: ci.id, recommendation: "Review simulation" }],
+  reviews: [{ id: "review-1", findingId: "finding-1", decision: "deferred", rationale: "Awaiting approval", policyApproved: false }],
+});
+assert.equal(structuredDeferredReview.items[0]?.bucket, "needs_approval", "structured deferred-review evidence must not inherit the Event Ledger approved type");
+
 const structuredSimulationBlocker = {
   ...simulationEvent,
   id: "ev-simulation-blocked",

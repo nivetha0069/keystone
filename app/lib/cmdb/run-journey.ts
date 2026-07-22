@@ -164,7 +164,9 @@ function buildRemediateChapter(view: WorkspaceViewState, beats: ActivityCard[], 
   const narration = pause
     ? pause.message
     : status === "waiting"
-      ? "Waiting for approved work to execute."
+      ? view.readyToSimulateCount > 0
+        ? `${plural(view.readyToSimulateCount, "record")} ready for governed simulation.`
+        : "Waiting for approved work to execute."
       : status === "working"
         ? "Approval received. I'm sending governed changes through IRE."
         : status === "complete"
@@ -224,6 +226,7 @@ function buildVerifyChapter(view: WorkspaceViewState, beats: ActivityCard[], isA
 function buildSummaryLine(view: WorkspaceViewState): string {
   const verified = view.queue.items.filter(item => item.bucket === "verified").length;
   const groups = view.workGroupCount;
+  if (view.readyToSimulateCount > 0) return `${plural(verified, "record")} verified · ${plural(view.readyToSimulateCount, "record")} ready to simulate.`;
   if (view.verifyStatus === "complete") return `${plural(verified, "record")} verified across ${plural(groups, "work group")}.`;
   if (view.requiresApproval) return `${view.approvalCount} awaiting approval · ${plural(groups, "work group")} ranked.`;
   if (view.remediateStatus === "working") return `${view.queue.items.filter(i => i.bucket === "needs_verification").length} executing · ${plural(groups, "work group")} ranked.`;

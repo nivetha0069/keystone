@@ -49,6 +49,12 @@ import type {
   RemediationFailureGroupsResult,
 } from "./lib/cmdb/remediation-campaign";
 import { recoverLatestCampaignPlan } from "./lib/cmdb/remediation-campaign-recovery";
+import type {
+  ApprovalPacketApprovalResult,
+  ApprovalPacketPlan,
+  ApprovalPacketStatus,
+  FrozenApprovalPacket,
+} from "./lib/cmdb/approval-packet";
 
 import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import {
@@ -116,6 +122,16 @@ type CampaignViewState = {
   restored?: boolean;
 };
 type CampaignPendingAction = "plan" | "failure-groups" | "simulate" | "retry" | "prepare-approval" | "approve" | "status";
+type ApprovalPacketPlanView = ApprovalPacketPlan & { approval_enabled?: boolean; demo_mode?: boolean };
+type FrozenApprovalPacketView = FrozenApprovalPacket & { approval_enabled?: boolean; demo_mode?: boolean };
+type ApprovalPacketViewState = {
+  plan?: ApprovalPacketPlanView;
+  packet?: FrozenApprovalPacketView;
+  approval?: ApprovalPacketApprovalResult;
+  status?: ApprovalPacketStatus;
+  restored?: boolean;
+};
+type ApprovalPacketPendingAction = "plan-packet" | "prepare-packet" | "approve-packet" | "packet-status";
 
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
@@ -1160,7 +1176,12 @@ function RemediateView(props: {
   const [campaignPending, setCampaignPending] = useState<CampaignPendingAction | null>(null);
   const [campaignError, setCampaignError] = useState("");
   const [manifestConfirmed, setManifestConfirmed] = useState(false);
+  const [approvalPacket, setApprovalPacket] = useState<ApprovalPacketViewState>({});
+  const [packetPending, setPacketPending] = useState<ApprovalPacketPendingAction | null>(null);
+  const [packetError, setPacketError] = useState("");
+  const [packetHashConfirmation, setPacketHashConfirmation] = useState("");
   const campaignRecoveryAttempted = useRef("");
+  const packetRecoveryAttempted = useRef("");
   const failureGroupsLoadedRun = useRef("");
   const demoFallback = !activeRunId && apiState === "demo";
 
@@ -1291,6 +1312,46 @@ function RemediateView(props: {
     }
   }, [campaign.plan, campaignPending, campaignRequestBody]);
 
+  const packetRequestBody = useCallback((includeFrozen = false) => {
+    const packet = approvalPacket.packet;
+    if (!includeFrozen || !packet?.packet_id || !packet.packet_hash) return { migration_run_id: activeRunId };
+    return {
+      migration_run_id: activeRunId,
+      packet_id: packet.packet_id,
+      packet_hash: packet.packet_hash,
+      child_manifest_ids: packet.children.map(child => child.manifest_id),
+      staged_ci_ids: packet.items.map(item => item.staged_ci_id),
+    };
+  }, [activeRunId, approvalPacket.packet]);
+
+  const refreshPacketStatus = useCallback(async (recover = false) => {
+    if (!activeRunId || packetPending === "packet-status") return;
+    setPacketPending("packet-status");
+    try {
+      const response = await fetch("/api/cmdb/remediation-campaign/packet-status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(packetRequestBody(Boolean(approvalPacket.packet))),
+      });
+      const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Packet status failed with HTTP ${response.status}.`);
+      setApprovalPacket(current => ({ ...current, status: payload as ApprovalPacketStatus, restored: recover || current.restored }));
+      setPacketError("");
+    } catch (error) {
+      setPacketError(error instanceof Error ? error.message : "Packet status refresh failed.");
+    } finally {
+      setPacketPending(null);
+    }
+  }, [activeRunId, approvalPacket.packet, packetPending, packetRequestBody]);
+
+  useEffect(() => {
+    const hasPacketEvidence = timeline.some(event => event.reasoning.includes("ks-packet:"));
+    if (!activeRunId || !hasPacketEvidence || approvalPacket.packet || packetPending || packetRecoveryAttempted.current === activeRunId) return;
+    packetRecoveryAttempted.current = activeRunId;
+    const timer = window.setTimeout(() => { void refreshPacketStatus(true); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeRunId, approvalPacket.packet, packetPending, refreshPacketStatus, timeline]);
+
   useEffect(() => {
     const monitoring = Boolean(workbench.approval?.success) && !["verified", "verification_failed", "execution_reconciliation_required", "execution_rejected_stale_simulation"].includes(lifecycle);
     if (!activeRunId || !monitoring) return;
@@ -1307,6 +1368,16 @@ function RemediateView(props: {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [activeRunId, campaign.plan, campaignStage, onRefresh, refreshCampaignStatus]);
+
+  const packetStage = approvalPacket.status?.stage ?? approvalPacket.approval?.stage ?? approvalPacket.packet?.stage ?? approvalPacket.plan?.stage;
+  useEffect(() => {
+    if (!activeRunId || !["approving", "executing", "verifying"].includes(packetStage ?? "")) return;
+    const timer = window.setInterval(() => {
+      void refreshPacketStatus();
+      void onRefresh();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [activeRunId, onRefresh, packetStage, refreshPacketStatus]);
 
   async function runIreAction(action: "simulate" | "approve", extra: Record<string, string> = {}) {
     if (!selectedCi) return;
@@ -1363,6 +1434,35 @@ function RemediateView(props: {
     });
   }
 
+  async function runPacketAction(action: "plan-packet" | "prepare-packet" | "approve-packet") {
+    if (!activeRunId || packetPending) return;
+    setPacketPending(action);
+    setPacketError("");
+    try {
+      const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(action === "approve-packet" ? packetRequestBody(true) : { migration_run_id: activeRunId }),
+      });
+      const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Approval packet ${action} failed with HTTP ${response.status}.`);
+      if (action === "plan-packet") {
+        setPacketHashConfirmation("");
+        setApprovalPacket({ plan: payload as ApprovalPacketPlanView });
+      } else if (action === "prepare-packet") {
+        setPacketHashConfirmation("");
+        setApprovalPacket(current => ({ ...current, packet: payload as FrozenApprovalPacketView, approval: undefined, status: undefined }));
+      } else {
+        setApprovalPacket(current => ({ ...current, approval: payload as ApprovalPacketApprovalResult }));
+      }
+      await onRefresh();
+    } catch (error) {
+      setPacketError(error instanceof Error ? error.message : `Approval packet ${action} failed.`);
+    } finally {
+      setPacketPending(null);
+    }
+  }
+
   async function runCampaignAction(action: "plan" | "simulate" | "retry" | "prepare-approval" | "approve", requestedSignature?: string) {
     if (!activeRunId || campaignPending) return;
     setCampaignPending(action);
@@ -1404,6 +1504,18 @@ function RemediateView(props: {
         {queue.buckets.map(bucket => <WorkQueueBucketCard key={bucket.id} bucket={bucket} selectedId={selectedCi?.id} onSelect={setSelectedCiId} />)}
       </div>
     </section>
+    <ApprovalPacketPanel
+      activeRunId={activeRunId}
+      packet={approvalPacket}
+      pending={packetPending}
+      error={packetError}
+      confirmation={packetHashConfirmation}
+      onConfirmation={setPacketHashConfirmation}
+      onPlan={() => void runPacketAction("plan-packet")}
+      onPrepare={() => void runPacketAction("prepare-packet")}
+      onApprove={() => void runPacketAction("approve-packet")}
+      onRefresh={() => void refreshPacketStatus()}
+    />
     <AgentCampaignPanel
       activeRunId={activeRunId}
       campaign={campaign}
@@ -1502,6 +1614,80 @@ function RemediateView(props: {
       </aside>
     </section>
   </div>;
+}
+
+function ApprovalPacketPanel(props: {
+  activeRunId: string;
+  packet: ApprovalPacketViewState;
+  pending: ApprovalPacketPendingAction | null;
+  error: string;
+  confirmation: string;
+  onConfirmation: (value: string) => void;
+  onPlan: () => void;
+  onPrepare: () => void;
+  onApprove: () => void;
+  onRefresh: () => void;
+}) {
+  const { activeRunId, packet, pending, error, confirmation, onConfirmation, onPlan, onPrepare, onApprove, onRefresh } = props;
+  const frozen = packet.packet;
+  const status = packet.status;
+  const plan = packet.plan;
+  const stage = status?.stage ?? packet.approval?.stage ?? frozen?.stage ?? plan?.stage ?? "planning";
+  const aggregate = status?.aggregate ?? packet.approval?.aggregate ?? frozen?.aggregate;
+  const packetHash = frozen?.packet_hash ?? status?.packet_hash;
+  const packetId = frozen?.packet_id ?? status?.packet_id ?? plan?.packet_id;
+  const children = frozen?.children ?? [];
+  const canApprove = Boolean(
+    frozen?.stage === "review_ready" &&
+    frozen.packet_hash &&
+    frozen.approval_enabled &&
+    confirmation.trim().toUpperCase() === frozen.packet_hash,
+  );
+
+  return <section className="panel approval-packet-panel">
+    <div className="panel-heading">
+      <div><span className="section-index">02</span><div><h2>Bounded Approval Packet</h2><p>One exact confirmation over up to five frozen 20-record manifests. ServiceNow still records one approval and Phase D chain per CI.</p></div></div>
+      <span className={`campaign-stage ${stage === "blocked" || stage === "expired" ? "blocked" : stage === "completed" ? "complete" : ""}`}>{stage.replaceAll("_", " ")}</span>
+    </div>
+    <div className="campaign-controls">
+      <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} />{pending === "plan-packet" ? "Planning packet…" : plan ? "Replan packet" : "Plan packet"}</button>
+      <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} />{pending === "prepare-packet" ? "Freezing children…" : "Prepare packet"}</button>
+      <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onRefresh}><Icon name="refresh" size={15} />{pending === "packet-status" ? "Reconstructing…" : "Refresh packet"}</button>
+    </div>
+    {!activeRunId && <div className="campaign-notice"><Icon name="shield" size={15} />Select a live migration run to plan a bounded approval packet.</div>}
+    {error && <div className="ire-error"><Icon name="x" size={15} />{error}</div>}
+    {packet.restored && <div className="campaign-notice"><Icon name="refresh" size={15} />Packet progress was reconstructed from exact ServiceNow approval and Phase D evidence.</div>}
+    {plan && <div className="packet-overview">
+      <div><small>PACKET ID</small><strong>{plan.packet_id}</strong></div>
+      <div><small>HOMOGENEOUS SCOPE</small><strong>{plan.class_name} · {plan.operation_family}</strong></div>
+      <div><small>PREPARABLE</small><strong>{plan.preparable_count} / {plan.max_items}</strong></div>
+      <div><small>CHILD MANIFESTS</small><strong>{plan.children.length} / {plan.max_children}</strong></div>
+    </div>}
+    {aggregate && <div className="campaign-summary packet-summary">
+      <div><small>TOTAL</small><strong>{aggregate.total}</strong></div>
+      <div><small>APPROVED</small><strong>{aggregate.approved}</strong></div>
+      <div><small>VERIFIED</small><strong>{aggregate.verified}</strong></div>
+      <div><small>BLOCKED</small><strong>{aggregate.blocked}</strong></div>
+      <div><small>EXCLUDED</small><strong>{aggregate.excluded}</strong></div>
+    </div>}
+    {frozen?.packet_hash && <div className="packet-freeze">
+      <div className="campaign-manifest-head"><div><span className="eyebrow accent">PARENT SHA-256 · {frozen.policy_version}</span><strong>{frozen.packet_hash}</strong></div><span>{frozen.items.length} records</span></div>
+      <div className="packet-risk-grid">
+        <div><small>OPERATIONS</small><strong>INSERT {frozen.aggregate.operations.INSERT} · UPDATE {frozen.aggregate.operations.UPDATE} · NO_CHANGE {frozen.aggregate.operations.NO_CHANGE}</strong></div>
+        <div><small>RISK</small><strong>critical {frozen.aggregate.risks.critical} · high {frozen.aggregate.risks.high} · medium {frozen.aggregate.risks.medium} · low {frozen.aggregate.risks.low} · unknown {frozen.aggregate.risks.unknown}</strong></div>
+        <div><small>EXPIRES</small><strong>{frozen.expires_at ? new Date(frozen.expires_at).toLocaleString() : "unavailable"}</strong></div>
+      </div>
+      <div className="packet-child-grid">{children.map(child => <div key={child.campaign_id}><small>CHILD {child.child_index}</small><strong>{child.campaign_id}</strong><span>{child.item_count} records · {child.operation_families.join(" / ")}</span><code>{child.manifest_id}</code></div>)}</div>
+      {frozen.samples.length > 0 && <div className="packet-evidence"><div className="campaign-list-head"><strong>Deterministic evidence sample</strong><span>{frozen.samples.length} records</span></div>{frozen.samples.map(sample => <div className="campaign-row" key={sample.staged_ci_id}><Icon name="database" size={14} /><div><strong>{sample.name}</strong><small>{sample.staged_ci_id} · {sample.class_name} · {sample.risk} · fingerprint {sample.simulation_fingerprint.slice(0, 16)}…</small></div><OperationPill value={sample.operation as Operation} /></div>)}</div>}
+      {frozen.exclusions.length > 0 && <div className="packet-evidence exclusions"><div className="campaign-list-head"><strong>Excluded / blocked</strong><span>{frozen.exclusions.length}</span></div>{frozen.exclusions.slice(0, 25).map(item => <div className="campaign-row" key={`${item.staged_ci_id}:${item.reason}`}><Icon name="x" size={14} /><div><strong>{item.name}</strong><small>{item.reason}</small></div></div>)}</div>}
+      <label className="packet-confirmation"><span>Enter the complete packet hash to confirm exactly {frozen.items.length} records across {frozen.children.length} child manifests.</span><input value={confirmation} onChange={event => onConfirmation(event.target.value)} spellCheck={false} autoComplete="off" placeholder={frozen.packet_hash} /></label>
+      {frozen.demo_mode && <div className="campaign-notice packet-demo-notice"><Icon name="spark" size={15} /><span><strong>Isolated demo authorization</strong> This exact fixture hash was authorized before launch. No ServiceNow or CMDB endpoint is reachable.</span><button className="ghost-button" onClick={() => onConfirmation(frozen.packet_hash || "")}>Use exact demo hash</button></div>}
+      {!frozen.approval_enabled && <div className="campaign-notice"><Icon name="shield" size={15} />Live fan-out is locked. Set the server-only CMDB_AGENT_APPROVAL_PACKET_HASH to this exact parent hash only after packet-specific authorization.</div>}
+      <button className="primary-button" disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} />{pending === "approve-packet" ? "Approving individually…" : `Approve ${frozen.items.length} individual chains`}</button>
+    </div>}
+    {status && <div className="packet-progress"><div className="campaign-list-head"><strong>ServiceNow-reconstructed progress</strong><span>{status.items.length} records</span></div>{status.children.map(child => <div className="packet-progress-row" key={child.campaign_id}><strong>{child.campaign_id}</strong><span>{child.verified} verified · {child.blocked} blocked · {child.item_count} total</span><code>{child.manifest_id}</code></div>)}</div>}
+    {packetId && !frozen && <div className="campaign-notice"><Icon name="shield" size={15} />Recovered packet {packetId}{packetHash ? ` · ${packetHash}` : ""}</div>}
+  </section>;
 }
 
 function AgentCampaignPanel(props: {
