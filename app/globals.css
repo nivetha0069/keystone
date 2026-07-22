@@ -1832,6 +1832,20 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .runs-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px; color: var(--muted); text-align: center; }
 .runs-empty strong { color: var(--ink); }
 
+/* Past summaries — retrospective recap cards. */
+.summaries-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.summary-card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; text-align: left; background: linear-gradient(135deg, rgba(199, 243, 77, .04), rgba(199, 243, 77, .01)); border: 1px solid var(--line); color: var(--ink); cursor: pointer; transition: border-color .18s ease, background .18s ease, transform .18s ease; width: 100%; }
+.summary-card:hover { border-color: rgba(199, 243, 77, .38); background: linear-gradient(135deg, rgba(199, 243, 77, .08), rgba(199, 243, 77, .02)); transform: translateY(-1px); }
+.summary-card:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.summary-card.active { border-color: rgba(199, 243, 77, .55); background: linear-gradient(135deg, rgba(199, 243, 77, .1), rgba(199, 243, 77, .02)); }
+.summary-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; min-width: 0; }
+.summary-card-top .eyebrow { color: var(--lime); font: 9px var(--mono); letter-spacing: .12em; }
+.summary-card-top strong { display: block; margin-top: 3px; font-size: 14px; overflow-wrap: anywhere; }
+.summary-card-time { color: var(--faint); font: 10px var(--mono); letter-spacing: .06em; white-space: nowrap; }
+.summary-card-body { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.summary-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--faint); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.summary-card-open { display: inline-flex; align-items: center; gap: 4px; color: var(--lime); }
+
 /* Dataset identity — the "which dataset am I looking at?" chip in the top bar. */
 .dataset-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .dataset-identity .eyebrow { font: 9px var(--mono); letter-spacing: .16em; color: var(--muted); text-transform: uppercase; display: block; }

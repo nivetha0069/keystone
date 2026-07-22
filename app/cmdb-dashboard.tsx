@@ -93,7 +93,7 @@ type AnalysisState = "idle" | "starting" | "started" | "error";
 type ResourceName = "cis" | "timeline" | "relationships" | "health" | "findings" | "reviews";
 type ResourceStatus = "connecting" | "live" | "unavailable" | "error";
 type ResourceState = Record<ResourceName, ResourceStatus>;
-type Section = "import" | "runs" | "workspace" | "approvals" | "evidence" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
+type Section = "import" | "runs" | "summaries" | "workspace" | "approvals" | "evidence" | "comprehend" | "live" | "hr" | "prioritize" | "remediate";
 type IreWorkbenchRecord = {
   simulation?: IreActionResponse;
   approval?: IreActionResponse;
@@ -801,6 +801,11 @@ export function CmdbDashboard() {
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
       {section === "runs" && <RunsQueueView
+        activeRunId={activeRunId}
+        onOpenRun={(entry) => openRun({ id: entry.id, label: entry.label })}
+        onNewImport={() => setSection("import")}
+      />}
+      {section === "summaries" && <PastSummariesView
         activeRunId={activeRunId}
         onOpenRun={(entry) => openRun({ id: entry.id, label: entry.label })}
         onNewImport={() => setSection("import")}
@@ -1728,6 +1733,74 @@ function RunsQueueView(props: {
       <p>Import a dataset or paste a run sys_id in Comprehend to add one.</p>
     </div>}
   </div>;
+}
+
+function PastSummariesView(props: {
+  activeRunId: string;
+  onOpenRun: (entry: RegistryEntry) => void;
+  onNewImport: () => void;
+}) {
+  const { activeRunId, onOpenRun, onNewImport } = props;
+  const [entries, setEntries] = useState<RegistryEntry[]>(() => (typeof window === "undefined" ? [] : readRegistry()));
+
+  useEffect(() => {
+    setEntries(readRegistry());
+  }, []);
+
+  const sorted = [...entries].sort((a, b) => (b.touchedAt || "").localeCompare(a.touchedAt || ""));
+
+  return <div className="page summaries-page">
+    <section className="page-heading">
+      <div>
+        <span className="eyebrow accent">PAST SUMMARIES</span>
+        <h1>Recap the runs you&apos;ve finished.</h1>
+        <p>A quick read on every run this browser has touched. Open one to see the full summary.</p>
+      </div>
+      <div className="runs-page-actions">
+        <button className="primary-button" onClick={onNewImport}>
+          <Icon name="upload" size={15} /> New import
+        </button>
+      </div>
+    </section>
+
+    {sorted.length === 0
+      ? <div className="runs-empty">
+          <Icon name="graph" size={22} />
+          <strong>No summaries yet.</strong>
+          <p>Import a dataset to record its first summary here.</p>
+        </div>
+      : <ul className="summaries-list">
+          {sorted.map(entry => <li key={entry.id}>
+            <button
+              type="button"
+              className={"summary-card" + (entry.id === activeRunId ? " active" : "")}
+              onClick={() => onOpenRun(entry)}
+            >
+              <div className="summary-card-top">
+                <div>
+                  <span className="eyebrow">{entry.sourceSystem || "UNKNOWN SOURCE"}</span>
+                  <strong>{entry.label}</strong>
+                </div>
+                <span className="summary-card-time">{formatSummaryTouched(entry.touchedAt)}</span>
+              </div>
+              <p className="summary-card-body">
+                {entry.summary || "No summary recorded — open to load evidence from ServiceNow."}
+              </p>
+              <div className="summary-card-foot">
+                <span>{entry.runNumber || entry.id.slice(0, 8)}</span>
+                <span className="summary-card-open"><Icon name="arrow" size={13} /> Open</span>
+              </div>
+            </button>
+          </li>)}
+        </ul>}
+  </div>;
+}
+
+function formatSummaryTouched(value: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function RunsQueueBucket(props: {

@@ -7,7 +7,7 @@
 import type { IconName } from "../../icons";
 
 export type NavSectionId =
-  | "import" | "runs" | "workspace" | "approvals" | "comprehend"
+  | "import" | "runs" | "summaries" | "workspace" | "approvals" | "comprehend"
   | "prioritize" | "remediate" | "verify" | "ai-usage";
 
 export type NavItem = {
@@ -25,6 +25,7 @@ export type NavItem = {
 export const navigationItems: NavItem[] = [
   { id: "import",      label: "Import",           detail: "Bring data in",           icon: "upload",   requiresRun: false },
   { id: "runs",        label: "Runs queue",       detail: "Switch between runs",     icon: "clock",    requiresRun: false },
+  { id: "summaries",   label: "Past summaries",   detail: "Recap of finished runs",  icon: "graph",    requiresRun: false },
   { id: "workspace",   label: "Agent Workspace",  detail: "Watch the run progress",  icon: "spark",    requiresRun: true },
   { id: "approvals",   label: "Approvals",        detail: "Authorize governed work", icon: "shield",   requiresRun: true },
   { id: "comprehend",  label: "Comprehend",       detail: "Understand staged data",  icon: "search",   requiresRun: true, deepCpr: true },
@@ -36,7 +37,7 @@ export const navigationItems: NavItem[] = [
 
 /** Ordered list of dashboard sections used by prev/next controls. */
 export const navigationOrder: NavSectionId[] = [
-  "import", "runs", "workspace", "approvals", "comprehend", "prioritize", "remediate", "verify",
+  "import", "runs", "summaries", "workspace", "approvals", "comprehend", "prioritize", "remediate", "verify",
 ];
 
 export function getNavItem(id: NavSectionId) {
