@@ -30,6 +30,15 @@ async function main() {
 const RUN = "e0ac4df32b82871060aefba6b891bf5b";
 const fp = index => index.toString(16).padStart(64, "A").slice(-64).toUpperCase();
 const sysId = index => index.toString(16).padStart(32, "0");
+const failureEvent = (item, seq, errorCode, summary, retryCount) => ({
+  id: sysId(1600 + seq), seq, step: 5, name: "simulation failed", recordName: item.name,
+  className: item.className, operation: "ERROR", source: "Remediate", confidence: 0.9,
+  time: `2026-07-22 11:0${seq}:00`, status: "error",
+  reasoning: JSON.stringify({ schema: "keystone.agent.v1", phase: "remediate", actor: "Remediate",
+    decision_source: "deterministic", action: "ire_simulation_failed", status: "failed", summary,
+    migration_run_id: RUN, staged_ci_id: item.stagedCiId, error_code: errorCode,
+    retry_count: retryCount, max_retries: 1 }),
+});
 const cis = Array.from({ length: 22 }, (_, index) => ({
   id: sysId(index + 1), stagedCiId: sysId(index + 1), migrationRunId: RUN,
   name: `server-${String(index + 1).padStart(2, "0")}`, className: "cmdb_ci_linux_server",
@@ -105,6 +114,68 @@ assert.equal(transportSimulation.items.length, 20, "halted simulations retain on
 assert.ok(transportCalls <= 3, "systemic transport failure halts after the concurrency window");
 assert.equal(transportSimulation.halted.code, "UPSTREAM_UNREACHABLE");
 assert.equal(transportSimulation.items[0].error_code, "UPSTREAM_UNREACHABLE");
+
+const aliasCi = {
+  ...cis[0], id: sysId(50), stagedCiId: sysId(50), name: "retry-linux-alias",
+  className: "Linux Srv", operation: "ERROR", status: "live",
+};
+const missingIdentityCi = {
+  ...cis[1], id: sysId(51), stagedCiId: sysId(51), name: "blocked-no-identity",
+  className: "cmdb_ci_server", operation: "INSERT_AS_INCOMPLETE", status: "incomplete",
+};
+const failureFindings = [
+  { id: sysId(52), number: "DWF52", stagedCiId: aliasCi.id, type: "class_alias", severity: "high", recommendation: "Invalid proposed class Linux Srv; normalize the known class alias." },
+  { id: sysId(53), number: "DWF53", stagedCiId: missingIdentityCi.id, type: "identity", severity: "critical", recommendation: "Missing serial_number and FQDN; no identifier is available." },
+];
+const failureTimeline = [
+  failureEvent(aliasCi, 1, "INVALID_CLASS", "Invalid proposed class Linux Srv", 0),
+  failureEvent(missingIdentityCi, 2, "MISSING_IDENTIFIER", "Missing serial_number and FQDN; no identifier is available", 0),
+];
+const failureSnapshot = { ...base, cis: [aliasCi, missingIdentityCi], timeline: failureTimeline, findings: failureFindings };
+const failureGroups = campaign.remediationFailureGroups(failureSnapshot);
+assert.equal(failureGroups.groups.length, 2, "failures are exposed as deterministic groups");
+const retryGroup = failureGroups.groups.find(group => group.category === "class_alias");
+const blockedGroup = failureGroups.groups.find(group => group.category === "missing_identifier");
+assert.equal(retryGroup.state, "eligible");
+assert.equal(retryGroup.strategy_id, campaign.CAMPAIGN_RETRY_STRATEGY_ID);
+assert.equal(retryGroup.mapping_version, campaign.CAMPAIGN_RETRY_MAPPING_VERSION);
+assert.equal(blockedGroup.state, "blocked");
+assert.match(blockedGroup.blocker, /identity evidence/i);
+const retryPlan = campaign.planRemediationCampaign(failureSnapshot, retryGroup.work_group_signature, 20);
+let retryCalls = 0;
+const retryResult = await campaign.retryRemediationCampaign(failureSnapshot, {
+  migration_run_id: RUN, work_group_signature: retryPlan.work_group_signature, campaign_id: retryPlan.campaign_id,
+  staged_ci_ids: retryPlan.items.map(item => item.staged_ci_id), limit: 20,
+}, async (_item, request) => {
+  retryCalls++;
+  assert.match(request.correlation_id, new RegExp(`^ks-campaign:${retryPlan.campaign_id}:retry:`));
+  assert.match(request.idempotency_key, /:retry:.*:1$/);
+  return {
+    success: true, action: "simulate", state: "simulated_pending_approval", status: "new_ci",
+    simulation_correlation_id: request.correlation_id, simulation_fingerprint: fp(52),
+    strategy_id: campaign.CAMPAIGN_RETRY_STRATEGY_ID,
+    mapping_version: campaign.CAMPAIGN_RETRY_MAPPING_VERSION,
+    retry_count: 1, max_retries: 1,
+  };
+});
+assert.equal(retryCalls, 1, "retry groups execute sequentially and only for eligible records");
+assert.equal(retryResult.summary.succeeded, 1);
+assert.equal(retryResult.items[0].retry_count, 1);
+const exhaustedSnapshot = { ...failureSnapshot, timeline: [
+  failureEvent(aliasCi, 3, "INVALID_CLASS", "Alias retry failed", 1),
+  failureTimeline[1],
+] };
+const exhausted = campaign.remediationFailureGroups(exhaustedSnapshot).groups.find(group => group.category === "class_alias");
+assert.equal(exhausted.state, "exhausted", "one persisted retry exhausts the deterministic budget");
+let exhaustedCalls = 0;
+const exhaustedPlan = campaign.planRemediationCampaign(exhaustedSnapshot, exhausted.work_group_signature, 20);
+const exhaustedResult = await campaign.retryRemediationCampaign(exhaustedSnapshot, {
+  migration_run_id: RUN, work_group_signature: exhaustedPlan.work_group_signature, campaign_id: exhaustedPlan.campaign_id,
+  staged_ci_ids: exhaustedPlan.items.map(item => item.staged_ci_id), limit: 20,
+}, async () => { exhaustedCalls++; throw new Error("must not be called"); });
+assert.equal(exhaustedCalls, 0);
+assert.equal(exhaustedResult.stage, "blocked");
+assert.equal(exhaustedResult.items[0].error_code, "RETRY_LIMIT_REACHED");
 
 const successful = plan.items.filter(item => item.staged_ci_id !== plan.items[4].staged_ci_id);
 const findings = successful.map((item, index) => ({
@@ -345,6 +416,8 @@ assert.match(route, /"identity_evidence"/);
 assert.match(route, /"source_identifier"/);
 assert.match(route, /"policy_version"/);
 assert.match(route, /invokeCampaignProposal/);
+assert.match(route, /"failure-groups"/);
+assert.match(route, /retryRemediationCampaign/);
 assert.match(route, /loadCampaignSnapshot\(selection\.migration_run_id\)/, "proposal preparation reloads authoritative ServiceNow evidence");
 assert.equal(/operation: item\.operation/.test(route), false, "campaign route never forwards a browser operation");
 
@@ -355,6 +428,9 @@ assert.match(dashboard, /This manifest will create/);
 assert.match(dashboard, /authoritative unmatched-identity evidence/);
 assert.match(dashboard, /recoverLatestCampaignPlan/);
 assert.match(dashboard, /Campaign progress restored from persisted ServiceNow/);
+assert.match(dashboard, /Deterministic failure groups/);
+assert.match(dashboard, /Retry evidence/);
+assert.match(dashboard, /runCampaignAction\("retry"\)/);
 assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashboard), false, "UI never triggers Execute or Verify");
 
 console.log("remediation campaign smoke passed");

@@ -4,17 +4,19 @@ import {
   pendingRemediationReviewProposals,
   planRemediationCampaign,
   prepareRemediationApprovalManifest,
+  remediationFailureGroups,
   remediationCampaignStatus,
+  retryRemediationCampaign,
   simulateRemediationCampaign,
   type CampaignSelection,
 } from "../../../../lib/cmdb/remediation-campaign";
 import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from "../../../../lib/cmdb/server-campaign-bridge";
 
-const ACTIONS = new Set(["plan", "simulate", "prepare-approval", "approve", "status"]);
+const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
   "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
-  "source_identifier", "strategy", "strategy_id", "values",
+  "retry_count", "max_retries", "source_identifier", "strategy", "strategy_id", "values",
 ]);
 
 export async function GET() {
@@ -35,6 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ action
         approval_enabled: process.env.CMDB_AGENT_BATCH_APPROVAL_ENABLED === "true",
       });
     }
+    if (action === "failure-groups") return Response.json(remediationFailureGroups(snapshot));
     if (!selection.work_group_signature || !selection.campaign_id || !selection.staged_ci_ids?.length) {
       throw campaignError("INVALID_REQUEST", "Campaign id, work-group signature, and staged CI identifiers are required.");
     }
@@ -46,6 +49,14 @@ export async function POST(request: Request, context: { params: Promise<{ action
         idempotency_key: generated.idempotency_key,
       }));
       return Response.json(result);
+    }
+    if (action === "retry") {
+      return Response.json(await retryRemediationCampaign(snapshot, selection, (item, generated) => invokeCampaignIre("simulate", {
+        migration_run_id: selection.migration_run_id,
+        staged_ci_id: item.staged_ci_id,
+        correlation_id: generated.correlation_id,
+        idempotency_key: generated.idempotency_key,
+      })));
     }
     if (action === "prepare-approval") {
       const pending = pendingRemediationReviewProposals(snapshot, selection);

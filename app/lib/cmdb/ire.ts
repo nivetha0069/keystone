@@ -143,6 +143,14 @@ export type IreActionResponse = {
   evidence?: string[];
   verification_summary?: string;
   playback_event_ids?: ServiceNowSysId[];
+  strategy_id?: string;
+  mapping_version?: string;
+  source_class?: string;
+  target_class?: string;
+  work_group_signature?: string;
+  retry_count?: number;
+  max_retries?: number;
+  decision_source?: string;
   error?: IreActionError;
 };
 
@@ -244,6 +252,14 @@ export function normalizeIreActionResponse(action: IreAction, payload: unknown):
     evidence: stringArray(row.evidence),
     verification_summary: stringValue(row.verification_summary ?? row.verificationSummary),
     playback_event_ids: stringArray(row.playback_event_ids ?? row.playbackEventIds),
+    strategy_id: stringValue(row.strategy_id ?? row.strategyId),
+    mapping_version: stringValue(row.mapping_version ?? row.mappingVersion),
+    source_class: stringValue(row.source_class ?? row.sourceClass),
+    target_class: stringValue(row.target_class ?? row.targetClass),
+    work_group_signature: stringValue(row.work_group_signature ?? row.workGroupSignature),
+    retry_count: numberValue(row.retry_count ?? row.retryCount),
+    max_retries: numberValue(row.max_retries ?? row.maxRetries),
+    decision_source: stringValue(row.decision_source ?? row.decisionSource),
     error: errorObject(row.error),
   };
 }
@@ -338,6 +354,12 @@ function stringValue(value: unknown) {
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.flatMap(item => stringValue(item) ?? []);
+}
+
+function numberValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function actionFrom(value: unknown, fallback: IreAction): IreAction {

@@ -112,7 +112,10 @@ The local campaign smoke proves deterministic ordering and IDs, deduplication,
 the 20-record cap, homogeneous selection, stable manifest hashing, concurrency
 three, partial continuation, stale-manifest rejection, sequential approval,
 duplicate-safe correlations, refresh reconstruction, and direct Execute/Verify
-route exclusion.
+route exclusion. It also proves deterministic failure grouping, one eligible
+class-alias group, one missing-identity blocker, exact `class-alias-v1` evidence,
+sequential retry correlation/idempotency, and refusal after the one-retry budget
+is exhausted.
 
 Milestone 5 and Milestone 6 are complete. Milestone 7 is partially delivered
 through this bounded campaign loop. A one-item UPDATE campaign completed one
@@ -125,8 +128,15 @@ The bounded INSERT acceptance then planned and simulated five records from run
 `065821a42b1e835060aefba6b891bf53`. All five returned authoritative unmatched
 INSERT results and froze manifest
 `DF250504D415F29F812520E483858B899AE791D4034909EFA5831F2706BE860C`
-for campaign `E13502447BB1861877644F6B`, with zero exclusions. No grouped INSERT
-approval was sent and the server-only approval gate remained closed.
+for campaign `E13502447BB1861877644F6B`, with zero exclusions. After explicit
+authorization, the campaign submitted one individual approval per item; each
+Phase D continuation performed at most one server-owned IRE INSERT and one
+correlated Verify. All five verified against distinct `cmdb_ci_linux_server`
+targets: `388d7b64e0d20b501135ca100a1c0a0e`,
+`237db764e7d20b50a7a91805e5735765`,
+`677db764b4d20b5041765485f0f4108f`,
+`ab7db7643cd20b5086b23c13099755ba`, and
+`277db764b1d20b5021e447f8414017ab`.
 
 ## CPR End-to-End Handoff Repair
 

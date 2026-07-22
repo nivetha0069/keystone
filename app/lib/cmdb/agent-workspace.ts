@@ -46,6 +46,7 @@ export type AgentEventDetailV1 = {
   simulation_matched_ci?: string;
   retry_count?: number;
   max_retries?: number;
+  error_code?: string;
   target_ci_sys_id?: string;
   baseline_score?: number;
   verified_score?: number;
