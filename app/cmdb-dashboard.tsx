@@ -771,7 +771,7 @@ export function CmdbDashboard() {
             <path d="M6 17.2 Q 12 20.6 18 17.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" opacity=".6" />
           </svg>
         </span>
-        <div className="brand-copy"><strong>CMDB</strong><small>MODERNIZATION CONTROL</small></div>
+        <div className="brand-copy"><strong>Keystone</strong></div>
         <button
           type="button"
           className="sidebar-collapse"
