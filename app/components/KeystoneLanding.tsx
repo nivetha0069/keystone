@@ -95,7 +95,7 @@ export default function KeystoneLanding() {
         </div>
 
         <h1 className="landing-hero-title">
-          Governed CMDB<br />Migration
+          Keystone
         </h1>
         <p className="landing-hero-sub">
           Move infrastructure data into your ServiceNow CMDB without losing control.
@@ -106,15 +106,6 @@ export default function KeystoneLanding() {
           <Link href="/control-plane" className="primary-button" style={{ minHeight: 48, padding: "0 28px", fontSize: 13 }}>
             Open Control Plane →
           </Link>
-          <a
-            href="https://ven07639.service-now.com/x_kest_dotwalkers_keystone_outcome.do"
-            target="_blank"
-            rel="noreferrer"
-            className="ghost-button"
-            style={{ height: 48 }}
-          >
-            ServiceNow Dashboard ↗
-          </a>
         </div>
       </section>
 
