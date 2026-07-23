@@ -551,7 +551,7 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 
 /* CI-scoped evidence card — replaces the old .queue-evidence for the
    selected staged CI. Run-level Mara summaries live in .run-summary-*. */
-.ci-evidence-card { margin-top: 12px; padding: 12px 13px; background: #0d100d; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.ci-evidence-card { margin-top: 12px; padding: 12px 13px; background: #0d100d; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .ci-evidence-card.ci-scope-live { border-color: rgba(89, 197, 139, .35); box-shadow: inset 3px 0 var(--green); }
 .ci-evidence-card.ci-scope-strategy-error { border-color: rgba(255, 101, 66, .38); box-shadow: inset 3px 0 var(--coral); }
 .ci-evidence-card.ci-scope-execution-error { border-color: rgba(232, 178, 61, .42); box-shadow: inset 3px 0 var(--amber); }
@@ -568,9 +568,9 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .ci-evidence-head { display: flex; flex-direction: column; gap: 3px; }
 .ci-evidence-scope { font: 9px var(--mono); letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
 .ci-evidence-head strong { font-size: 12px; color: var(--ink); }
-.ci-evidence-message { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+.ci-evidence-message { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; }
 .ci-evidence-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.ci-evidence-chips code { padding: 4px 6px; color: var(--lime); background: rgba(199, 243, 77, .055); border: 1px solid rgba(199, 243, 77, .16); font: 9px var(--mono); }
+.ci-evidence-chips code { padding: 4px 6px; color: var(--lime); background: rgba(199, 243, 77, .055); border: 1px solid rgba(199, 243, 77, .16); font: 9px var(--mono); min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .ci-evidence-details { margin: 4px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .ci-evidence-details > div { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, .015); }
 .ci-evidence-details dt { font: 9px var(--mono); letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
