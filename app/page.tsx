@@ -1,12 +1,12 @@
-import type { Metadata } from "next";
-import { CmdbDashboard } from "./cmdb-dashboard";
+import { redirect } from "next/navigation";
+import KeystoneLanding from "./components/KeystoneLanding";
 
-export const metadata: Metadata = {
-  title: "CMDB Modernization Control Plane",
-  description:
-    "Comprehend, prioritize, and remediate CMDB modernization runs with IRE-governed writeback.",
-};
-
-export default function Home() {
-  return <CmdbDashboard />;
+export default async function Home(props: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const searchParams = await props.searchParams;
+  const run = searchParams?.run;
+  const runValue = Array.isArray(run) ? run[0] : run;
+  if (runValue) {
+    redirect(`/control-plane?run=${encodeURIComponent(runValue)}`);
+  }
+  return <KeystoneLanding />;
 }
