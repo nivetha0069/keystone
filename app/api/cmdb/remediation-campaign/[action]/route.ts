@@ -25,9 +25,14 @@ import {
   authorizeApprovalPacket,
   consumeApprovalPacketAuthorization,
 } from "../../../../lib/cmdb/approval-packet-authority";
+import {
+  assertHealthyAutonomousPacket,
+  MARA_AUTONOMOUS_ACKNOWLEDGEMENT,
+  MARA_AUTONOMOUS_POLICY,
+} from "../../../../lib/cmdb/mara-autonomy";
 import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from "../../../../lib/cmdb/server-campaign-bridge";
 
-const ACTIONS = new Set(["plan", "failure-groups", "simulate", "simulate-all", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "authorize-packet", "approve-packet", "packet-status"]);
+const ACTIONS = new Set(["plan", "failure-groups", "simulate", "simulate-all", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "authorize-packet", "approve-packet", "autonomous-packet", "packet-status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
   "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
@@ -162,6 +167,68 @@ async function handlePacketAction(action: string, incoming: Record<string, unkno
       demo_mode: packetDemoMode(),
     });
   }
+  if (action === "autonomous-packet") {
+    if (!maraAutonomousCommitEnabled()) {
+      return Response.json({
+        error: "Mara autonomous CMDB commits are disabled. Set the server-only CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED flag to enable them.",
+        code: "MARA_AUTONOMY_DISABLED",
+      }, { status: 403 });
+    }
+    if (incoming.operator_armed !== true || incoming.policy_acknowledgement !== MARA_AUTONOMOUS_ACKNOWLEDGEMENT) {
+      throw campaignError("MARA_AUTONOMY_NOT_ARMED", "The operator must explicitly arm the healthy-INSERT autonomy policy.");
+    }
+    const plan = planApprovalPacket(snapshot);
+    const pending = pendingApprovalPacketProposals(snapshot);
+    for (const item of pending) {
+      const response = await invokeCampaignProposal({
+        migration_run_id: selection.migration_run_id,
+        staged_ci_id: item.staged_ci_id,
+        finding_id: item.finding_id,
+        simulation_correlation_id: item.simulation_correlation_id,
+        simulation_fingerprint: item.simulation_fingerprint,
+        correlation_id: `ks-mara:${plan.packet_id}:prepare:${item.staged_ci_id}`,
+        idempotency_key: `keystone:mara:${plan.packet_id}:prepare:${item.staged_ci_id}`,
+      });
+      if (!response.success && systemicProposalFailure(response.error?.code)) break;
+    }
+    snapshot = pending.length ? await loadCampaignSnapshot(selection.migration_run_id) : snapshot;
+    const packet = prepareApprovalPacket(snapshot, selection);
+    assertHealthyAutonomousPacket(packet);
+    const exactSelection: ApprovalPacketSelection = {
+      migration_run_id: packet.migration_run_id,
+      packet_id: packet.packet_id,
+      packet_hash: packet.packet_hash,
+      child_manifest_ids: packet.children.map(child => child.manifest_id),
+      staged_ci_ids: packet.items.map(item => item.staged_ci_id),
+    };
+    authorizeApprovalPacket({
+      migration_run_id: packet.migration_run_id,
+      packet_id: packet.packet_id!,
+      packet_hash: packet.packet_hash!,
+      expires_at: packet.expires_at!,
+    });
+    if (!consumePacketAuthorization(packet)) {
+      throw campaignError("MARA_AUTONOMY_AUTHORIZATION_FAILED", "The exact server-recomputed packet capability could not be consumed.");
+    }
+    const approval = await approveApprovalPacket(snapshot, exactSelection, (item, generated) => invokeCampaignIre("approve", {
+      migration_run_id: exactSelection.migration_run_id,
+      staged_ci_id: item.staged_ci_id,
+      finding_id: item.finding_id,
+      review_decision_id: item.review_decision_id,
+      simulation_correlation_id: item.simulation_correlation_id,
+      simulation_fingerprint: item.simulation_fingerprint,
+      correlation_id: generated.correlation_id,
+      idempotency_key: generated.idempotency_key,
+    }), () => loadCampaignSnapshot(exactSelection.migration_run_id));
+    return Response.json({
+      success: approval.success,
+      stage: approval.stage,
+      autonomous: true,
+      autonomy_policy: MARA_AUTONOMOUS_POLICY,
+      packet: { ...packet, approval_enabled: false, demo_mode: packetDemoMode() },
+      approval,
+    });
+  }
   if (action === "packet-status") {
     if (!selection.packet_id || !selection.packet_hash) {
       selection = recoverLatestApprovalPacketSelection(snapshot) ?? selection;
@@ -294,6 +361,10 @@ function packetDemoMode() {
     process.env.CMDB_REMEDIATE_URL,
   ].filter((value): value is string => Boolean(value));
   return endpoints.length > 0 && endpoints.every(loopbackUrl);
+}
+
+function maraAutonomousCommitEnabled() {
+  return process.env.CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED === "true" || packetDemoMode();
 }
 
 function loopbackUrl(value: string) {

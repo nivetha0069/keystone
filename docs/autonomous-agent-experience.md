@@ -10,7 +10,7 @@ When a run begins:
 
 1. Comprehend reviews the staged estate.
 2. Its LLM planner chooses specialist tools.
-3. Router, Atlas, Scout, Weaver, Sentry, and Ledger exchange observations through the Event Ledger.
+3. Router, Atlas, Scout, Weaver, and Sentry exchange observations with Mara through the Event Ledger.
 4. Safe read-only work continues without user clicks.
 5. Mara observes the completed evidence, groups gaps, investigates likely root causes, and chooses the next safe agent handoff.
 6. Non-mutating investigation and IRE simulation may continue autonomously.
@@ -114,7 +114,7 @@ The Script Include must reject unknown actions, arbitrary table names, browser-s
 
 ## Persisted Activity Contract
 
-The frontend reads Mara through the same run-scoped ServiceNow bridge and Event Ledger used by the other agents.
+The frontend reads Mara through the same run-scoped ServiceNow bridge and Event Ledger used by the other agents. Mara is the supervisor; Router, Atlas, Scout, Weaver, and Sentry are reasoning subagents. Ledger is shared audit memory, and IRE is the governed execution engine rather than another agent.
 
 Recommended actors:
 

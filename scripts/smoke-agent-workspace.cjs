@@ -22,10 +22,44 @@ require.extensions[".ts"] = function loadTypeScript(module, filename) {
 };
 
 const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
+const { deriveHealthOpportunity } = require("../app/lib/cmdb/health-opportunity.ts");
 const { deriveAgentWorkspaceSnapshot } = require("../app/lib/cmdb/agent-workspace.ts");
 const { deriveWorkspaceViewState, hasCprHandoffGap } = require("../app/lib/cmdb/workspace-view-state.ts");
 const { deriveDeferredPresentation, deriveRunJourney } = require("../app/lib/cmdb/run-journey.ts");
 const { sanitizeIreRequest } = require("../app/api/cmdb/ire/[action]/route.ts");
+
+const healthFix = (id, rank, impact) => ({
+  id,
+  rank,
+  impact,
+  severity: "medium",
+  title: id,
+  tool: "Scout",
+  description: `${id} recommendation`,
+  affected: 1,
+});
+const maximumHealth = deriveHealthOpportunity(100, [
+  healthFix("first", 1, 8),
+  healthFix("second", 2, 4),
+]);
+assert.equal(maximumHealth.atMaximum, true, "100% health must be recognized as maximum");
+assert.equal(maximumHealth.availableLift, 0, "100% health has no available numerical lift");
+assert.deepEqual(maximumHealth.items.map(item => item.displayedLift), [0, 0], "risk recommendations must not claim lift above 100%");
+
+const cappedHealth = deriveHealthOpportunity(95, [
+  healthFix("second", 2, 4),
+  healthFix("first", 1, 3),
+  healthFix("third", 3, 10),
+]);
+assert.deepEqual(cappedHealth.items.map(item => item.fix.id), ["first", "second", "third"], "lift allocation must follow deterministic rank order");
+assert.deepEqual(cappedHealth.items.map(item => item.displayedLift), [3, 2, 0], "ranked lift must be capped to remaining headroom");
+assert.equal(cappedHealth.availableLift, 5);
+assert.ok(cappedHealth.items.every(item => item.projectedScore <= 100), "no recommendation may project health above 100%");
+
+assert.deepEqual(deriveHealthOpportunity(72, []).items, [], "empty recommendations must render safely");
+assert.equal(deriveHealthOpportunity(140, [healthFix("high", 1, 5)]).currentScore, 100, "out-of-range high scores must clamp to 100");
+assert.equal(deriveHealthOpportunity(-20, [healthFix("low", 1, -4)]).currentScore, 0, "out-of-range low scores must clamp to zero");
+assert.equal(deriveHealthOpportunity(Number.NaN, [healthFix("invalid", 1, Number.NaN)]).availableLift, 0, "invalid score and impact values must render safely");
 
 const runId = "e0ac4df32b82871060aefba6b891bf5b";
 const cis = [
@@ -169,6 +203,18 @@ assert.match(workspaceSource, /ServiceNow was not changed/, "the defer route mus
 assert.match(workspaceSource, /MARA&amp;apos;S VERIFICATION SUMMARY|MARA&apos;S VERIFICATION SUMMARY/, "Verify must expose a durable Mara summary");
 assert.match(workspaceSource, /ServiceNow destination tables/, "Agent Workspace summary must expose destination tables");
 assert.match(workspaceSource, /SERVICENOW TABLE/, "verified groups must label the exact target table clearly");
+
+const dashboardSource = fs.readFileSync(path.join(root, "app", "cmdb-dashboard.tsx"), "utf8");
+assert.match(dashboardSource, /HEALTH AT MAXIMUM/, "Prioritize must replace impossible lift with maximum-health language");
+assert.match(dashboardSource, /RISK REDUCTION/, "recommendations at maximum health must be labeled as risk reduction");
+assert.match(dashboardSource, /MAINTAIN 100%/, "Prioritize and Remediate must describe the truthful maximum-health effect");
+assert.match(dashboardSource, /deriveHealthOpportunity\(health\.score, health\.fixes\)/, "Prioritize and Remediate must share the capped health-opportunity derivation");
+assert.match(dashboardSource, /Mara and her subagents/, "Comprehend must present Mara as the specialist supervisor");
+assert.match(dashboardSource, /Recorded subagent handoffs/, "Comprehend must expose evidence-backed agent handoffs");
+assert.match(dashboardSource, /Shared audit memory/, "Ledger must be presented as shared audit memory");
+assert.match(dashboardSource, /Governed execution engine/, "IRE must be presented as an execution service");
+assert.doesNotMatch(dashboardSource, /name:\s*"Ledger",\s*role:/, "Ledger is not a reasoning subagent");
+assert.doesNotMatch(dashboardSource, /name:\s*"IRE",\s*role:/, "IRE is not a reasoning subagent");
 
 const execute = sanitizeIreRequest("execute", {
   migration_run_id: runId,

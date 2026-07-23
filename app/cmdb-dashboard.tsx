@@ -40,6 +40,7 @@ import {
   type WorkQueueSummary,
 } from "./lib/cmdb/work-queue";
 import { deriveCorrelatedVerifiedOutcomes, summarizeServiceNowDestinations } from "./lib/cmdb/terminal-outcomes";
+import { deriveHealthOpportunity } from "./lib/cmdb/health-opportunity";
 import type {
   RemediationApprovalManifest,
   RemediationCampaignApprovalResult,
@@ -58,7 +59,7 @@ import type {
   FrozenApprovalPacket,
 } from "./lib/cmdb/approval-packet";
 
-import { normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
+import { buildMaraReasoningSteps, normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
 import {
   buildPlaybackTimeline,
   derivePlaybackNodeStates,
@@ -135,6 +136,15 @@ type ApprovalPacketViewState = {
   restored?: boolean;
 };
 type ApprovalPacketPendingAction = "plan-packet" | "prepare-packet" | "authorize-packet" | "approve-packet" | "packet-status";
+type MaraAutonomyStage = "idle" | "simulating" | "preparing" | "committing" | "monitoring" | "complete" | "stopped" | "blocked";
+type MaraAutonomousPacketResponse = {
+  success: boolean;
+  stage: ApprovalPacketApprovalResult["stage"];
+  autonomous: true;
+  autonomy_policy: string;
+  packet: FrozenApprovalPacketView;
+  approval: ApprovalPacketApprovalResult;
+};
 
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
@@ -256,12 +266,8 @@ export function CmdbDashboard() {
   const [activeRunLabel, setActiveRunLabel] = useState("");
   const [runDraft, setRunDraft] = useState("");
   const [livePaused, setLivePaused] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      if (typeof window === "undefined") return false;
-      return window.localStorage.getItem("keystone.sidebar.collapsed") === "1";
-    } catch { return false; }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreferenceReady, setSidebarPreferenceReady] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [liveRefreshing, setLiveRefreshing] = useState(false);
   const [liveRefreshCount, setLiveRefreshCount] = useState(0);
@@ -271,14 +277,25 @@ export function CmdbDashboard() {
   const comprehendStarted = useRef(new Set<string>());
   const pollInFlight = useRef(false);
 
-  // Persist collapse preference. Ignored if localStorage is blocked.
+  // Restore after hydration so the server and first client render agree.
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        setSidebarCollapsed(window.localStorage.getItem("keystone.sidebar.collapsed") === "1");
+      } catch { /* ignore */ }
+      setSidebarPreferenceReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  // Persist collapse preference after its browser-only value has been restored.
+  useEffect(() => {
+    if (!sidebarPreferenceReady) return;
     try {
-      if (typeof window === "undefined") return;
       if (sidebarCollapsed) window.localStorage.setItem("keystone.sidebar.collapsed", "1");
       else window.localStorage.removeItem("keystone.sidebar.collapsed");
     } catch { /* ignore */ }
-  }, [sidebarCollapsed]);
+  }, [sidebarCollapsed, sidebarPreferenceReady]);
 
   useEffect(() => {
     const restoredRun = currentRunFromLocation();
@@ -1123,16 +1140,19 @@ function RelationshipGraph({ cis, relationships }: { cis: ConfigurationItem[]; r
 }
 
 function PrioritizeView({ health, recalculating, onRecalculate, onFix }: { health: HealthData; recalculating: boolean; onRecalculate: () => void; onFix: (fix: HealthFix) => void }) {
+  const opportunity = deriveHealthOpportunity(health.score, health.fixes);
+  const best = opportunity.items[0];
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">PRIORITIZE</span><h1>Fix what moves health fastest.</h1><p>Issues are ranked by data impact, risk, and remediation effort.</p></div><button className="primary-button" disabled={recalculating} onClick={onRecalculate}><Icon name="refresh" size={16} /> {recalculating ? "Recalculating…" : "Recalculate health"}</button></section>
     <section className="health-hero panel">
-      <div className="score-ring" style={{ "--score": `${health.score * 3.6}deg` } as React.CSSProperties}><div><span>{health.grade}</span><strong>{health.score}</strong><small>CMDB HEALTH</small></div></div>
-      <div className="health-copy"><span className="eyebrow">ESTATE ASSESSMENT</span><h2>Your CMDB is healthy, with four concentrated gaps.</h2><p>Resolve the top two recommendations to move the estate from <strong>{health.score}</strong> to a projected <strong>{Math.min(100, health.score + 10)}</strong>.</p><div className="score-scale"><i /><i /><i /><i className="active" /><i /><span style={{ left: `${health.score}%` }}>{health.score}</span></div></div>
+      <div className="score-ring" style={{ "--score": `${opportunity.currentScore * 3.6}deg` } as React.CSSProperties}><div><span>{health.grade}</span><strong>{opportunity.currentScore}</strong><small>CMDB HEALTH</small></div></div>
+      <div className="health-copy"><span className="eyebrow">ESTATE ASSESSMENT</span><h2>{opportunity.atMaximum ? "Your CMDB health score is at its maximum." : `Your CMDB has ${opportunity.items.length} ranked ${opportunity.items.length === 1 ? "opportunity" : "opportunities"}.`}</h2><p>{opportunity.atMaximum ? "Recommendations below reduce operational risk and help maintain the current score." : <>Resolve the ranked recommendations to move the estate from <strong>{opportunity.currentScore}</strong> to a projected <strong>{opportunity.currentScore + opportunity.availableLift}</strong>.</>}</p><div className="score-scale"><i /><i /><i /><i className="active" /><i /><span style={{ left: `${opportunity.currentScore}%` }}>{opportunity.currentScore}</span></div></div>
       <div className="health-dimensions"><Metric label="Completeness" value={health.completeness} /><Metric label="Correctness" value={health.correctness} /><Metric label="Compliance" value={health.compliance} /><Metric label="Duplicate free" value={Math.round(100 - health.duplicateRate)} /></div>
     </section>
-    <section className="priority-layout"><div className="panel priority-list"><div className="panel-heading"><div><span className="section-index">01</span><div><h2>Ranked fix list</h2><p>Ordered by projected health lift.</p></div></div><span className="panel-stat">+{health.fixes.reduce((sum, fix) => sum + fix.impact, 0)}% AVAILABLE</span></div>
-      {health.fixes.map(fix => <article className="fix-row" key={fix.id}><span className="fix-rank">{String(fix.rank).padStart(2, "0")}</span><span className={`severity ${fix.severity}`} /> <div className="fix-main"><div><strong>{fix.title}</strong><span>{fix.tool}</span></div><p>{fix.description}</p><small>{fix.affected} records affected</small></div><div className="fix-impact"><small>HEALTH LIFT</small><strong>+{fix.impact}%</strong></div><button onClick={() => onFix(fix)}>Inspect <Icon name="arrow" size={15} /></button></article>)}
-    </div><aside className="panel opportunity-card"><span className="eyebrow accent">BEST NEXT MOVE</span><h3>{health.fixes[0]?.title}</h3><p>{health.fixes[0]?.description}</p><div className="opportunity-number"><span>+{health.fixes[0]?.impact}%</span><small>projected health</small></div><div className="governed-note"><Icon name="shield" size={17} /><span>Agent proposes. IRE validates. CMDB receives only governed changes.</span></div><button className="primary-button" onClick={() => health.fixes[0] && onFix(health.fixes[0])}>Open remediation <Icon name="arrow" size={16} /></button></aside></section>
+    <section className="priority-layout"><div className="panel priority-list"><div className="panel-heading"><div><span className="section-index">01</span><div><h2>Ranked fix list</h2><p>{opportunity.atMaximum ? "Ordered by risk-reduction priority." : "Ordered by projected health lift."}</p></div></div><span className="panel-stat">{opportunity.atMaximum ? "HEALTH AT MAXIMUM" : `+${opportunity.availableLift}% AVAILABLE`}</span></div>
+      {opportunity.items.map(item => <article className="fix-row" key={item.fix.id}><span className="fix-rank">{String(item.fix.rank).padStart(2, "0")}</span><span className={`severity ${item.fix.severity}`} /> <div className="fix-main"><div><strong>{item.fix.title}</strong><span>{item.fix.tool}</span></div><p>{item.fix.description}</p><small>{item.fix.affected} records affected</small></div><div className={`fix-impact ${opportunity.atMaximum ? "maintenance" : ""}`}><small>{opportunity.atMaximum ? "RISK REDUCTION" : "HEALTH LIFT"}</small><strong>{opportunity.atMaximum ? "MAINTAIN 100%" : `+${item.displayedLift}%`}</strong></div><button onClick={() => onFix(item.fix)}>Inspect <Icon name="arrow" size={15} /></button></article>)}
+      {!opportunity.items.length && <div className="campaign-empty">No open health recommendations.</div>}
+    </div><aside className="panel opportunity-card"><span className="eyebrow accent">BEST NEXT MOVE</span><h3>{best?.fix.title ?? "No open recommendation"}</h3><p>{best?.fix.description ?? "ServiceNow has not returned a prioritized health recommendation for this run."}</p><div className={`opportunity-number ${opportunity.atMaximum ? "maintenance" : ""}`}><span>{opportunity.atMaximum ? "100%" : `+${best?.displayedLift ?? 0}%`}</span><small>{opportunity.atMaximum ? "health protected" : "projected health"}</small></div><div className="governed-note"><Icon name="shield" size={17} /><span>Agent proposes. IRE validates. CMDB receives only governed changes.</span></div><button className="primary-button" disabled={!best} onClick={() => best && onFix(best.fix)}>Open remediation <Icon name="arrow" size={16} /></button></aside></section>
   </div>;
 }
 
@@ -1161,7 +1181,9 @@ function RemediateView(props: {
   onRefresh: () => Promise<void> | void;
 }) {
   const { health, cis, timeline, findings, reviews, activeRunId, runState, apiState, queuedFix, initialStagedCiId, packetReviewIntent, actionMessage, onSelect, onSubmit, onRefresh } = props;
-  const selected = queuedFix || health.fixes[0];
+  const healthOpportunity = deriveHealthOpportunity(health.score, health.fixes);
+  const selectedOpportunity = healthOpportunity.items.find(item => item.fix.id === queuedFix?.id) ?? healthOpportunity.items[0];
+  const selected = selectedOpportunity?.fix;
   const stagedCis = cis.filter(ci => ci.id || ci.stagedCiId);
   const [selectedCiId, setSelectedCiId] = useState(() => stagedCis.find(ci => ci.id === initialStagedCiId || ci.stagedCiId === initialStagedCiId)?.id ?? stagedCis[0]?.id ?? "");
   const ireStorageKey = activeRunId ? `keystone.ireRecords.${activeRunId}` : "";
@@ -1185,6 +1207,11 @@ function RemediateView(props: {
   const [packetPending, setPacketPending] = useState<ApprovalPacketPendingAction | null>(null);
   const [packetError, setPacketError] = useState("");
   const [packetHashConfirmation, setPacketHashConfirmation] = useState("");
+  const [maraAutonomyEnabled, setMaraAutonomyEnabled] = useState(false);
+  const [maraAutonomyStage, setMaraAutonomyStage] = useState<MaraAutonomyStage>("idle");
+  const [maraAutonomyMessage, setMaraAutonomyMessage] = useState("Approval required. Mara may prepare evidence, but cannot commit.");
+  const [maraAutonomyPending, setMaraAutonomyPending] = useState(false);
+  const maraAutonomyStopRequested = useRef(false);
   const campaignRecoveryAttempted = useRef("");
   const packetRecoveryAttempted = useRef("");
   const packetReviewAttempted = useRef(0);
@@ -1506,6 +1533,101 @@ function RemediateView(props: {
     }
   }
 
+  async function runMaraAutonomy() {
+    if (!activeRunId || !maraAutonomyEnabled || maraAutonomyPending) return;
+    maraAutonomyStopRequested.current = false;
+    setMaraAutonomyPending(true);
+    setCampaignError("");
+    setPacketError("");
+    try {
+      setMaraAutonomyStage("simulating");
+      setMaraAutonomyMessage("Mara is simulating every eligible group. This does not commit to the CMDB.");
+      const simulationResponse = await fetch("/api/cmdb/remediation-campaign/simulate-all", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ migration_run_id: activeRunId }),
+      });
+      const simulationPayload = await simulationResponse.json().catch(() => ({ error: simulationResponse.statusText })) as Record<string, unknown>;
+      if (!simulationResponse.ok) throw new Error(typeof simulationPayload.error === "string" ? simulationPayload.error : `Mara simulation failed with HTTP ${simulationResponse.status}.`);
+      setCampaign(current => ({ failureGroups: current.failureGroups, bulkSimulation: simulationPayload as RemediationCampaignBulkSimulationResult }));
+      await onRefresh();
+
+      for (let wave = 1; wave <= 100; wave++) {
+        if (maraAutonomyStopRequested.current) {
+          setMaraAutonomyStage("stopped");
+          setMaraAutonomyMessage("Mara stopped before starting another packet. Any already-started ServiceNow chain continues safely.");
+          return;
+        }
+        setMaraAutonomyStage("preparing");
+        setMaraAutonomyMessage(`Mara is rebuilding healthy evidence and preparing autonomous packet ${wave}.`);
+        const response = await fetch("/api/cmdb/remediation-campaign/autonomous-packet", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            migration_run_id: activeRunId,
+            operator_armed: true,
+            policy_acknowledgement: "MARA_HEALTHY_INSERT_V1",
+          }),
+        });
+        const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
+        if (!response.ok) {
+          if (payload.code === "PACKET_EMPTY") {
+            setMaraAutonomyStage("complete");
+            setMaraAutonomyMessage("Mara finished. No additional healthy new CIs remain; exceptions still require review.");
+            await onRefresh();
+            return;
+          }
+          throw new Error(typeof payload.error === "string" ? payload.error : `Mara autonomous packet failed with HTTP ${response.status}.`);
+        }
+        const result = payload as MaraAutonomousPacketResponse;
+        setApprovalPacket({ packet: result.packet, approval: result.approval });
+        setMaraAutonomyStage("committing");
+        setMaraAutonomyMessage(`Mara started ${result.packet.items.length} exact ServiceNow IRE commit chains from packet ${result.packet.packet_id}.`);
+        if (!result.approval.success || result.approval.stage === "blocked") {
+          throw new Error(result.approval.halted?.message || "ServiceNow blocked the autonomous packet.");
+        }
+
+        const statusBody = {
+          migration_run_id: activeRunId,
+          packet_id: result.packet.packet_id,
+          packet_hash: result.packet.packet_hash,
+          child_manifest_ids: result.packet.children.map(child => child.manifest_id),
+          staged_ci_ids: result.packet.items.map(item => item.staged_ci_id),
+        };
+        let terminal = false;
+        for (let poll = 0; poll < 240; poll++) {
+          setMaraAutonomyStage("monitoring");
+          const statusResponse = await fetch("/api/cmdb/remediation-campaign/packet-status", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(statusBody),
+          });
+          const statusPayload = await statusResponse.json().catch(() => ({ error: statusResponse.statusText })) as Record<string, unknown>;
+          if (!statusResponse.ok) throw new Error(typeof statusPayload.error === "string" ? statusPayload.error : `Mara status check failed with HTTP ${statusResponse.status}.`);
+          const status = statusPayload as ApprovalPacketStatus;
+          setApprovalPacket(current => ({ ...current, status }));
+          setMaraAutonomyMessage(`Mara is monitoring packet ${wave}: ${status.aggregate.verified}/${status.aggregate.total} verified, ${status.aggregate.blocked} blocked.`);
+          if (status.stage === "blocked" || status.aggregate.blocked > 0) {
+            throw new Error(`Mara stopped because packet ${wave} contains ${status.aggregate.blocked} blocked record${status.aggregate.blocked === 1 ? "" : "s"}.`);
+          }
+          if (status.stage === "completed" && status.aggregate.verified === status.aggregate.total) {
+            terminal = true;
+            break;
+          }
+          await new Promise(resolve => window.setTimeout(resolve, 2500));
+        }
+        if (!terminal) throw new Error(`Mara timed out waiting for packet ${wave} to reach correlated verification.`);
+        await onRefresh();
+      }
+      throw new Error("Mara reached the 100-packet safety ceiling before the run became terminal.");
+    } catch (error) {
+      setMaraAutonomyStage("blocked");
+      setMaraAutonomyMessage(error instanceof Error ? error.message : "Mara autonomous migration stopped.");
+    } finally {
+      setMaraAutonomyPending(false);
+    }
+  }
+
   async function runCampaignAction(action: "plan" | "simulate" | "simulate-all" | "retry" | "prepare-approval" | "approve", requestedSignature?: string) {
     if (!activeRunId || campaignPending) return;
     setCampaignPending(action);
@@ -1565,8 +1687,27 @@ function RemediateView(props: {
       <Icon name={cmdbCommitActive ? "shield" : cmdbCommitComplete ? "check" : "clock"} size={18} />
       <div><small>CMDB COMMIT STATUS</small><strong>{cmdbCommitLabel}</strong><p>{cmdbCommitDetail}</p></div>
     </section>
+    <MaraAutonomyPanel
+      activeRunId={activeRunId}
+      enabled={maraAutonomyEnabled}
+      pending={maraAutonomyPending}
+      stage={maraAutonomyStage}
+      message={maraAutonomyMessage}
+      onEnabled={enabled => {
+        setMaraAutonomyEnabled(enabled);
+        setMaraAutonomyStage("idle");
+        setMaraAutonomyMessage(enabled
+          ? "Autonomous handling of healthy new CIs is armed for this run. Mara will stop on any exception."
+          : "Approval required. Mara may prepare evidence, but cannot commit.");
+      }}
+      onStart={() => void runMaraAutonomy()}
+      onStop={() => {
+        maraAutonomyStopRequested.current = true;
+        setMaraAutonomyMessage("Stop requested. Mara will not begin another packet after the current ServiceNow chain settles.");
+      }}
+    />
     <section className="panel work-queue-panel">
-      <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
+      <div className="panel-heading"><div><span className="eyebrow accent">RUN OVERVIEW</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
       <div className="queue-buckets">
         {queue.buckets.map(bucket => <WorkQueueBucketCard key={bucket.id} bucket={bucket} selectedId={selectedCi?.id} onSelect={setSelectedCiId} />)}
       </div>
@@ -1609,13 +1750,13 @@ function RemediateView(props: {
       onApprove={() => void runPacketAction("approve-packet")}
       onRefresh={() => void refreshPacketStatus()}
     />
-    <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">02</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
-      {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
-    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding, { correlation: simulationCorrelation, fingerprint: selectedQueueItem?.simulationFingerprint })}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Approval sends identifiers only. ServiceNow owns payload rebuild, execution, locks, and verification.</small></aside></section>
+    <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">03</span><div><h2>Ranked remediation focus</h2><p>{healthOpportunity.atMaximum ? "Recommendations maintain health and reduce operational risk." : "Choose the finding group, then work one staged CI at a time."}</p></div></div><div className="tool-grid">
+      {healthOpportunity.items.map((item, index) => <button className={`tool-card ${selected?.id === item.fix.id ? "selected" : ""}`} key={item.fix.id} onClick={() => onSelect(item.fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{item.fix.tool.toUpperCase()}</small><strong>{item.fix.title}</strong><span>{item.fix.affected} candidate records</span></span><span className={`tool-impact ${healthOpportunity.atMaximum ? "maintenance" : ""}`}>{healthOpportunity.atMaximum ? "MAINTAIN 100%" : `+${item.displayedLift}%`}</span></button>)}
+    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">ACTIVE FINDING</span><span className="draft-pill">SINGLE CI</span></div><h2>{selected?.title ?? "No open recommendation"}</h2><p>{selected?.description ?? "ServiceNow has not returned a health recommendation for this run."}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected ?? 0}</strong></div><div><span>{healthOpportunity.atMaximum ? "Health effect" : "Projected health"}</span><strong>{healthOpportunity.atMaximum ? "Maintain 100%" : `+${selectedOpportunity?.displayedLift ?? 0}%`}</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" disabled={!selected} onClick={() => selected && onSubmit(selected, selectedCi, selectedQueueItem?.finding, { correlation: simulationCorrelation, fingerprint: selectedQueueItem?.simulationFingerprint })}><Icon name="shield" size={16} /> Record proposal</button><small className="no-direct-write">Approval sends identifiers only. ServiceNow owns payload rebuild, execution, locks, and verification.</small></aside></section>
     <section className="workbench-layout">
       <div className="panel staged-queue-panel">
         <div className="panel-heading compact sticky">
-          <div><span className="section-index">03</span><div><h2>Staged CIs</h2><p>Ordered by lifecycle bucket.</p></div></div>
+          <div><span className="section-index">04</span><div><h2>Staged CIs</h2><p>Ordered by lifecycle bucket.</p></div></div>
           <span className="panel-stat">{stagedCis.length}</span>
         </div>
         <div className="staged-queue">
@@ -1631,7 +1772,7 @@ function RemediateView(props: {
 
       <div className="panel ire-console-panel">
         <div className="panel-heading compact sticky">
-          <div><span className="section-index">04</span><div><h2>IRE lifecycle</h2><p>One staged record at a time.</p></div></div>
+          <div><span className="section-index">05</span><div><h2>IRE lifecycle</h2><p>One staged record at a time.</p></div></div>
           <span className={`lifecycle-pill ${lifecycleTone(lifecycle)}`}>{ireLifecycleLabel(lifecycle)}</span>
         </div>
         <div className="ire-console">
@@ -1684,6 +1825,50 @@ function RemediateView(props: {
       </aside>
     </section>
   </div>;
+}
+
+function MaraAutonomyPanel(props: {
+  activeRunId: string;
+  enabled: boolean;
+  pending: boolean;
+  stage: MaraAutonomyStage;
+  message: string;
+  onEnabled: (enabled: boolean) => void;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const { activeRunId, enabled, pending, stage, message, onEnabled, onStart, onStop } = props;
+  const active = pending && !["complete", "blocked", "stopped"].includes(stage);
+  return <section className={`panel mara-autonomy-panel ${enabled ? "armed" : ""}`}>
+    <div className="mara-autonomy-copy">
+      <span className="mara-autonomy-mark">M</span>
+      <div>
+        <span className="eyebrow accent">MARA MIGRATION MODE</span>
+        <h2>{enabled ? "Autonomous healthy CIs" : "Approval required"}</h2>
+        <p>{message}</p>
+      </div>
+    </div>
+    <div className="mara-autonomy-controls">
+      <label className="mara-mode-toggle">
+        <input type="checkbox" checked={enabled} disabled={pending} onChange={event => onEnabled(event.target.checked)} />
+        <span aria-hidden="true" />
+        <strong>{enabled ? "AUTONOMOUS" : "ASK APPROVAL"}</strong>
+      </label>
+      {enabled && !active && <button className="primary-button" disabled={!activeRunId || pending} onClick={onStart}><Icon name="spark" size={15} />Start autonomous migration</button>}
+      {active && <button className="ghost-button" onClick={onStop}><Icon name="shield" size={15} />Stop after current packet</button>}
+    </div>
+    <div className="mara-autonomy-boundary">
+      <Icon name="shield" size={15} />
+      <div>
+        <strong>What Mara can handle automatically</strong>
+        <span>Mara can create a new CI after ServiceNow confirms it is healthy and unique. If the CI already exists, Mara verifies it without writing.</span>
+      </div>
+      <div>
+        <strong>When Mara stops for you</strong>
+        <span>Changes to existing CIs, uncertain identity, stale evidence, failures, or blockers require your review.</span>
+      </div>
+    </div>
+  </section>;
 }
 
 function ApprovalPacketPanel(props: {
@@ -1807,7 +1992,7 @@ function AgentCampaignPanel(props: {
 
   return <section className="panel agent-campaign-panel">
     <div className="panel-heading">
-      <div><span className="section-index">02</span><div><h2>Agent Campaign</h2><p>Simulate one group or every eligible homogeneous group. Groups contain up to 20 staged CIs and simulation concurrency stays capped at three.</p></div></div>
+      <div><span className="section-index">01</span><div><h2>Agent Campaign</h2><p>Simulate one group or every eligible homogeneous group. Groups contain up to 20 staged CIs and simulation concurrency stays capped at three.</p></div></div>
       <span className={`campaign-stage ${stage === "blocked" ? "blocked" : stage === "completed" ? "complete" : ""}`}>{stage.replaceAll("_", " ")}</span>
     </div>
 
@@ -2528,15 +2713,14 @@ const KNOWN_WORKERS: Array<{
   station: string;
   glyph: string;
 }> = [
-  { name: "Mara",   role: "Foreman",     station: "Run oversight",       glyph: "M" },
-  { name: "Router", role: "Intake",      station: "Import staging",      glyph: "R" },
-  { name: "Atlas",  role: "Classifier",  station: "Class proposal",      glyph: "A" },
-  { name: "Scout",  role: "Duplicates",  station: "Duplicate scan",      glyph: "S" },
-  { name: "Weaver", role: "Relations",   station: "Relationship weave",  glyph: "W" },
-  { name: "Sentry", role: "Gatekeeper",  station: "Confidence gate",     glyph: "G" },
-  { name: "Ledger", role: "Recorder",    station: "Event ledger",        glyph: "L" },
-  { name: "IRE",    role: "Machinist",   station: "Reconcile + execute", glyph: "I" },
+  { name: "Mara",   role: "Supervisor",  station: "Migration coordination", glyph: "M" },
+  { name: "Router", role: "Intake",      station: "Source routing",         glyph: "R" },
+  { name: "Atlas",  role: "Classifier",  station: "Class proposal",         glyph: "A" },
+  { name: "Scout",  role: "Identity",    station: "Duplicate scan",         glyph: "S" },
+  { name: "Weaver", role: "Relations",   station: "Relationship weave",     glyph: "W" },
+  { name: "Sentry", role: "Gatekeeper",  station: "Confidence gate",        glyph: "G" },
 ];
+const SUBAGENT_NAMES = new Set(KNOWN_WORKERS.map(worker => worker.name));
 
 /**
  * Roster strip: one card per agent that actually contributed to this run.
@@ -2545,10 +2729,13 @@ const KNOWN_WORKERS: Array<{
  * and event count. Sourced purely from the ServiceNow event ledger.
  */
 function WorkerRoster({ timeline }: { timeline: TimelineEvent[] }) {
+  const reasoningSteps = buildMaraReasoningSteps(timeline);
+  const eventsById = new Map(timeline.map(event => [event.id, event]));
   const byActor = new Map<string, { count: number; latest?: TimelineEvent }>();
-  for (const event of timeline) {
-    const actor = (event.source || "").trim();
-    if (!actor) continue;
+  for (const step of reasoningSteps) {
+    const actor = step.actor.trim();
+    const event = eventsById.get(step.id);
+    if (!actor || !event) continue;
     const entry = byActor.get(actor) ?? { count: 0, latest: undefined };
     entry.count++;
     if (!entry.latest || event.seq >= entry.latest.seq) entry.latest = event;
@@ -2558,37 +2745,54 @@ function WorkerRoster({ timeline }: { timeline: TimelineEvent[] }) {
     return <section className="worker-roster empty">
       <div className="worker-roster-head">
         <span className="section-index">02</span>
-        <div><h2>Agent roster</h2><p>Named workers appear here when their tool calls hit the Event Ledger.</p></div>
+        <div><h2>Mara and her subagents</h2><p>Mara coordinates five specialists. Their work appears when ServiceNow records it.</p></div>
       </div>
       <p className="worker-roster-empty">No agents have signed in for this run yet.</p>
     </section>;
   }
   const cards: Array<{ name: string; role: string; station: string; glyph: string; count: number; latest?: TimelineEvent; unknown?: boolean }> = [];
-  const seen = new Set<string>();
   for (const worker of KNOWN_WORKERS) {
     const entry = [...byActor.entries()].find(([actor]) => actor.toLowerCase() === worker.name.toLowerCase());
     if (entry) {
       cards.push({ ...worker, count: entry[1].count, latest: entry[1].latest });
-      seen.add(entry[0].toLowerCase());
     }
   }
-  for (const [actor, entry] of byActor) {
-    if (seen.has(actor.toLowerCase())) continue;
-    cards.push({
-      name: actor,
-      role: "External",
-      station: "Ad-hoc contributor",
-      glyph: actor[0]?.toUpperCase() || "?",
-      count: entry.count,
-      latest: entry.latest,
-      unknown: true,
-    });
-  }
+  const activeAgents = new Set(cards.map(card => card.name));
+  const handoffs = reasoningSteps
+    .filter(step => step.handoffFrom && SUBAGENT_NAMES.has(step.actor) && SUBAGENT_NAMES.has(step.handoffFrom))
+    .slice(-6);
+  const ledgerEvents = reasoningSteps.filter(step => step.actor === "Ledger").length;
+  const ireEvents = reasoningSteps.filter(step => step.actor === "IRE").length;
   return <section className="worker-roster">
     <div className="worker-roster-head">
       <span className="section-index">02</span>
-      <div><h2>Agent roster</h2><p>Named workers on the floor for this run. Only agents that emitted ledger events appear.</p></div>
+      <div><h2>Mara and her subagents</h2><p>Mara supervises the migration. Specialist activity and handoffs come from the ServiceNow audit trail.</p></div>
     </div>
+    <div className="agent-org-chart" aria-label="Mara subagent organization">
+      <div className={`agent-supervisor-node ${activeAgents.has("Mara") ? "active" : "waiting"}`}>
+        <span className="worker-avatar" aria-hidden="true">M</span>
+        <div><small>SUPERVISOR</small><strong>Mara</strong><span>Coordinates evidence, decisions, and the next safe handoff</span></div>
+      </div>
+      <div className="agent-org-line" aria-hidden="true" />
+      <div className="agent-specialist-grid">
+        {KNOWN_WORKERS.filter(worker => worker.name !== "Mara").map(worker => <div className={`agent-specialist-node ${activeAgents.has(worker.name) ? "active" : "waiting"}`} key={worker.name}>
+          <span>{worker.glyph}</span><div><strong>{worker.name}</strong><small>{worker.station}</small></div>
+        </div>)}
+      </div>
+    </div>
+    <div className="agent-support-rail">
+      <div><Icon name="database" size={14} /><span><strong>Ledger</strong> Shared audit memory · {ledgerEvents} recorded event{ledgerEvents === 1 ? "" : "s"}</span></div>
+      <div><Icon name="shield" size={14} /><span><strong>IRE</strong> Governed execution engine · {ireEvents} recorded event{ireEvents === 1 ? "" : "s"}</span></div>
+    </div>
+    <div className="agent-handoff-panel">
+      <div className="campaign-list-head"><strong>Recorded subagent handoffs</strong><span>{handoffs.length}</span></div>
+      {handoffs.map(step => <div className="agent-handoff-row" key={step.id}>
+        <strong>{step.handoffFrom} <span>→</span> {step.actor}</strong>
+        <p>{step.summary}</p>
+      </div>)}
+      {!handoffs.length && <p className="agent-handoff-empty">No cross-agent handoff has been recorded for this run yet.</p>}
+    </div>
+    {cards.length > 0 && <div className="worker-activity-label"><strong>Live agent activity</strong><span>Only agents with recorded work appear below.</span></div>}
     <ul className="worker-roster-grid">
       {cards.map(card => <WorkerCard key={card.name} card={card} />)}
     </ul>
@@ -2735,13 +2939,15 @@ function sourceLabel(source: WorkQueueItemSource) {
 }
 
 export function LegacyRemediateView({ health, queuedFix, actionMessage, onSelect, onSubmit }: { health: HealthData; queuedFix: HealthFix | null; actionMessage: string; onSelect: (fix: HealthFix) => void; onSubmit: (fix: HealthFix) => void }) {
-  const selected = queuedFix || health.fixes[0];
+  const opportunity = deriveHealthOpportunity(health.score, health.fixes);
+  const selectedOpportunity = opportunity.items.find(item => item.fix.id === queuedFix?.id) ?? opportunity.items[0];
+  const selected = selectedOpportunity?.fix;
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">REMEDIATE</span><h1>Close the loop, through IRE.</h1><p>Agent tools assemble evidence and propose corrections. IRE remains the sole write path.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
     <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 · ANALYZE</small><strong>Agent gathers evidence</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="tool" /></span><div><small>2 · PROPOSE</small><strong>Change set is reviewed</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 · RECONCILE</small><strong>IRE validates identity</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 · PUBLISH</small><strong>CMDB + ledger update</strong></div></div></section>
     <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">01</span><div><h2>Agent tools</h2><p>Purpose-built analysis. Governed execution.</p></div></div><div className="tool-grid">
-      {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
-    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">CHANGE PROPOSAL</span><span className="draft-pill">DRAFT</span></div><h2>{selected?.title}</h2><p>{selected?.description}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected}</strong></div><div><span>Projected health</span><strong>+{selected?.impact}%</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div><div className="evidence-box"><div><Icon name="spark" size={16} /><strong>Agent evidence</strong></div><ul><li>Identifier signals compared across all source systems</li><li>Current CMDB values retained as a reversible baseline</li><li>Every proposed merge receives a confidence score and reason</li></ul></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" onClick={() => selected && onSubmit(selected)}><Icon name="shield" size={16} /> Send proposal to IRE</button><small className="no-direct-write">No browser action can write directly to a CMDB table.</small></aside></section>
+      {opportunity.items.map((item, index) => <button className={`tool-card ${selected?.id === item.fix.id ? "selected" : ""}`} key={item.fix.id} onClick={() => onSelect(item.fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{item.fix.tool.toUpperCase()}</small><strong>{item.fix.title}</strong><span>{item.fix.affected} candidate records</span></span><span className={`tool-impact ${opportunity.atMaximum ? "maintenance" : ""}`}>{opportunity.atMaximum ? "MAINTAIN 100%" : `+${item.displayedLift}%`}</span></button>)}
+    </div></div><aside className="proposal-panel panel"><div className="proposal-heading"><span className="eyebrow accent">CHANGE PROPOSAL</span><span className="draft-pill">DRAFT</span></div><h2>{selected?.title ?? "No open recommendation"}</h2><p>{selected?.description ?? "ServiceNow has not returned a health recommendation for this run."}</p><div className="proposal-summary"><div><span>Candidate records</span><strong>{selected?.affected ?? 0}</strong></div><div><span>{opportunity.atMaximum ? "Health effect" : "Projected health"}</span><strong>{opportunity.atMaximum ? "Maintain 100%" : `+${selectedOpportunity?.displayedLift ?? 0}%`}</strong></div><div><span>Execution route</span><strong>IRE</strong></div></div><div className="evidence-box"><div><Icon name="spark" size={16} /><strong>Agent evidence</strong></div><ul><li>Identifier signals compared across all source systems</li><li>Current CMDB values retained as a reversible baseline</li><li>Every proposed merge receives a confidence score and reason</li></ul></div>{actionMessage && <div className="action-message"><Icon name="check" size={16} />{actionMessage}</div>}<button className="primary-button full" disabled={!selected} onClick={() => selected && onSubmit(selected)}><Icon name="shield" size={16} /> Send proposal to IRE</button><small className="no-direct-write">No browser action can write directly to a CMDB table.</small></aside></section>
   </div>;
 }
 

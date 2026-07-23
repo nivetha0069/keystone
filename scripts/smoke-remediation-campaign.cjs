@@ -24,6 +24,7 @@ require.extensions[".ts"] = function loadTypeScript(module, filename) {
 
 const campaign = require("../app/lib/cmdb/remediation-campaign.ts");
 const recovery = require("../app/lib/cmdb/remediation-campaign-recovery.ts");
+const maraAutonomy = require("../app/lib/cmdb/mara-autonomy.ts");
 
 assert.equal(
   campaign.parseCampaignEventDetail(JSON.stringify({
@@ -563,6 +564,29 @@ assert.match(route, /invokeCampaignProposal/);
 assert.match(route, /"failure-groups"/);
 assert.match(route, /"simulate-all"/);
 assert.match(route, /simulateAllRemediationCampaigns/);
+assert.match(route, /"autonomous-packet"/);
+assert.match(route, /CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED/);
+assert.equal(maraAutonomy.MARA_AUTONOMOUS_ACKNOWLEDGEMENT, "MARA_HEALTHY_INSERT_V1");
+assert.match(route, /assertHealthyAutonomousPacket/);
+const autonomousPacket = {
+  stage: "review_ready",
+  packet_id: "A".repeat(24),
+  packet_hash: "B".repeat(64),
+  expires_at: "2026-07-22T23:00:00.000Z",
+  operation_family: "insert",
+  items: [{ operation: "INSERT" }],
+};
+assert.doesNotThrow(() => maraAutonomy.assertHealthyAutonomousPacket(autonomousPacket), "fresh INSERT packets are autonomy eligible");
+assert.throws(
+  () => maraAutonomy.assertHealthyAutonomousPacket({ ...autonomousPacket, operation_family: "safe-update", items: [{ operation: "UPDATE" }] }),
+  error => error.code === "MARA_AUTONOMY_REVIEW_REQUIRED",
+  "UPDATE packets stop for exact-hash human approval",
+);
+assert.throws(
+  () => maraAutonomy.assertHealthyAutonomousPacket({ ...autonomousPacket, stage: "expired" }),
+  error => error.code === "MARA_AUTONOMY_NOT_READY",
+  "expired packets cannot be autonomously approved",
+);
 assert.match(route, /\[a-zA-Z0-9:._ -\]\*/, "campaign route must round-trip server-generated signatures containing class-label spaces");
 assert.match(route, /retryRemediationCampaign/);
 assert.match(route, /loadCampaignSnapshot\(selection\.migration_run_id\)/, "proposal preparation reloads authoritative ServiceNow evidence");
@@ -579,6 +603,17 @@ assert.match(dashboard, /Deterministic failure groups/);
 assert.match(dashboard, /Retry evidence/);
 assert.match(dashboard, /runCampaignAction\("retry"\)/);
 assert.match(dashboard, /Simulate all eligible/);
+assert.match(dashboard, /MARA MIGRATION MODE/);
+assert.match(dashboard, /Autonomous healthy CIs/);
+assert.match(dashboard, /Start autonomous migration/);
+assert.match(dashboard, /Stop after current packet/);
+assert.match(dashboard, /What Mara can handle automatically/);
+assert.match(dashboard, /When Mara stops for you/);
+assert.match(dashboard, /<h2>Agent Campaign<\/h2>/);
+assert.match(dashboard, /section-index">03<\/span><div><h2>Ranked remediation focus/);
+assert.match(dashboard, /section-index">04<\/span><div><h2>Staged CIs/);
+assert.match(dashboard, /section-index">05<\/span><div><h2>IRE lifecycle/);
+assert.match(dashboard, /policy_acknowledgement: "MARA_HEALTHY_INSERT_V1"/);
 assert.match(dashboard, /NOT COMMITTING TO SERVICENOW CMDB/);
 assert.match(dashboard, /No CMDB commit/);
 assert.match(dashboard, /Commit \$\{frozen\.items\.length\} CIs to ServiceNow/);

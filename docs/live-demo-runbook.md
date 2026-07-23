@@ -74,6 +74,25 @@ Complete these checks before presenting:
 
 ## Live demo sequence
 
+### Mara migration mode
+
+The Remediate page starts in **Approval required** mode. In that mode Mara may
+plan, simulate, reconcile `NO_CHANGE`, and prepare evidence, but an operator
+must authorize the exact fresh packet hash before any mutation starts.
+
+For a controlled demo, switch **Mara migration mode** to **Autonomous healthy
+CIs** and select **Start autonomous migration**. The UI then simulates every
+eligible group, prepares exact server-derived packets, starts the ServiceNow
+Phase D chains, monitors correlated verification, and advances to the next
+packet. Autonomous mutation is limited to fresh unmatched `INSERT` evidence.
+`UPDATE`, drift, stale evidence, ambiguity, failures, and blockers stop for
+review. `NO_CHANGE` remains a non-mutating reconciliation.
+
+Live autonomous commit additionally requires the server-only
+`CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED=true` capability. Loopback demo endpoints
+may exercise the same flow without enabling that live capability. Turning the
+toggle off or changing runs disarms autonomy.
+
 ### 1. Import and stage
 
 - Import the chosen dataset into ServiceNow staging.
