@@ -85,6 +85,15 @@
         if (result.hasOwnProperty('proposed_class')) {
             envelope.proposed_class = result.proposed_class;
         }
+        if (result.hasOwnProperty('class_policy_version')) {
+            envelope.class_policy_version = result.class_policy_version;
+        }
+        if (result.hasOwnProperty('evidence_version')) {
+            envelope.evidence_version = result.evidence_version;
+        }
+        if (result.hasOwnProperty('target_ci_sys_id')) {
+            envelope.target_ci_sys_id = result.target_ci_sys_id;
+        }
         if (result.hasOwnProperty('idempotent_replay')) {
             envelope.idempotent_replay = result.idempotent_replay;
         }

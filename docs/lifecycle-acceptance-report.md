@@ -174,14 +174,14 @@ Execute, Verify, or CMDB write was performed.
 
 Milestone 8A now adds a deterministic parent approval packet over at most five
 existing 20-record Phase E manifests and 100 homogeneous records. The parent
-SHA-256 binds the v1 policy, migration run, ordered child campaign/manifest
+SHA-256 binds the v2 policy, migration run, ordered child campaign/manifest
 hashes, item counts, operation families, and a freshness boundary derived as
 30 minutes after the oldest included completed simulation.
 
 Planning is GET-backed and preparation may create only missing identifier-bound
 deferred reviews through the existing proposal contract. Approval remains
-locked unless `CMDB_AGENT_APPROVAL_PACKET_HASH` exactly matches the recomputed
-parent hash. Fan-out is sequential and individual, duplicate-safe packet
+locked unless the operator authorizes the exact recomputed parent hash through
+the UI's separate one-time authorization action. Fan-out is sequential and individual, duplicate-safe packet
 approvals are reconciled from Event Ledger evidence, and the packet route has
 no Execute or Verify invocation. Phase D retains the only execution and
 correlated verification authority.
@@ -232,7 +232,8 @@ GET-backed Agent Workspace evidence currently reconstructs:
 
 | State | Count |
 |---|---:|
-| Staged `cmdb_ci_linux_server` INSERT candidates | 50 |
+| Staged `cmdb_ci_linux_server` INSERT candidates | 33 |
+| Staged `cmdb_ci_server` INSERT candidates | 17 |
 | Correlated verification passed | 20 |
 | Verified INSERT target bindings | 20 |
 | Awaiting review | 14 |
@@ -258,10 +259,19 @@ The presentation-only completed-results route was browser-validated. It shows
 the deferred records. It does not alter reviews or lifecycle evidence.
 
 Terminal acceptance for the full dataset remains pending. It requires 50
-verified target bindings, zero pending lifecycle work, and identical counts
-after a GET-backed refresh. Past Summaries currently counts staged operation
-types and must not be used as committed-record evidence until its derivation is
-changed to verified outcomes.
+verified target bindings, zero pending lifecycle work, and identical outcome
+and binding sets after two GET-only refreshes. Past Summaries and Chapter 4 now
+derive committed totals only from correlated terminal evidence. The intended
+final composition is 33 verified Linux-server INSERTs and 17 verified generic-
+server INSERTs; this paragraph does not claim that the remaining live work has
+already executed.
+
+Repository acceptance now covers `keystone.simulation.v2` class evidence,
+generic ServiceNow-accepted classes, Phase D class revalidation, legacy generic
+simulation refresh, class/policy/fingerprint drift rejection, non-mutating
+`NO_CHANGE` reconciliation, and the GET-only `verify:live-demo` two-refresh
+terminal gate. These are source-controlled test results, not evidence that the
+new ServiceNow scripts have already been deployed to the live instance.
 
 ## CPR End-to-End Handoff Repair
 

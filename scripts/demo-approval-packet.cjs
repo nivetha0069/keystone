@@ -47,7 +47,7 @@ async function main() {
   const server = createFixtureServer(fixture, frozen);
   await listen(server, FIXTURE_PORT);
   ensureBuild();
-  const child = launchKeystone(frozen.packet_hash);
+  const child = launchKeystone();
   const stop = () => {
     server.close();
     if (!child.killed) child.kill("SIGTERM");
@@ -63,8 +63,8 @@ async function main() {
   console.log("Keystone bounded approval packet demo");
   console.log(`  URL: ${WEB_ORIGIN}/?run=${RUN_ID}`);
   console.log(`  Packet: ${frozen.packet_id}`);
-  console.log(`  Exact authorized hash: ${frozen.packet_hash}`);
-  console.log("  Flow: Plan packet -> Prepare packet -> Use exact demo hash -> Approve -> watch Verify");
+  console.log(`  Exact packet hash: ${frozen.packet_hash}`);
+  console.log("  Flow: Plan packet -> Prepare packet -> Fill hash -> Authorize exact packet -> Approve -> watch Verify");
   console.log("  Safety: loopback fixture only; ServiceNow credentials and CMDB endpoints are removed from the child environment.");
   console.log("");
 }
@@ -82,11 +82,11 @@ function createFixture() {
   const rawReviews = [];
   const rawTimeline = [];
 
-  for (let index = 0; index < 105; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     const stagedCiId = sysId(index + 1);
     const findingId = sysId(1000 + index);
     const reviewId = sysId(2000 + index);
-    const operation = index % 3 === 0 ? "NO_CHANGE" : "UPDATE";
+    const operation = "UPDATE";
     const name = `packet-server-${String(index + 1).padStart(3, "0")}`;
     const simulationFingerprint = fingerprint(index + 1);
     const simulationCorrelationId = `ks-sim-packet-${stagedCiId}`;
@@ -151,7 +151,7 @@ function createFixture() {
   }
 
   const health = {
-    score: 90, grade: "A", ciCount: 105, duplicateCandidates: 0, reviewCount: 105,
+    score: 90, grade: "A", ciCount: 100, duplicateCandidates: 0, reviewCount: 100,
     relationshipCount: 0, completeness: 92, correctness: 90, compliance: 88,
     duplicateRate: 0, staleRecords: 0, fixes: [],
   };
@@ -159,7 +159,7 @@ function createFixture() {
     snapshot: { migrationRunId: RUN_ID, cis, timeline, findings, reviews, health, relationships: [] },
     raw: {
       cis: rawCis, timeline: rawTimeline, relationships: [], findings: rawFindings, reviews: rawReviews,
-      health: { ...health, ci_count: 105, review_count: 105, relationship_count: 0 },
+      health: { ...health, ci_count: 100, review_count: 100, relationship_count: 0 },
       run: {
         sys_id: RUN_ID, number: "RUN-PACKET-DEMO", state: "simulated", source_system: "isolated local fixture",
         started: new Date(now - 10 * 60_000).toISOString(), summary: "Milestone 8A end-to-end packet demo",
@@ -201,18 +201,24 @@ function createFixtureServer(fixture, frozen) {
           decision: "approved", policy_approved: false,
         }));
         const ordinal = approved.size - 1;
+        const executionEventId = sysId(6000 + ordinal);
+        const targetCiSysId = sysId(9000 + ordinal);
         setTimeout(() => {
           sequence += 1;
-          fixture.raw.timeline.push(rawEvent(sequence, sysId(6000 + ordinal), item, "ire_execution_claimed", {
-            approval_event_id: approvalEventId, execution_correlation_id: sysId(8000 + ordinal),
-            target_ci_sys_id: sysId(9000 + ordinal),
+          fixture.raw.timeline.push(rawEvent(sequence, executionEventId, item, "ire_execution_completed", {
+            approval_event_id: approvalEventId, execution_correlation_id: executionEventId,
+            execution_event_id: executionEventId, target_ci_sys_id: targetCiSysId,
+            simulation_correlation_id: item.simulation_correlation_id,
+            simulation_fingerprint: item.simulation_fingerprint,
           }));
         }, 400 + ordinal * 15);
         setTimeout(() => {
           sequence += 1;
           fixture.raw.timeline.push(rawEvent(sequence, sysId(7000 + ordinal), item, "verification_passed", {
-            approval_event_id: approvalEventId, execution_correlation_id: sysId(8000 + ordinal),
-            target_ci_sys_id: sysId(9000 + ordinal),
+            approval_event_id: approvalEventId, execution_correlation_id: executionEventId,
+            execution_event_id: executionEventId, target_ci_sys_id: targetCiSysId,
+            simulation_correlation_id: item.simulation_correlation_id,
+            simulation_fingerprint: item.simulation_fingerprint,
           }));
         }, 1400 + ordinal * 25);
       }
@@ -247,13 +253,12 @@ function rawEvent(sequence, id, item, action, extra) {
   };
 }
 
-function launchKeystone(packetHash) {
+function launchKeystone() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CMDB_")));
   Object.assign(env, {
     CMDB_API_BASE_URL: FIXTURE_ORIGIN,
     CMDB_IRE_BASE_URL: FIXTURE_ORIGIN,
     CMDB_REMEDIATE_URL: `${FIXTURE_ORIGIN}/remediate`,
-    CMDB_AGENT_APPROVAL_PACKET_HASH: packetHash,
     CMDB_APPROVAL_PACKET_DEMO_MODE: "true",
   });
   const next = path.join(root, "node_modules", "next", "dist", "bin", "next");

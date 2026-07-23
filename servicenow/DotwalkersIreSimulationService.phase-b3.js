@@ -33,6 +33,9 @@ DotwalkersIreSimulationService.prototype = {
         this.MARA_EVENT =
             'x_kest_dotwalkers.mara.requested';
 
+        this.SIMULATION_EVIDENCE_VERSION = 'keystone.simulation.v2';
+        this.CLASS_POLICY_VERSION = 'servicenow-allowlisted-class-v1';
+
         this.APPROVAL_FIELDS = {
             migration_run_id: true,
             staged_ci_id: true,
@@ -68,7 +71,8 @@ DotwalkersIreSimulationService.prototype = {
             MISSING_IDENTITY: { http_status: 422, message: 'Staged CI has no usable CMDB identity' },
             CLASS_NOT_ALLOWED: { http_status: 422, message: 'CMDB class is not allowlisted' },
             CLASS_INVALID: { http_status: 422, message: 'CMDB class is invalid' },
-            UNSUPPORTED_CLASS_ALIAS: { http_status: 422, message: 'No supported deterministic strategy for this class alias' }
+            UNSUPPORTED_CLASS_ALIAS: { http_status: 422, message: 'No supported deterministic strategy for this class alias' },
+            RECONCILIATION_FAILED: { http_status: 409, message: 'NO_CHANGE target reconciliation failed' }
         };
 
         this.BLOCKER_CODES = {
@@ -687,7 +691,9 @@ DotwalkersIreSimulationService.prototype = {
                 previousBlocker.error_code,
                 previousBlocker.summary || previousMapping.message,
                 [],
-                'simulation_blocked',
+                previousBlocker.error_code === 'RECONCILIATION_FAILED'
+                    ? 'verification_failed'
+                    : 'simulation_blocked',
                 request.correlation_id,
                 request.idempotency_key
             );
@@ -753,13 +759,15 @@ DotwalkersIreSimulationService.prototype = {
                 );
             }
 
-            var findingId = this._ensureProposalFinding(
-                request,
-                bundle,
-                operation,
-                matchedCi,
-                simulationFingerprintValue
-            );
+            var findingId = operation === 'NO_CHANGE'
+                ? ''
+                : this._ensureProposalFinding(
+                    request,
+                    bundle,
+                    operation,
+                    matchedCi,
+                    simulationFingerprintValue
+                );
 
             /*
              * Compact ledger detail — no raw payloads, authoritative values,
@@ -777,6 +785,9 @@ DotwalkersIreSimulationService.prototype = {
                 finding_id: findingId,
                 operation: operation,
                 simulation_matched_ci: matchedCi,
+                proposed_class: bundle.proposed_class,
+                class_policy_version: this.CLASS_POLICY_VERSION,
+                evidence_version: this.SIMULATION_EVIDENCE_VERSION,
                 idempotency_key: request.idempotency_key
             };
 
@@ -797,6 +808,15 @@ DotwalkersIreSimulationService.prototype = {
                 completedDetail
             );
 
+            if (operation === 'NO_CHANGE') {
+                return this._reconcileNoChange(
+                    request,
+                    bundle,
+                    matchedCi,
+                    simulationFingerprintValue
+                );
+            }
+
             var result = {
                 success: true,
                 state: 'simulated_pending_approval',
@@ -808,6 +828,8 @@ DotwalkersIreSimulationService.prototype = {
                 operation: operation,
                 simulation_matched_ci: matchedCi,
                 proposed_class: bundle.proposed_class,
+                class_policy_version: this.CLASS_POLICY_VERSION,
+                evidence_version: this.SIMULATION_EVIDENCE_VERSION,
                 finding_id: findingId,
                 simulation_fingerprint: simulationFingerprintValue,
                 idempotent_replay: false,
@@ -1045,6 +1067,7 @@ DotwalkersIreSimulationService.prototype = {
         var bundle = strategy ?
             payloadService.buildFromPersistedStrategy(request.migration_run_id, request.staged_ci_id, strategy) :
             payloadService.build(request.migration_run_id, request.staged_ci_id);
+        this._validateSimulationClassEvidence(simulation, bundle);
         var recomputed = this._text(payloadService.fingerprintSimulation(
             bundle,
             this._text(simulation.operation),
@@ -1792,6 +1815,7 @@ DotwalkersIreSimulationService.prototype = {
         var bundle = strategy ?
             payloadService.buildFromPersistedStrategy(binding.migration_run_id, binding.staged_ci_id, strategy) :
             payloadService.build(binding.migration_run_id, binding.staged_ci_id);
+        this._validateSimulationClassEvidence(simulation, bundle);
         var recomputed = this._text(payloadService.fingerprintSimulation(
             bundle,
             this._text(simulation.operation),
@@ -2467,6 +2491,7 @@ DotwalkersIreSimulationService.prototype = {
         var bundle = strategy ?
             payloadService.buildFromPersistedStrategy(request.migration_run_id, request.staged_ci_id, strategy) :
             payloadService.build(request.migration_run_id, request.staged_ci_id);
+        this._validateSimulationClassEvidence(simulation, bundle);
         var recomputed = this._text(payloadService.fingerprintSimulation(
             bundle,
             this._text(simulation.operation),
@@ -3285,6 +3310,31 @@ DotwalkersIreSimulationService.prototype = {
 
             if (
                 detail &&
+                detail.action === 'reconciliation_passed' &&
+                detail.staged_ci_id === request.staged_ci_id &&
+                detail.idempotency_key === request.idempotency_key
+            ) {
+                return {
+                    state: 'verified',
+                    status: 'verified',
+                    migration_run_id: request.migration_run_id,
+                    staged_ci_id: request.staged_ci_id,
+                    correlation_id: detail.correlation_id,
+                    simulation_correlation_id: detail.simulation_correlation_id || detail.correlation_id,
+                    idempotency_key: detail.idempotency_key,
+                    operation: 'NO_CHANGE',
+                    simulation_matched_ci: detail.target_ci_sys_id || '',
+                    target_ci_sys_id: detail.target_ci_sys_id || '',
+                    proposed_class: detail.proposed_class || '',
+                    class_policy_version: detail.class_policy_version || '',
+                    evidence_version: detail.evidence_version || '',
+                    simulation_fingerprint: detail.simulation_fingerprint,
+                    cmdb_committed: false
+                };
+            }
+
+            if (
+                detail &&
                 detail.action === 'ire_simulation_completed' &&
                 detail.staged_ci_id === request.staged_ci_id &&
                 detail.idempotency_key === request.idempotency_key
@@ -3298,6 +3348,9 @@ DotwalkersIreSimulationService.prototype = {
                     idempotency_key: detail.idempotency_key,
                     operation: detail.operation,
                     simulation_matched_ci: detail.simulation_matched_ci || '',
+                    proposed_class: detail.proposed_class || '',
+                    class_policy_version: detail.class_policy_version || '',
+                    evidence_version: detail.evidence_version || '',
                     simulation_fingerprint: detail.simulation_fingerprint,
                     cmdb_committed: false
                 };
@@ -3321,6 +3374,103 @@ DotwalkersIreSimulationService.prototype = {
         return null;
     },
 
+    _validateSimulationClassEvidence: function(simulation, bundle) {
+        var proposedClass = this._text(bundle && bundle.proposed_class);
+        var evidenceVersion = this._text(simulation && simulation.evidence_version);
+        if (!evidenceVersion) {
+            if (proposedClass !== 'cmdb_ci_linux_server') {
+                throw this._bindingError(409, 'CLASS_EVIDENCE_MISSING', 'Versioned ServiceNow class evidence is required');
+            }
+            return;
+        }
+        if (evidenceVersion !== this.SIMULATION_EVIDENCE_VERSION ||
+            this._text(simulation.class_policy_version) !== this.CLASS_POLICY_VERSION) {
+            throw this._bindingError(409, 'CLASS_POLICY_STALE', 'Simulation class policy evidence is stale');
+        }
+        if (!proposedClass || this._text(simulation.proposed_class) !== proposedClass) {
+            throw this._bindingError(409, 'CLASS_DRIFT', 'The staged class no longer matches the simulated ServiceNow class');
+        }
+    },
+
+    _reconcileNoChange: function(request, bundle, matchedCi, simulationFingerprint) {
+        var targetCiId = this._text(matchedCi).toLowerCase();
+        var failure = '';
+        if (!/^[0-9a-f]{32}$/.test(targetCiId)) {
+            failure = 'NO_CHANGE did not return a canonical matched target.';
+        }
+
+        var target = null;
+        if (!failure) {
+            target = this._newRecord(bundle.proposed_class);
+            if (!target.get(targetCiId)) {
+                failure = 'The matched NO_CHANGE target could not be read back.';
+            }
+        }
+
+        if (!failure) {
+            var actualClass = this._text(target.getValue('sys_class_name')) || bundle.proposed_class;
+            var expectedName = this._text(bundle.authoritative_values && bundle.authoritative_values.name);
+            var actualName = this._text(target.getValue('name'));
+            if (actualClass !== bundle.proposed_class) {
+                failure = 'The matched target class does not match the authoritative proposed class.';
+            } else if (expectedName && actualName !== expectedName) {
+                failure = 'The matched target name does not match the authoritative staged name.';
+            }
+        }
+
+        var detail = {
+            action: failure ? 'reconciliation_failed' : 'reconciliation_passed',
+            status: failure ? 'failed' : 'completed',
+            migration_run_id: request.migration_run_id,
+            staged_ci_id: request.staged_ci_id,
+            correlation_id: request.correlation_id,
+            simulation_correlation_id: request.correlation_id,
+            simulation_fingerprint: simulationFingerprint,
+            operation: 'NO_CHANGE',
+            proposed_class: bundle.proposed_class,
+            class_policy_version: this.CLASS_POLICY_VERSION,
+            evidence_version: this.SIMULATION_EVIDENCE_VERSION,
+            target_ci_sys_id: targetCiId,
+            idempotency_key: request.idempotency_key
+        };
+
+        if (failure) {
+            detail.error_code = 'RECONCILIATION_FAILED';
+            detail.summary = failure;
+            this._writeLedger(request.migration_run_id, 'error', detail);
+            return this._simulateError(
+                409,
+                'RECONCILIATION_FAILED',
+                failure,
+                [],
+                'verification_failed',
+                request.correlation_id,
+                request.idempotency_key
+            );
+        }
+
+        this._writeLedger(request.migration_run_id, 'simulated', detail);
+        return {
+            success: true,
+            state: 'verified',
+            status: 'verified',
+            migration_run_id: request.migration_run_id,
+            staged_ci_id: request.staged_ci_id,
+            correlation_id: request.correlation_id,
+            simulation_correlation_id: request.correlation_id,
+            simulation_fingerprint: simulationFingerprint,
+            idempotency_key: request.idempotency_key,
+            operation: 'NO_CHANGE',
+            simulation_matched_ci: targetCiId,
+            target_ci_sys_id: targetCiId,
+            proposed_class: bundle.proposed_class,
+            class_policy_version: this.CLASS_POLICY_VERSION,
+            evidence_version: this.SIMULATION_EVIDENCE_VERSION,
+            idempotent_replay: false,
+            cmdb_committed: false
+        };
+    },
+
     _findBlockedSimulation: function(request) {
         var ledger = new GlideRecord(this.TABLES.ledger);
         ledger.addQuery('migration_run', request.migration_run_id);
@@ -3337,7 +3487,8 @@ DotwalkersIreSimulationService.prototype = {
         while (ledger.next()) {
             var detail = this._tryParseObject(ledger.getValue('detail'));
             if (detail &&
-                detail.action === 'ire_simulation_blocked' &&
+                (detail.action === 'ire_simulation_blocked' ||
+                    detail.action === 'reconciliation_failed') &&
                 detail.migration_run_id === request.migration_run_id &&
                 detail.staged_ci_id === request.staged_ci_id &&
                 detail.idempotency_key === request.idempotency_key &&

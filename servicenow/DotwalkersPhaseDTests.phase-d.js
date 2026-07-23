@@ -395,7 +395,10 @@ DotwalkersPhaseDTests.prototype = {
                 simulation_correlation_id: 'ks-simulate-test',
                 simulation_fingerprint: self.FP,
                 operation: 'UPDATE',
-                simulation_matched_ci: self.TARGET
+                simulation_matched_ci: self.TARGET,
+                proposed_class: 'cmdb_ci_server',
+                class_policy_version: 'servicenow-allowlisted-class-v1',
+                evidence_version: 'keystone.simulation.v2'
             };
         };
         svc._newPayloadService = function() {

@@ -26,8 +26,9 @@ CMDB commit.
 
 As of 2026-07-22, run `DMR0001066`
 (`31b134742b96875060aefba6b891bfcb`) has 20 correlated, verified ServiceNow
-INSERTs from 50 staged Linux-server candidates. Fourteen records await review
-and 16 remain ready for simulation. The next read-only packet plan selects 13
+INSERTs from 33 staged Linux-server and 17 staged generic-server candidates.
+Fourteen records await review and 16 remain ready for simulation. The next
+read-only packet plan selects 13
 homogeneous records. A full 50-CI claim is not valid until ServiceNow evidence
 reports 50 verified targets and zero pending, ready, executing, blocked, or
 reconciliation-required records.
@@ -35,6 +36,12 @@ reconciliation-required records.
 The server-side packet hash gate is intentionally single-use. Leave
 `CMDB_AGENT_APPROVAL_PACKET_HASH` empty until an operator separately authorizes
 the exact freshly prepared packet hash.
+
+Final validation is GET-only and compares two refreshes:
+
+```bash
+npm run verify:live-demo -- --run 31b134742b96875060aefba6b891bfcb --expected-total 50 --expect INSERT=50
+```
 
 ## Fixture-only approval packet demo
 
@@ -74,6 +81,19 @@ CMDB_AGENT_APPROVAL_PACKET_HASH=
 Use either a bearer token or basic authentication. These credentials are only read by Next.js server routes and are never sent to the browser.
 
 `CMDB_IMPORT_URL` must point to a ServiceNow scripted REST endpoint that lands uploads and URL-connector requests in a custom staging/import table. The gateway always adds `target=staging`, `mode=quarantine`, and `directCmdbWrite=false`.
+
+Generated stress fixtures should be materialized into a fresh identity namespace
+before an INSERT-oriented demo. See
+[`docs/generated-demo-migration.md`](docs/generated-demo-migration.md):
+
+```text
+npm.cmd run fixtures:migration-demo -- --input <catalog-data-file> --namespace <fresh-key> --count 500 --class cmdb_ci_linux_server
+npm.cmd run stage:migration-demo -- --file <prepared-file>
+```
+
+The staging command is dry-run until the exact displayed file SHA-256 is
+confirmed. Approval packets remain separately governed by freshly prepared
+64-character hashes. The 100-record packet cap is per packet, not per run.
 
 The optional `CMDB_IRE_*` variables point to ServiceNow scripted REST actions for single-record IRE simulation, approval, execution, and verification. If per-action URLs are omitted, Keystone uses `CMDB_IRE_BASE_URL/ire/{action}` or falls back to `CMDB_API_BASE_URL/ire/{action}`. Execution requests are identifier-only; ServiceNow remains responsible for rebuilding the authoritative payload, validating approval/fingerprint freshness, and calling IRE.
 

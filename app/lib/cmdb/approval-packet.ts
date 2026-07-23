@@ -18,7 +18,7 @@ import {
 } from "./remediation-campaign";
 import type { IreActionResponse } from "./ire";
 
-export const APPROVAL_PACKET_POLICY_VERSION = "bounded-approval-packet-v1" as const;
+export const APPROVAL_PACKET_POLICY_VERSION = "bounded-approval-packet-v2" as const;
 export const APPROVAL_PACKET_MAX_ITEMS = 100;
 export const APPROVAL_PACKET_MAX_CHILDREN = 5 as const;
 export const APPROVAL_PACKET_TTL_MS = 30 * 60 * 1000;
@@ -69,7 +69,7 @@ export type ApprovalPacketChild = {
   campaign_id: string;
   manifest_id: string;
   item_count: number;
-  operation_families: Array<"INSERT" | "UPDATE" | "NO_CHANGE">;
+  operation_families: Array<"INSERT" | "UPDATE">;
   items: RemediationApprovalManifestItem[];
 };
 
@@ -90,7 +90,7 @@ export type ApprovalPacketSample = {
   staged_ci_id: string;
   name: string;
   class_name: string;
-  operation: "INSERT" | "UPDATE" | "NO_CHANGE";
+  operation: "INSERT" | "UPDATE";
   risk: keyof ApprovalPacketAggregate["risks"];
   child_campaign_id: string;
   simulation_fingerprint: string;
@@ -158,6 +158,7 @@ export type ApprovalPacketStatus = {
 
 type PacketCandidate = {
   item: RemediationCampaignPlan["items"][number];
+  class_name?: string;
   operation_family?: string;
   reason?: string;
 };
@@ -178,14 +179,15 @@ export function planApprovalPacket(snapshot: RemediationCampaignSnapshot): Appro
       const family = manifestItem
         ? operationFamily(manifestItem.operation)
         : pendingIds.has(item.staged_ci_id) ? latestAuthoritativeOperationFamily(snapshot.timeline, item.staged_ci_id) : undefined;
-      if (family) candidates.push({ item, operation_family: family });
+      const className = manifestItem?.proposed_class ?? (pendingIds.has(item.staged_ci_id) ? latestAuthoritativeClass(snapshot.timeline, item.staged_ci_id) : undefined) ?? item.class_name;
+      if (family) candidates.push({ item, class_name: className, operation_family: family });
       else candidates.push({ item, reason: reasons.get(item.staged_ci_id) ?? "Record lacks a fresh completed simulation eligible for packet preparation." });
     }
   }
 
   const homogeneous = new Map<string, PacketCandidate[]>();
   for (const candidate of candidates.filter(candidate => !candidate.reason && candidate.operation_family)) {
-    const key = `${candidate.item.class_name}|${candidate.operation_family}`;
+    const key = `${candidate.class_name}|${candidate.operation_family}`;
     homogeneous.set(key, [...(homogeneous.get(key) ?? []), candidate]);
   }
   const selectedGroup = [...homogeneous.entries()]
@@ -213,7 +215,7 @@ export function planApprovalPacket(snapshot: RemediationCampaignSnapshot): Appro
     policy_version: APPROVAL_PACKET_POLICY_VERSION,
     work_group_signature: all.work_group_signature,
     group_title: all.group_title,
-    class_name: selected[0].class_name,
+    class_name: selectedGroup[1][0].class_name!,
     operation_family: selectedGroup[1][0].operation_family!,
     max_items: APPROVAL_PACKET_MAX_ITEMS,
     max_children: APPROVAL_PACKET_MAX_CHILDREN,
@@ -596,7 +598,7 @@ function packetSamples(snapshot: RemediationCampaignSnapshot, packetId: string, 
   return selected.slice(0, APPROVAL_PACKET_SAMPLE_LIMIT).map(({ child, item }) => ({
     staged_ci_id: item.staged_ci_id,
     name: item.name,
-    class_name: cis.get(item.staged_ci_id.toLowerCase())?.className ?? "Unknown",
+    class_name: item.proposed_class ?? cis.get(item.staged_ci_id.toLowerCase())?.className ?? "Unknown",
     operation: item.operation,
     risk: risk(findings.get(item.finding_id.toLowerCase())?.severity),
     child_campaign_id: child.campaign_id,
@@ -630,7 +632,7 @@ function operationFamilies(items: RemediationApprovalManifestItem[]) {
 }
 
 function operationFamily(operation: string) {
-  return operation === "UPDATE" || operation === "NO_CHANGE" ? "safe-update" : operation.toLowerCase();
+  return operation === "UPDATE" ? "safe-update" : operation === "INSERT" ? "insert" : undefined;
 }
 
 function latestAuthoritativeOperationFamily(timeline: TimelineEvent[], stagedCiId: string) {
@@ -643,7 +645,18 @@ function latestAuthoritativeOperationFamily(timeline: TimelineEvent[], stagedCiI
     .at(-1);
   if (!event) return undefined;
   const operation = parseCampaignEventDetail(event.reasoning)?.operation?.toUpperCase();
-  return operation === "INSERT" || operation === "UPDATE" || operation === "NO_CHANGE" ? operationFamily(operation) : undefined;
+  return operation === "INSERT" || operation === "UPDATE" ? operationFamily(operation) : undefined;
+}
+
+function latestAuthoritativeClass(timeline: TimelineEvent[], stagedCiId: string) {
+  const event = [...timeline]
+    .filter(candidate => {
+      const detail = parseCampaignEventDetail(candidate.reasoning);
+      return detail?.action === "ire_simulation_completed" && detail.staged_ci_id?.toLowerCase() === stagedCiId.toLowerCase();
+    })
+    .sort((left, right) => eventFreshness(left) - eventFreshness(right))
+    .at(-1);
+  return event ? parseCampaignEventDetail(event.reasoning)?.proposed_class : undefined;
 }
 
 function risk(value?: string): keyof ApprovalPacketAggregate["risks"] {

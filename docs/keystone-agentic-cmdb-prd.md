@@ -774,7 +774,8 @@ terminal demo readiness check for the active run that requires exact verified
 target bindings and zero awaiting-approval, ready-to-simulate, executing,
 blocked, or reconciliation-required records after refresh.
 
-Preserve the server-only exact packet-hash gate, sequential individual
+Preserve the server-validated one-time exact packet-hash gate, initiated by a
+separate explicit UI authorization action, sequential individual
 ServiceNow approvals, status-only browser Execute/Verify routes, and Phase D as
 the only IRE execution and verification owner. Add no ServiceNow schema or
 direct CMDB write path. Run the campaign, packet, queue, playback, Phase A-D,

@@ -117,6 +117,18 @@ assert.match(simulationSource, /CLASS_ALIAS_RETRY_AVAILABLE/);
 assert.match(simulationSource, /MISSING_IDENTITY/);
 assert.match(simulationSource, /_findBlockedSimulation: function/);
 assert.match(simulationSource, /error && error\.error_code/);
+assert.match(simulationSource, /SIMULATION_EVIDENCE_VERSION = 'keystone\.simulation\.v2'/);
+assert.match(simulationSource, /CLASS_POLICY_VERSION = 'servicenow-allowlisted-class-v1'/);
+assert.match(simulationSource, /_validateSimulationClassEvidence: function/);
+assert.match(simulationSource, /reconciliation_passed/);
+assert.match(simulationSource, /reconciliation_failed/);
+const reconciliationSource = simulationSource.slice(
+  simulationSource.indexOf('_reconcileNoChange: function'),
+  simulationSource.indexOf('_findBlockedSimulation: function'),
+);
+assert.match(reconciliationSource, /target\.get\(targetCiId\)/, 'NO_CHANGE performs a server-owned target read-back');
+assert.equal(/createOrUpdateCI|_createOrUpdateCi|approval_recorded|approval_resume/.test(reconciliationSource), false,
+  'NO_CHANGE reconciliation performs no approval, Execute, or CMDB write');
 assert.match(payloadSource, /strategyError\.error_code = retryCount > 0/);
 assert.match(payloadSource, /_hasAliasRetryAvailable: function/);
 assert.match(payloadSource, /_validateUsableIdentity: function/);
@@ -124,6 +136,9 @@ assert.match(payloadSource, /_validateAliasRetryCandidate: function/);
 assert.equal(registeredTests(b3aSource).length, 23);
 assert.equal(registeredTests(b3bSource).length, 41);
 assert.match(adapterSource, /svc\.simulate\(body, \{ mode: 'interactive' \}\)/);
+for (const field of ['class_policy_version', 'evidence_version', 'target_ci_sys_id']) {
+  assert.ok(adapterSource.includes(field), `ire_simulate forwards ${field}`);
+}
 for (const forbidden of ['GlideRecord', 'GlideAggregate', 'sn_cmdb', 'createOrUpdateCI']) {
   assert.equal(adapterExecutable.includes(forbidden), false, `ire_simulate contains ${forbidden}`);
 }

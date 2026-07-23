@@ -63,8 +63,9 @@ policy, payload, or CMDB values.
 
 Packet preparation may create missing deferred reviews and freeze eligible
 fresh child manifests. It never approves, executes, verifies, or initiates
-simulation. Approval remains locked until the complete recomputed parent hash
-exactly matches the server-only `CMDB_AGENT_APPROVAL_PACKET_HASH` value.
+simulation. Approval remains locked until the operator enters the complete
+recomputed parent hash and the server issues a one-time capability through the
+separate `Authorize exact packet` UI action.
 
 ## Presentation-Only Completion
 

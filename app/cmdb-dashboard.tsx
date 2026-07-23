@@ -39,6 +39,7 @@ import {
   type WorkQueueItemSource,
   type WorkQueueSummary,
 } from "./lib/cmdb/work-queue";
+import { deriveCorrelatedVerifiedOutcomes } from "./lib/cmdb/terminal-outcomes";
 import type {
   RemediationApprovalManifest,
   RemediationCampaignApprovalResult,
@@ -123,7 +124,7 @@ type CampaignViewState = {
 };
 type CampaignPendingAction = "plan" | "failure-groups" | "simulate" | "retry" | "prepare-approval" | "approve" | "status";
 type ApprovalPacketPlanView = ApprovalPacketPlan & { approval_enabled?: boolean; demo_mode?: boolean };
-type FrozenApprovalPacketView = FrozenApprovalPacket & { approval_enabled?: boolean; demo_mode?: boolean };
+type FrozenApprovalPacketView = FrozenApprovalPacket & { approval_enabled?: boolean; authorization_expires_at?: string; demo_mode?: boolean };
 type ApprovalPacketViewState = {
   plan?: ApprovalPacketPlanView;
   packet?: FrozenApprovalPacketView;
@@ -131,7 +132,7 @@ type ApprovalPacketViewState = {
   status?: ApprovalPacketStatus;
   restored?: boolean;
 };
-type ApprovalPacketPendingAction = "plan-packet" | "prepare-packet" | "approve-packet" | "packet-status";
+type ApprovalPacketPendingAction = "plan-packet" | "prepare-packet" | "authorize-packet" | "approve-packet" | "packet-status";
 
 const resourceNames: ResourceName[] = ["cis", "timeline", "relationships", "health", "findings", "reviews"];
 const connectingResources: ResourceState = { cis: "connecting", timeline: "connecting", relationships: "connecting", health: "connecting", findings: "connecting", reviews: "connecting" };
@@ -1463,7 +1464,7 @@ function RemediateView(props: {
     });
   }
 
-  async function runPacketAction(action: "plan-packet" | "prepare-packet" | "approve-packet") {
+  async function runPacketAction(action: "plan-packet" | "prepare-packet" | "authorize-packet" | "approve-packet") {
     if (!activeRunId || packetPending) return;
     setPacketPending(action);
     setPacketError("");
@@ -1471,7 +1472,11 @@ function RemediateView(props: {
       const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(action === "approve-packet" ? packetRequestBody(true) : { migration_run_id: activeRunId }),
+        body: JSON.stringify(action === "authorize-packet"
+          ? { ...packetRequestBody(true), confirmation_hash: packetHashConfirmation.trim().toUpperCase() }
+          : action === "approve-packet"
+            ? packetRequestBody(true)
+            : { migration_run_id: activeRunId }),
       });
       const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
       if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Approval packet ${action} failed with HTTP ${response.status}.`);
@@ -1481,8 +1486,14 @@ function RemediateView(props: {
       } else if (action === "prepare-packet") {
         setPacketHashConfirmation("");
         setApprovalPacket(current => ({ ...current, packet: payload as FrozenApprovalPacketView, approval: undefined, status: undefined }));
+      } else if (action === "authorize-packet") {
+        setApprovalPacket(current => ({ ...current, packet: payload as FrozenApprovalPacketView, approval: undefined, status: undefined }));
       } else {
-        setApprovalPacket(current => ({ ...current, approval: payload as ApprovalPacketApprovalResult }));
+        setApprovalPacket(current => ({
+          ...current,
+          packet: current.packet ? { ...current.packet, approval_enabled: false } : current.packet,
+          approval: payload as ApprovalPacketApprovalResult,
+        }));
       }
       await onRefresh();
     } catch (error) {
@@ -1526,25 +1537,13 @@ function RemediateView(props: {
 
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">BOUNDED AGENT REMEDIATION</span><h1>Governed campaigns, one chain per CI.</h1><p>Plan and approve a frozen group once. ServiceNow independently executes and verifies every eligible staged CI.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
-    <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE</small><strong>ServiceNow rebuilds</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - APPROVE</small><strong>One group confirmation</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - SERVER EXECUTE</small><strong>Phase D continuation</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - AUTO VERIFY</small><strong>Correlation monitored</strong></div></div></section>
+    <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE</small><strong>ServiceNow rebuilds</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - APPROVE</small><strong>One group confirmation</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - SERVER EXECUTE</small><strong>ServiceNow runs IRE</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - AUTO VERIFY</small><strong>Correlation monitored</strong></div></div></section>
     <section className="panel work-queue-panel">
       <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
       <div className="queue-buckets">
         {queue.buckets.map(bucket => <WorkQueueBucketCard key={bucket.id} bucket={bucket} selectedId={selectedCi?.id} onSelect={setSelectedCiId} />)}
       </div>
     </section>
-    <ApprovalPacketPanel
-      activeRunId={activeRunId}
-      packet={approvalPacket}
-      pending={packetPending}
-      error={packetError}
-      confirmation={packetHashConfirmation}
-      onConfirmation={setPacketHashConfirmation}
-      onPlan={() => void runPacketAction("plan-packet")}
-      onPrepare={() => void runPacketAction("prepare-packet")}
-      onApprove={() => void runPacketAction("approve-packet")}
-      onRefresh={() => void refreshPacketStatus()}
-    />
     <AgentCampaignPanel
       activeRunId={activeRunId}
       campaign={campaign}
@@ -1567,6 +1566,19 @@ function RemediateView(props: {
       onPrepare={() => void runCampaignAction("prepare-approval")}
       onApprove={() => void runCampaignAction("approve")}
       onRefresh={() => void refreshCampaignStatus()}
+    />
+    <ApprovalPacketPanel
+      activeRunId={activeRunId}
+      packet={approvalPacket}
+      pending={packetPending}
+      error={packetError}
+      confirmation={packetHashConfirmation}
+      onConfirmation={setPacketHashConfirmation}
+      onPlan={() => void runPacketAction("plan-packet")}
+      onPrepare={() => void runPacketAction("prepare-packet")}
+      onAuthorize={() => void runPacketAction("authorize-packet")}
+      onApprove={() => void runPacketAction("approve-packet")}
+      onRefresh={() => void refreshPacketStatus()}
     />
     <section className="remediate-layout"><div className="agent-tools"><div className="section-title"><span className="section-index">02</span><div><h2>Ranked remediation focus</h2><p>Choose the finding group, then work one staged CI at a time.</p></div></div><div className="tool-grid">
       {health.fixes.map((fix, index) => <button className={`tool-card ${selected?.id === fix.id ? "selected" : ""}`} key={fix.id} onClick={() => onSelect(fix)}><span className="tool-icon"><Icon name={index === 0 ? "graph" : index === 1 ? "search" : index === 2 ? "shield" : "clock"} /></span><span className="tool-copy"><small>{fix.tool.toUpperCase()}</small><strong>{fix.title}</strong><span>{fix.affected} candidate records</span></span><span className="tool-impact">+{fix.impact}%</span></button>)}
@@ -1627,8 +1639,8 @@ function RemediateView(props: {
         <div className="ire-action-footer">
           <div className="ire-action-grid">
             <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating…" : "Simulate"}</button>
-            <button className="ghost-button" title="Authorizes one fingerprint-bound Phase D continuation for this staged CI." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={approve}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving…" : "Approve"}</button>
-            <div className="ire-auto-continuation"><Icon name="shield" size={15} /><span><strong>Execute + Verify are automatic</strong><small>ServiceNow Phase D continuation is monitored from Event Ledger evidence.</small></span></div>
+            <button className="ghost-button" title="Authorizes one fingerprint-bound ServiceNow execution for this staged CI." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={approve}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving…" : "Approve"}</button>
+            <div className="ire-auto-continuation"><Icon name="shield" size={15} /><span><strong>Execute + Verify are automatic</strong><small>ServiceNow execution and verification are monitored from Event Ledger evidence.</small></span></div>
           </div>
         </div>
       </div>
@@ -1654,10 +1666,11 @@ function ApprovalPacketPanel(props: {
   onConfirmation: (value: string) => void;
   onPlan: () => void;
   onPrepare: () => void;
+  onAuthorize: () => void;
   onApprove: () => void;
   onRefresh: () => void;
 }) {
-  const { activeRunId, packet, pending, error, confirmation, onConfirmation, onPlan, onPrepare, onApprove, onRefresh } = props;
+  const { activeRunId, packet, pending, error, confirmation, onConfirmation, onPlan, onPrepare, onAuthorize, onApprove, onRefresh } = props;
   const frozen = packet.packet;
   const status = packet.status;
   const plan = packet.plan;
@@ -1666,12 +1679,19 @@ function ApprovalPacketPanel(props: {
   const packetHash = frozen?.packet_hash ?? status?.packet_hash;
   const packetId = frozen?.packet_id ?? status?.packet_id ?? plan?.packet_id;
   const children = frozen?.children ?? [];
-  const canApprove = Boolean(
-    frozen?.stage === "review_ready" &&
-    frozen.packet_hash &&
-    frozen.approval_enabled &&
-    confirmation.trim().toUpperCase() === frozen.packet_hash,
-  );
+  const packetReviewReady = frozen?.stage === "review_ready" && stage === "review_ready";
+  const packetStarted = ["approving", "executing", "verifying", "completed"].includes(stage);
+  const serverHashAuthorized = Boolean(frozen?.approval_enabled);
+  const typedHashMatches = Boolean(frozen?.packet_hash && confirmation.trim().toUpperCase() === frozen.packet_hash);
+  const canAuthorize = Boolean(packetReviewReady && typedHashMatches && !serverHashAuthorized);
+  const canApprove = Boolean(packetReviewReady && serverHashAuthorized && typedHashMatches);
+  const approvalButtonTitle = !packetReviewReady
+    ? "Prepare a fresh review-ready packet first."
+    : !serverHashAuthorized
+      ? "Authorize this exact freshly recomputed hash in the UI first."
+      : !typedHashMatches
+        ? "Enter the complete exact packet hash shown above."
+        : "Approve the frozen packet and start sequential individual ServiceNow chains.";
 
   return <section className="panel approval-packet-panel">
     <div className="panel-heading">
@@ -1710,9 +1730,17 @@ function ApprovalPacketPanel(props: {
       {frozen.samples.length > 0 && <div className="packet-evidence"><div className="campaign-list-head"><strong>Deterministic evidence sample</strong><span>{frozen.samples.length} records</span></div>{frozen.samples.map(sample => <div className="campaign-row" key={sample.staged_ci_id}><Icon name="database" size={14} /><div><strong>{sample.name}</strong><small>{sample.staged_ci_id} · {sample.class_name} · {sample.risk} · fingerprint {sample.simulation_fingerprint.slice(0, 16)}…</small></div><OperationPill value={sample.operation as Operation} /></div>)}</div>}
       {frozen.exclusions.length > 0 && <div className="packet-evidence exclusions"><div className="campaign-list-head"><strong>Excluded / blocked</strong><span>{frozen.exclusions.length}</span></div>{frozen.exclusions.slice(0, 25).map(item => <div className="campaign-row" key={`${item.staged_ci_id}:${item.reason}`}><Icon name="x" size={14} /><div><strong>{item.name}</strong><small>{item.reason}</small></div></div>)}</div>}
       <label className="packet-confirmation"><span>Enter the complete packet hash to confirm exactly {frozen.items.length} records across {frozen.children.length} child manifests.</span><input value={confirmation} onChange={event => onConfirmation(event.target.value)} spellCheck={false} autoComplete="off" placeholder={frozen.packet_hash} /></label>
-      {frozen.demo_mode && <div className="campaign-notice packet-demo-notice"><Icon name="spark" size={15} /><span><strong>Isolated demo authorization</strong> This exact fixture hash was authorized before launch. No ServiceNow or CMDB endpoint is reachable.</span><button className="ghost-button" onClick={() => onConfirmation(frozen.packet_hash || "")}>Use exact demo hash</button></div>}
-      {!frozen.approval_enabled && <div className="campaign-notice"><Icon name="shield" size={15} />Live fan-out is locked. Set the server-only CMDB_AGENT_APPROVAL_PACKET_HASH to this exact parent hash only after packet-specific authorization.</div>}
-      <button className="primary-button" disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} />{pending === "approve-packet" ? "Approving individually…" : `Approve ${frozen.items.length} individual chains`}</button>
+      <div className="packet-authorization-checklist" aria-label="Packet authorization requirements">
+        <div className={packetReviewReady || packetStarted ? "ready" : "waiting"}><Icon name={packetReviewReady || packetStarted ? "check" : "clock"} size={14} /><span><strong>1. Fresh packet</strong><small>{packetStarted ? "The frozen packet remains bound to the resulting evidence." : packetReviewReady ? "Review-ready and within its freshness window." : "Plan and prepare a fresh packet."}</small></span></div>
+        <div className={typedHashMatches ? "ready" : "waiting"}><Icon name={typedHashMatches ? "check" : "file"} size={14} /><span><strong>2. Typed confirmation</strong><small>{typedHashMatches ? "The complete 64-character hash matches." : "Paste the complete displayed hash into the field."}</small></span></div>
+        <div className={serverHashAuthorized || packetStarted ? "ready" : "waiting"}><Icon name={serverHashAuthorized || packetStarted ? "check" : "shield"} size={14} /><span><strong>3. Exact authorization</strong><small>{packetStarted ? "The one-time capability was consumed when approval began." : serverHashAuthorized ? "A one-time server capability is armed for this exact packet." : "Select Authorize exact packet after the complete hash matches."}</small></span></div>
+      </div>
+      {frozen.demo_mode && <div className="campaign-notice packet-demo-notice"><Icon name="spark" size={15} /><span><strong>Isolated demo</strong> No ServiceNow or CMDB endpoint is reachable. The same two-step UI authorization flow is enforced.</span><button className="ghost-button" onClick={() => onConfirmation(frozen.packet_hash || "")}>Fill exact demo hash</button></div>}
+      {!frozen.approval_enabled && stage === "review_ready" && <div className="campaign-notice"><Icon name="shield" size={15} />Live fan-out is locked. Matching the hash enables a separate one-time authorization action; authorization itself performs no IRE work.</div>}
+      <div className="campaign-controls packet-approval-actions">
+        <button className="ghost-button" disabled={!canAuthorize || Boolean(pending)} onClick={onAuthorize}><Icon name="shield" size={15} />{pending === "authorize-packet" ? "Authorizing exact hash…" : "Authorize exact packet"}</button>
+        <button className="primary-button" title={approvalButtonTitle} disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} />{pending === "approve-packet" ? "Approving individually…" : `Approve ${frozen.items.length} individual chains`}</button>
+      </div>
     </div>}
     {status && <div className="packet-progress"><div className="campaign-list-head"><strong>ServiceNow-reconstructed progress</strong><span>{status.items.length} records</span></div>{status.children.map(child => <div className="packet-progress-row" key={child.campaign_id}><strong>{child.campaign_id}</strong><span>{child.verified} verified · {child.blocked} blocked · {child.item_count} total</span><code>{child.manifest_id}</code></div>)}</div>}
     {packetId && !frozen && <div className="campaign-notice"><Icon name="shield" size={15} />Recovered packet {packetId}{packetHash ? ` · ${packetHash}` : ""}</div>}
@@ -2149,7 +2177,7 @@ function formatSummaryTouched(value: string): string {
 type PastRunFetchState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; cis: ConfigurationItem[]; timeline: TimelineEvent[]; health: HealthData };
+  | { status: "ready"; cis: ConfigurationItem[]; timeline: TimelineEvent[]; health: HealthData; findings: RemediationFinding[]; reviews: RemediationReview[] };
 
 function PastRunSummaryCard({ entry, isActive, onOpen }: {
   entry: RegistryEntry;
@@ -2163,21 +2191,27 @@ function PastRunSummaryCard({ entry, isActive, onOpen }: {
     (async () => {
       try {
         const qs = `?run=${encodeURIComponent(entry.id)}`;
-        const [cisRes, timelineRes, healthRes] = await Promise.all([
+        const [cisRes, timelineRes, healthRes, findingsRes, reviewsRes] = await Promise.all([
           fetch(`/api/cmdb/cis${qs}`, { cache: "no-store" }),
           fetch(`/api/cmdb/timeline${qs}`, { cache: "no-store" }),
           fetch(`/api/cmdb/health${qs}`, { cache: "no-store" }),
+          fetch(`/api/cmdb/findings${qs}`, { cache: "no-store" }),
+          fetch(`/api/cmdb/reviews${qs}`, { cache: "no-store" }),
         ]);
-        if (!cisRes.ok || !timelineRes.ok || !healthRes.ok) {
-          throw new Error(`Upstream returned ${[cisRes.status, timelineRes.status, healthRes.status].join("/")}`);
+        if (!cisRes.ok || !timelineRes.ok || !healthRes.ok || !findingsRes.ok || !reviewsRes.ok) {
+          throw new Error(`Upstream returned ${[cisRes.status, timelineRes.status, healthRes.status, findingsRes.status, reviewsRes.status].join("/")}`);
         }
-        const [cisBody, timelineBody, healthBody] = await Promise.all([cisRes.json(), timelineRes.json(), healthRes.json()]);
+        const [cisBody, timelineBody, healthBody, findingsBody, reviewsBody] = await Promise.all([
+          cisRes.json(), timelineRes.json(), healthRes.json(), findingsRes.json(), reviewsRes.json(),
+        ]);
         if (cancelled) return;
         setState({
           status: "ready",
           cis: normalizeComprehendCis(cisBody),
           timeline: normalizeComprehendTimeline(timelineBody),
           health: normalizeComprehendHealth(healthBody),
+          findings: normalizeRemediationFindings(findingsBody),
+          reviews: normalizeRemediationReviews(reviewsBody),
         });
       } catch (err) {
         if (cancelled) return;
@@ -2201,14 +2235,16 @@ function PastRunSummaryCard({ entry, isActive, onOpen }: {
 
     {state.status === "loading" && <p className="past-summary-status">Loading evidence…</p>}
     {state.status === "error" && <p className="past-summary-status error">Could not load evidence for this run — {state.message}</p>}
-    {state.status === "ready" && <PastRunSummaryBody cis={state.cis} timeline={state.timeline} health={state.health} entry={entry} />}
+    {state.status === "ready" && <PastRunSummaryBody cis={state.cis} timeline={state.timeline} health={state.health} findings={state.findings} reviews={state.reviews} entry={entry} />}
   </article>;
 }
 
-function PastRunSummaryBody({ cis, timeline, health, entry }: {
+function PastRunSummaryBody({ cis, timeline, health, findings, reviews, entry }: {
   cis: ConfigurationItem[];
   timeline: TimelineEvent[];
   health: HealthData;
+  findings: RemediationFinding[];
+  reviews: RemediationReview[];
   entry: RegistryEntry;
 }) {
   const baseline = Math.round(health.baselineScore ?? health.score);
@@ -2217,13 +2253,22 @@ function PastRunSummaryBody({ cis, timeline, health, entry }: {
   const realizedLift = Math.max(0, verified - baseline);
   const remainingLift = Math.max(0, projected - verified);
 
+  const queue = deriveRemediationWorkQueue({ cis, timeline, findings, reviews, healthFixes: health.fixes });
+  const outcomes = deriveCorrelatedVerifiedOutcomes(queue.items, timeline);
   const operations = (() => {
     const counts = new Map<string, number>();
-    for (const ci of cis) counts.set(ci.operation, (counts.get(ci.operation) ?? 0) + 1);
+    for (const outcome of outcomes) counts.set(outcome.operation, (counts.get(outcome.operation) ?? 0) + 1);
     const order = Object.keys(OPERATION_META);
     return [...counts.entries()]
       .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
-      .map(([op, count]) => ({ op, count, meta: OPERATION_META[op] ?? { label: op, tone: "muted" as const } }));
+      .map(([op, count]) => ({
+        op,
+        count,
+        meta: {
+          ...(OPERATION_META[op] ?? { label: op, tone: "muted" as const }),
+          label: op === "INSERT" ? "Inserted" : op === "UPDATE" ? "Updated" : op === "NO_CHANGE" ? "Reconciled" : op,
+        },
+      }));
   })();
 
   const workGroupCount = health.workGroupImpacts?.length ?? 0;
@@ -2234,8 +2279,10 @@ function PastRunSummaryBody({ cis, timeline, health, entry }: {
   const relationshipCount = health.relationshipCount ?? 0;
 
   const recent = [...timeline].sort((a, b) => b.seq - a.seq).slice(0, 6);
+  const remaining = Math.max(0, cis.length - outcomes.length);
+  const lifecycleCounts = Object.fromEntries(queue.buckets.map(bucket => [bucket.id, bucket.items.length]));
   const headline = cis.length > 0
-    ? `${cis.length} configuration ${cis.length === 1 ? "item" : "items"} processed for ${entry.label}.`
+    ? `${outcomes.length} of ${cis.length} configuration ${cis.length === 1 ? "item" : "items"} reached correlated terminal evidence for ${entry.label}.`
     : `${entry.label} — no configuration items recorded yet.`;
 
   return <div className="past-summary-body">
@@ -2262,7 +2309,7 @@ function PastRunSummaryBody({ cis, timeline, health, entry }: {
     </div>
 
     <div className="summary-section">
-      <h3>Record outcomes</h3>
+      <h3>Correlated terminal outcomes</h3>
       {operations.length > 0
         ? <div className="summary-ops">
             {operations.map(({ op, count, meta }) => <div key={op} className={"summary-op " + meta.tone}>
@@ -2270,7 +2317,7 @@ function PastRunSummaryBody({ cis, timeline, health, entry }: {
               <small>{meta.label}</small>
             </div>)}
           </div>
-        : <p className="summary-empty">No staged records were evaluated.</p>}
+        : <p className="summary-empty">No correlated terminal outcomes were verified.</p>}
     </div>
 
     <div className="summary-section">
@@ -2282,6 +2329,12 @@ function PastRunSummaryBody({ cis, timeline, health, entry }: {
         <SummaryMetric label="Duplicate candidates" value={duplicates} tone={duplicates > 0 ? "warn" : "muted"} />
         <SummaryMetric label="Stale records" value={staleRecords} tone={staleRecords > 0 ? "warn" : "muted"} />
         <SummaryMetric label="Relationships" value={relationshipCount} />
+        <SummaryMetric label="Target bindings" value={outcomes.length} tone={outcomes.length > 0 ? "good" : "muted"} />
+        <SummaryMetric label="Awaiting approval" value={lifecycleCounts.needs_approval ?? 0} tone={(lifecycleCounts.needs_approval ?? 0) > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Ready to simulate" value={lifecycleCounts.ready_to_simulate ?? 0} tone={(lifecycleCounts.ready_to_simulate ?? 0) > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Executing / verifying" value={(lifecycleCounts.ready_to_execute ?? 0) + (lifecycleCounts.needs_verification ?? 0)} tone={(lifecycleCounts.ready_to_execute ?? 0) + (lifecycleCounts.needs_verification ?? 0) > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Blocked / failed" value={(lifecycleCounts.blocked ?? 0) + (lifecycleCounts.simulation_failed ?? 0)} tone={(lifecycleCounts.blocked ?? 0) + (lifecycleCounts.simulation_failed ?? 0) > 0 ? "warn" : "muted"} />
+        <SummaryMetric label="Remaining" value={remaining} tone={remaining > 0 ? "warn" : "good"} />
       </div>
     </div>
 

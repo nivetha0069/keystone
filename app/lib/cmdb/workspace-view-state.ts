@@ -13,6 +13,7 @@ import {
 import type { RemediationFinding, RemediationReview } from "./comprehend-adapter";
 import { isDraftRunState, isTerminalRunState } from "./run-lifecycle";
 import { deriveRemediationWorkQueue, type WorkQueueSummary } from "./work-queue";
+import { deriveCorrelatedVerifiedOutcomes, type CorrelatedVerifiedOutcome } from "./terminal-outcomes";
 
 export type WorkspacePhaseId = CprPhaseId | "verify";
 
@@ -112,6 +113,7 @@ export type WorkspaceViewState = {
   hasRun: boolean;
   snapshot: AgentWorkspaceSnapshot;
   queue: WorkQueueSummary;
+  terminalOutcomes: CorrelatedVerifiedOutcome[];
 
   activePhase: WorkspacePhaseId;
   comprehendStatus: PhaseStatus;
@@ -224,6 +226,7 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
     hasRun,
     handoffGap,
   });
+  const terminalOutcomes = deriveCorrelatedVerifiedOutcomes(queue.items, input.timeline);
 
   const activityCards = buildActivityCards(input.timeline).slice(-14);
   const currentEvent = pickCurrentEvent(activityCards, activePhase, requiresApproval, approvalPacketPrepared);
@@ -292,6 +295,7 @@ export function deriveWorkspaceViewState(input: WorkspaceViewInput): WorkspaceVi
     hasRun,
     snapshot,
     queue,
+    terminalOutcomes,
     activePhase,
     comprehendStatus,
     prioritizeStatus,

@@ -19,9 +19,14 @@ import {
   recoverLatestApprovalPacketSelection,
   type ApprovalPacketSelection,
 } from "../../../../lib/cmdb/approval-packet";
+import {
+  approvalPacketAuthorized,
+  authorizeApprovalPacket,
+  consumeApprovalPacketAuthorization,
+} from "../../../../lib/cmdb/approval-packet-authority";
 import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from "../../../../lib/cmdb/server-campaign-bridge";
 
-const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "approve-packet", "packet-status"]);
+const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "authorize-packet", "approve-packet", "packet-status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
   "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
@@ -140,7 +145,7 @@ async function handlePacketAction(action: string, incoming: Record<string, unkno
     const packet = prepareApprovalPacket(snapshot, selection);
     return Response.json({
       ...packet,
-      approval_enabled: packet.packet_hash ? exactPacketHashGate(packet.packet_hash) : false,
+      approval_enabled: packetAuthorizationEnabled(packet),
       demo_mode: packetDemoMode(),
     });
   }
@@ -154,8 +159,29 @@ async function handlePacketAction(action: string, incoming: Record<string, unkno
     throw campaignError("INVALID_REQUEST", "Packet id, exact hash, child manifest hashes, and frozen staged CI identifiers are required.");
   }
   const recomputed = prepareApprovalPacket(snapshot, selection);
-  if (!recomputed.packet_hash || !exactPacketHashGate(recomputed.packet_hash)) {
-    return Response.json({ error: "Packet approval is locked until this exact hash is authorized server-side.", code: "PACKET_APPROVAL_DISABLED" }, { status: 403 });
+  if (action === "authorize-packet") {
+    const confirmationHash = hex(incoming.confirmation_hash, 64);
+    if (!confirmationHash || confirmationHash !== recomputed.packet_hash) {
+      throw campaignError("PACKET_CONFIRMATION_MISMATCH", "The complete typed packet hash must exactly match the freshly recomputed packet.");
+    }
+    if (recomputed.stage !== "review_ready" || !recomputed.packet_id || !recomputed.packet_hash || !recomputed.expires_at) {
+      throw campaignError("PACKET_NOT_REVIEW_READY", "Only a fresh review-ready packet can be authorized.");
+    }
+    const authorization = authorizeApprovalPacket({
+      migration_run_id: recomputed.migration_run_id,
+      packet_id: recomputed.packet_id,
+      packet_hash: recomputed.packet_hash,
+      expires_at: recomputed.expires_at,
+    });
+    return Response.json({
+      ...recomputed,
+      approval_enabled: true,
+      authorization_expires_at: authorization.expires_at,
+      demo_mode: packetDemoMode(),
+    });
+  }
+  if (!recomputed.packet_hash || !recomputed.packet_id || !consumePacketAuthorization(recomputed)) {
+    return Response.json({ error: "Packet approval is locked until this exact fresh hash is authorized in the UI.", code: "PACKET_APPROVAL_DISABLED" }, { status: 403 });
   }
   const result = await approveApprovalPacket(snapshot, selection, (item, generated) => invokeCampaignIre("approve", {
     migration_run_id: selection.migration_run_id,
@@ -228,8 +254,22 @@ function stringArray(value: unknown, normalize: (entry: unknown) => string | und
   return normalized as string[];
 }
 
-function exactPacketHashGate(packetHash: string) {
-  return (process.env.CMDB_AGENT_APPROVAL_PACKET_HASH || "").trim().toUpperCase() === packetHash.toUpperCase();
+function packetAuthorizationEnabled(packet: { migration_run_id: string; packet_id?: string; packet_hash?: string }) {
+  if (!packet.packet_id || !packet.packet_hash) return false;
+  return approvalPacketAuthorized({
+    migration_run_id: packet.migration_run_id,
+    packet_id: packet.packet_id,
+    packet_hash: packet.packet_hash,
+  });
+}
+
+function consumePacketAuthorization(packet: { migration_run_id: string; packet_id?: string; packet_hash?: string }) {
+  if (!packet.packet_id || !packet.packet_hash) return false;
+  return consumeApprovalPacketAuthorization({
+    migration_run_id: packet.migration_run_id,
+    packet_id: packet.packet_id,
+    packet_hash: packet.packet_hash,
+  });
 }
 
 function packetDemoMode() {

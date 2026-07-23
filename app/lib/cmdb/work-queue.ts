@@ -29,6 +29,9 @@ export type WorkQueueItem = {
   healthFix?: HealthFix;
   simulationCorrelation?: string;
   simulationFingerprint?: string;
+  simulationProposedClass?: string;
+  simulationEvidenceVersion?: string;
+  simulationClassPolicyVersion?: string;
   executionCorrelation?: string;
   targetCiSysId?: string;
   targetCiName?: string;
@@ -132,6 +135,9 @@ export function deriveRemediationWorkQueue(input: {
         healthFix,
         simulationCorrelation: workbench.simulation?.simulation_correlation_id ?? workbench.simulation?.correlation_id ?? playback.simulationCorrelation,
         simulationFingerprint: workbench.simulation?.simulation_fingerprint ?? playback.simulationFingerprint,
+        simulationProposedClass: playback.proposedClass,
+        simulationEvidenceVersion: playback.evidenceVersion,
+        simulationClassPolicyVersion: playback.classPolicyVersion,
         executionCorrelation: workbench.execution
           ? workbench.execution.success
             ? workbench.execution.execution_correlation_id
@@ -191,6 +197,8 @@ function lifecycleFromLedger(events: TimelineEvent[]): IreLifecycleState | null 
     if (structuredAction === "ire_verification_claimed") return "executed_pending_verification";
     if (structuredAction === "verification_passed") return "verified";
     if (structuredAction === "verification_failed") return "verification_failed";
+    if (structuredAction === "reconciliation_passed") return "verified";
+    if (structuredAction === "reconciliation_failed") return "verification_failed";
     if (structuredAction === "ire_simulation_completed") return "simulated_pending_approval";
     if (["ire_simulation_failed", "ire_simulation_blocked"].includes(structuredAction)) return "simulation_failed";
     const text = `${event.name} ${event.reasoning} ${event.operation} ${event.status}`.toLowerCase();
@@ -263,6 +271,7 @@ function isStructuredCiLifecycleEvent(value: string) {
       "ire_execution_claimed", "ire_execution_completed", "ire_execution_failed",
       "ire_execution_reconciliation_required", "ire_verification_claimed",
       "verification_passed", "verification_failed",
+      "reconciliation_passed", "reconciliation_failed",
     ].includes(action);
   } catch {
     return false;
@@ -358,6 +367,9 @@ function playbackIdentifiers(events: TimelineEvent[]) {
     executionCorrelation: lastMetadataValue(text, "execution_correlation_id"),
     targetCiSysId: lastMetadataValue(text, "target_ci_sys_id"),
     targetCiName: lastMetadataValue(text, "actual_name") ?? lastMetadataValue(text, "target_ci_name"),
+    proposedClass: lastMetadataValue(text, "proposed_class"),
+    evidenceVersion: lastMetadataValue(text, "evidence_version"),
+    classPolicyVersion: lastMetadataValue(text, "class_policy_version"),
   };
 }
 

@@ -151,6 +151,10 @@ export type IreActionResponse = {
   retry_count?: number;
   max_retries?: number;
   decision_source?: string;
+  proposed_class?: string;
+  class_policy_version?: string;
+  evidence_version?: string;
+  target_ci_sys_id?: string;
   error?: IreActionError;
 };
 
@@ -260,6 +264,10 @@ export function normalizeIreActionResponse(action: IreAction, payload: unknown):
     retry_count: numberValue(row.retry_count ?? row.retryCount),
     max_retries: numberValue(row.max_retries ?? row.maxRetries),
     decision_source: stringValue(row.decision_source ?? row.decisionSource),
+    proposed_class: stringValue(row.proposed_class ?? row.proposedClass),
+    class_policy_version: stringValue(row.class_policy_version ?? row.classPolicyVersion),
+    evidence_version: stringValue(row.evidence_version ?? row.evidenceVersion),
+    target_ci_sys_id: stringValue(row.target_ci_sys_id ?? row.targetCiSysId),
     error: errorObject(row.error),
   };
 }

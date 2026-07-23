@@ -22,6 +22,7 @@ require.extensions[".ts"] = function loadTypeScript(module, filename) {
 };
 
 const packet = require("../app/lib/cmdb/approval-packet.ts");
+const authority = require("../app/lib/cmdb/approval-packet-authority.ts");
 
 async function main() {
   const RUN = "e0ac4df32b82871060aefba6b891bf5b";
@@ -36,7 +37,7 @@ async function main() {
     const stagedId = sysId(index + 1);
     const findingId = sysId(1000 + index);
     const reviewId = sysId(2000 + index);
-    const operation = index % 3 === 0 ? "NO_CHANGE" : "UPDATE";
+    const operation = index === 104 ? "NO_CHANGE" : "UPDATE";
     cis.push({
       id: stagedId, stagedCiId: stagedId, migrationRunId: RUN,
       name: `packet-server-${String(index + 1).padStart(3, "0")}`,
@@ -74,19 +75,35 @@ async function main() {
   assert.equal(plan.preparable_count, 100, "packet is capped at 100 records");
   assert.equal(plan.children.length, 5, "packet has at most five child manifests");
   assert.ok(plan.children.every(child => child.item_count === 20), "every full child retains the Phase E 20-record bound");
-  assert.equal(plan.deferred_count, 5, "overflow remains deferred");
+  assert.equal(plan.deferred_count, 4, "eligible overflow remains deferred while NO_CHANGE is excluded");
+  assert.ok(plan.exclusions.some(item => /NO_CHANGE/.test(item.reason)), "NO_CHANGE never enters a mutation packet");
   assert.equal(plan.class_name, "cmdb_ci_linux_server");
   assert.equal(plan.operation_family, "safe-update");
   assert.deepEqual(plan.children.flatMap(child => child.items.map(item => item.staged_ci_id)), [...plan.children.flatMap(child => child.items.map(item => item.staged_ci_id))].sort());
 
   const frozen = packet.prepareApprovalPacket(snapshot, { migration_run_id: RUN }, NOW);
+  const authorityInput = {
+    migration_run_id: RUN,
+    packet_id: frozen.packet_id,
+    packet_hash: frozen.packet_hash,
+    expires_at: frozen.expires_at,
+  };
+  authority.clearApprovalPacketAuthorization();
+  assert.equal(authority.approvalPacketAuthorized(authorityInput, NOW), false, "packet starts disarmed");
+  authority.authorizeApprovalPacket(authorityInput, NOW);
+  assert.equal(authority.approvalPacketAuthorized(authorityInput, NOW), true, "exact fresh packet is authorized");
+  assert.equal(authority.approvalPacketAuthorized({ ...authorityInput, packet_hash: "F".repeat(64) }, NOW), false, "different hash is not authorized");
+  assert.equal(authority.consumeApprovalPacketAuthorization(authorityInput, NOW), true, "exact authorization is consumed once");
+  assert.equal(authority.consumeApprovalPacketAuthorization(authorityInput, NOW), false, "authorization cannot be replayed");
+  assert.throws(() => authority.authorizeApprovalPacket({ ...authorityInput, expires_at: new Date(NOW - 1).toISOString() }, NOW), /fresh review-ready/, "expired packet cannot be authorized");
   assert.equal(frozen.stage, "review_ready");
   assert.equal(frozen.items.length, 100);
   assert.equal(frozen.children.length, 5);
   assert.equal(frozen.expires_at, "2026-07-22T12:30:00.000Z", "expiry derives from oldest included simulation");
   assert.match(frozen.packet_id, /^[0-9A-F]{24}$/);
   assert.match(frozen.packet_hash, /^[0-9A-F]{64}$/);
-  assert.equal(frozen.aggregate.operations.UPDATE + frozen.aggregate.operations.NO_CHANGE, 100);
+  assert.equal(frozen.aggregate.operations.UPDATE, 100);
+  assert.equal(frozen.aggregate.operations.NO_CHANGE, 0);
   assert.equal(Object.values(frozen.aggregate.risks).reduce((sum, value) => sum + value, 0), 100);
   assert.equal(frozen.samples.length, 10);
   for (const child of frozen.children) assert.ok(frozen.samples.some(sample => sample.child_campaign_id === child.campaign_id), "sample covers every child");
@@ -199,7 +216,7 @@ async function main() {
   const statusSnapshot = { ...snapshot, timeline: [...timeline, ...allApprovals, ...verifiedEvents] };
   const status = packet.approvalPacketStatus(statusSnapshot, selection, NOW);
   assert.equal(status.aggregate.verified, 99);
-  assert.equal(status.aggregate.blocked, 1);
+  assert.equal(status.aggregate.blocked, 2, "one Phase D blocker plus the excluded NO_CHANGE reconciliation");
   assert.equal(status.stage, "completed");
   assert.ok(status.items.every(item => item.execution_correlation_id), "status retains exact Phase D correlation");
   const recovered = packet.recoverLatestApprovalPacketSelection(statusSnapshot);
@@ -207,15 +224,17 @@ async function main() {
   assert.equal(recovered.packet_hash, frozen.packet_hash);
 
   const route = fs.readFileSync(path.join(root, "app/api/cmdb/remediation-campaign/[action]/route.ts"), "utf8");
-  assert.match(route, /CMDB_AGENT_APPROVAL_PACKET_HASH/);
   assert.match(route, /"plan-packet"/);
   assert.match(route, /"prepare-packet"/);
+  assert.match(route, /"authorize-packet"/);
   assert.match(route, /"approve-packet"/);
   assert.match(route, /"packet-status"/);
+  assert.match(route, /consumeApprovalPacketAuthorization/);
   assert.equal(/invokeCampaignIre\("execute"|invokeCampaignIre\("verify"/.test(route), false, "packet route never invokes Execute or Verify");
   const dashboard = fs.readFileSync(path.join(root, "app/cmdb-dashboard.tsx"), "utf8");
   assert.match(dashboard, /function ApprovalPacketPanel/);
   assert.match(dashboard, /complete packet hash/);
+  assert.match(dashboard, /Authorize exact packet/);
   assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashboard), false, "packet UI cannot initiate Execute or Verify");
 
   console.log("approval packet smoke passed");

@@ -302,7 +302,59 @@ const unsupportedManifest = campaign.prepareRemediationApprovalManifest(unsuppor
   staged_ci_ids: unsupportedPlan.items.map(item => item.staged_ci_id), limit: 1,
 });
 assert.equal(unsupportedManifest.stage, "blocked");
-assert.ok(unsupportedManifest.exclusions.some(item => /not allowlisted/.test(item.reason)), "INSERT class allowlist is enforced");
+assert.ok(unsupportedManifest.exclusions.some(item => /versioned ServiceNow allowlist evidence/.test(item.reason)), "legacy generic INSERT lacks authoritative class evidence");
+const classBoundEvent = { ...unsupportedEvent, reasoning: JSON.stringify({
+  ...JSON.parse(unsupportedEvent.reasoning), proposed_class: unsupportedCi.className,
+  class_policy_version: campaign.CAMPAIGN_CLASS_BOUND_POLICY_VERSION,
+  evidence_version: campaign.CAMPAIGN_SIMULATION_EVIDENCE_VERSION,
+}) };
+const classBoundReviewEvent = {
+  ...unsupportedEvent, id: sysId(953), seq: 2, name: "review deferred",
+  reasoning: JSON.stringify({ action: "approval_review_deferred", migration_run_id: RUN,
+    staged_ci_id: unsupportedCi.stagedCiId, finding_id: unsupportedFinding.id,
+    review_decision_id: unsupportedReview.id, simulation_correlation_id: "ks-sim-unsupported",
+    simulation_fingerprint: fp(950) }),
+};
+const classBoundSnapshot = { ...unsupportedSnapshot, timeline: [classBoundEvent, classBoundReviewEvent] };
+const classBoundPlan = campaign.buildRemediationCampaignPlan(RUN, "eligible:cmdb-ci-database:insert", "generic class", [{
+  staged_ci_id: unsupportedCi.stagedCiId, name: unsupportedCi.name, class_name: unsupportedCi.className,
+  staged_operation: "INSERT", lifecycle: "simulated_pending_approval",
+}]);
+const classBoundManifest = campaign.prepareRemediationApprovalManifestFromPlan(classBoundSnapshot, classBoundPlan);
+assert.equal(classBoundManifest.stage, "review_ready", "ServiceNow-validated generic classes are mutation eligible");
+assert.equal(classBoundManifest.items[0].proposed_class, unsupportedCi.className);
+assert.equal(classBoundManifest.items[0].class_policy_version, campaign.CAMPAIGN_CLASS_BOUND_POLICY_VERSION);
+assert.throws(
+  () => campaign.planRemediationCampaign(classBoundSnapshot, undefined, 1),
+  error => error.code === "CAMPAIGN_GROUP_NOT_FOUND",
+  "current class-bound simulation evidence is not re-simulated",
+);
+assert.equal(unsupportedPlan.items.length, 1, "legacy generic simulation evidence remains eligible for one fresh simulation");
+const missingPolicyManifest = campaign.prepareRemediationApprovalManifestFromPlan({
+  ...classBoundSnapshot,
+  timeline: [
+    { ...classBoundEvent, reasoning: JSON.stringify({ ...JSON.parse(classBoundEvent.reasoning), class_policy_version: undefined }) },
+    classBoundReviewEvent,
+  ],
+}, classBoundPlan);
+assert.equal(missingPolicyManifest.stage, "blocked", "missing class-policy evidence is rejected");
+const classDriftManifest = campaign.prepareRemediationApprovalManifestFromPlan({
+  ...classBoundSnapshot, cis: [{ ...unsupportedCi, className: "cmdb_ci_server" }],
+}, classBoundPlan);
+assert.equal(classDriftManifest.stage, "blocked", "staging/class drift is rejected");
+const removedPolicyManifest = campaign.prepareRemediationApprovalManifestFromPlan({
+  ...classBoundSnapshot,
+  timeline: [
+    { ...classBoundEvent, reasoning: JSON.stringify({ ...JSON.parse(classBoundEvent.reasoning), class_policy_version: "servicenow-allowlisted-class-v0" }) },
+    classBoundReviewEvent,
+  ],
+}, classBoundPlan);
+assert.equal(removedPolicyManifest.stage, "blocked", "changed ServiceNow policy evidence requires fresh simulation");
+assert.notEqual(
+  campaign.approvalManifestHash(classBoundManifest.campaign_id, classBoundManifest.items),
+  campaign.approvalManifestHash(classBoundManifest.campaign_id, classBoundManifest.items.map(item => ({ ...item, proposed_class: "cmdb_ci_server" }))),
+  "class-bound manifest hashes bind the exact ServiceNow-derived class",
+);
 assert.notEqual(
   campaign.approvalManifestHash(manifest.campaign_id, manifest.items),
   campaign.approvalManifestHash(manifest.campaign_id, manifest.items.map(item => item.operation === "INSERT" ? { ...item, policy_version: "" } : item)),

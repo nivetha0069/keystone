@@ -38,10 +38,10 @@ const findings = [
 ];
 const timeline = [
   event(1, "Baseline captured", "Prioritize", "baseline_score=70 projected_score=80"),
-  { ...event(2, "IRE simulation completed", "Mara", "staged_ci_id=" + cis[0].id + " simulation_correlation_id=ks-sim-1 simulation_fingerprint=fp-1"), recordName: "linux-a", status: "review" },
-  { ...event(3, "Approval recorded", "Mara", "staged_ci_id=" + cis[0].id + " simulation_correlation_id=ks-sim-1 simulation_fingerprint=fp-1 decision=approved"), recordName: "linux-a", status: "review" },
-  { ...event(4, "IRE execution committed", "Mara", "staged_ci_id=" + cis[0].id + " execution_correlation_id=ks-exec-1 target_ci_sys_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa simulation_fingerprint=fp-1"), recordName: "linux-a", step: 6 },
-  { ...event(5, "Verification passed", "Mara", "staged_ci_id=" + cis[0].id + " execution_correlation_id=ks-exec-1 target_ci_sys_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa verified_score=74"), recordName: "linux-a", step: 6 },
+  { ...event(2, "IRE simulation completed", "Mara", detail("ire_simulation_completed")), id: "2".repeat(32), recordName: "linux-a", status: "review" },
+  { ...event(3, "Approval recorded", "Mara", detail("approval_recorded")), id: "3".repeat(32), recordName: "linux-a", status: "review" },
+  { ...event(4, "IRE execution committed", "Mara", detail("ire_execution_completed")), id: "4".repeat(32), recordName: "linux-a", step: 6 },
+  { ...event(5, "Verification passed", "Mara", detail("verification_passed")), id: "5".repeat(32), recordName: "linux-a", step: 6 },
 ];
 const health = {
   score: 74, baselineScore: 70, verifiedScore: 74, projectedScore: 80, grade: "B",
@@ -209,4 +209,13 @@ function ci(id, name, className, status) {
 }
 function event(seq, name, source, reasoning) {
   return { id: "e" + seq, seq, step: seq >= 4 ? 5 : 4, name, recordName: "Migration run", className: "Run event", operation: "NO_CHANGE", source, confidence: 1, time: "now", status: "complete", reasoning };
+}
+function detail(action) {
+  const base = { action, staged_ci_id: cis[0].id, simulation_correlation_id: "ks-sim-1", simulation_fingerprint: "A".repeat(64) };
+  if (action === "approval_recorded") Object.assign(base, { decision: "approved", policy_approved: false, approval_event_id: "3".repeat(32) });
+  if (action === "ire_execution_completed" || action === "verification_passed") Object.assign(base, {
+    approval_event_id: "3".repeat(32), execution_correlation_id: "4".repeat(32),
+    target_ci_sys_id: "a".repeat(32), operation: "INSERT",
+  });
+  return JSON.stringify(base);
 }

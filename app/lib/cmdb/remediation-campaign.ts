@@ -8,6 +8,8 @@ import { deriveRemediationWorkQueue, isCiScopedTimelineEvent, sortTimelineByFres
 export const CAMPAIGN_LIMIT = 20;
 export const CAMPAIGN_SIMULATION_CONCURRENCY = 3;
 export const CAMPAIGN_INSERT_POLICY_VERSION = "bounded-insert-v1";
+export const CAMPAIGN_CLASS_BOUND_POLICY_VERSION = "servicenow-allowlisted-class-v1";
+export const CAMPAIGN_SIMULATION_EVIDENCE_VERSION = "keystone.simulation.v2";
 export const CAMPAIGN_INSERT_CLASS_ALLOWLIST = ["cmdb_ci_linux_server"] as const;
 export const CAMPAIGN_RETRY_STRATEGY_ID = "normalize_known_class_alias" as const;
 export const CAMPAIGN_RETRY_MAPPING_VERSION = "class-alias-v1" as const;
@@ -140,9 +142,12 @@ export type RemediationApprovalManifestItem = {
   review_decision_id: string;
   simulation_correlation_id: string;
   simulation_fingerprint: string;
-  operation: "INSERT" | "UPDATE" | "NO_CHANGE";
+  operation: "INSERT" | "UPDATE";
   policy_version?: typeof CAMPAIGN_INSERT_POLICY_VERSION;
   identity_evidence?: "ire_unmatched";
+  proposed_class?: string;
+  class_policy_version?: typeof CAMPAIGN_CLASS_BOUND_POLICY_VERSION;
+  evidence_version?: typeof CAMPAIGN_SIMULATION_EVIDENCE_VERSION;
   strategy_id?: "normalize_known_class_alias";
   mapping_version?: string;
   retry_count: number;
@@ -290,7 +295,7 @@ export function planRemediationCampaignChildren(
     .filter(group => group.signature.startsWith("eligible:"));
   const selected = requestedSignature
     ? available.find(group => group.signature === requestedSignature)
-    : available.find(group => group.items.some(item => simulationEligible(item, group.strategy)));
+    : available.find(group => group.items.some(item => approvalPlanningEligible(snapshot, item)));
   if (!selected) throw campaignError("CAMPAIGN_GROUP_NOT_FOUND", "No homogeneous remediation group is available for this run.");
 
   const sorted = [...selected.items].sort((left, right) => left.stagedCiId.localeCompare(right.stagedCiId));
@@ -300,11 +305,14 @@ export function planRemediationCampaignChildren(
   const totalLimit = Math.max(1, Math.min(sorted.length, Number.isFinite(requestedTotal) ? Math.floor(requestedTotal) : sorted.length));
   let deferredCount = 0;
   for (const item of sorted) {
+    // Terminal and not-yet-simulated records are outside this packet scope;
+    // they are not packet blockers or exclusions.
+    if (item.bucket !== "needs_approval") continue;
     const reason = seen.has(item.stagedCiId)
       ? "Duplicate staged CI identifier was removed from the campaign."
       : item.ci.migrationRunId && item.ci.migrationRunId.toLowerCase() !== snapshot.migrationRunId.toLowerCase()
         ? "Staged CI belongs to a different migration run."
-        : simulationExclusion(item, selected.strategy);
+        : approvalPlanningExclusion(snapshot, item);
     seen.add(item.stagedCiId);
     if (reason) exclusions.push(exclusion(item, reason));
     else if (items.length < totalLimit) items.push(campaignItem(item));
@@ -421,7 +429,7 @@ export function prepareRemediationApprovalManifest(
   snapshot: RemediationCampaignSnapshot,
   selection: CampaignSelection,
 ): RemediationApprovalManifest {
-  const plan = validateCampaignSelection(snapshot, selection);
+  const plan = validateFrozenCampaignPlan(snapshot, selection);
   return prepareRemediationApprovalManifestFromPlan(snapshot, plan);
 }
 
@@ -453,7 +461,12 @@ export function prepareRemediationApprovalManifestFromPlan(
       review_decision_id: review!.id,
       simulation_correlation_id: evidence!.simulation_correlation_id!,
       simulation_fingerprint: evidence!.simulation_fingerprint!,
-      operation: evidence!.operation as "INSERT" | "UPDATE" | "NO_CHANGE",
+      operation: evidence!.operation as "INSERT" | "UPDATE",
+      ...(evidence!.evidence_version === CAMPAIGN_SIMULATION_EVIDENCE_VERSION ? {
+        proposed_class: evidence!.proposed_class!,
+        class_policy_version: CAMPAIGN_CLASS_BOUND_POLICY_VERSION as typeof CAMPAIGN_CLASS_BOUND_POLICY_VERSION,
+        evidence_version: CAMPAIGN_SIMULATION_EVIDENCE_VERSION as typeof CAMPAIGN_SIMULATION_EVIDENCE_VERSION,
+      } : {}),
       ...(evidence!.operation === "INSERT" ? {
         policy_version: CAMPAIGN_INSERT_POLICY_VERSION,
         identity_evidence: "ire_unmatched" as const,
@@ -492,7 +505,7 @@ export function pendingRemediationReviewProposals(
   snapshot: RemediationCampaignSnapshot,
   selection: CampaignSelection,
 ): RemediationReviewProposalItem[] {
-  const plan = validateCampaignSelection(snapshot, selection);
+  const plan = validateFrozenCampaignPlan(snapshot, selection);
   return pendingRemediationReviewProposalsFromPlan(snapshot, plan);
 }
 
@@ -766,6 +779,7 @@ function validateFrozenCampaignSelection(snapshot: RemediationCampaignSnapshot, 
 
 export function approvalManifestHash(campaignId: string, items: RemediationApprovalManifestItem[]) {
   const includesInsert = items.some(item => item.operation === "INSERT");
+  const includesClassBoundEvidence = items.some(item => item.evidence_version === CAMPAIGN_SIMULATION_EVIDENCE_VERSION);
   const canonical = [...items]
     .sort((left, right) => left.staged_ci_id.localeCompare(right.staged_ci_id))
     .map(item => [
@@ -775,10 +789,13 @@ export function approvalManifestHash(campaignId: string, items: RemediationAppro
       item.simulation_correlation_id,
       item.simulation_fingerprint.toUpperCase(),
       item.operation,
+      item.proposed_class ?? "",
+      item.class_policy_version ?? "",
+      item.evidence_version ?? "",
       ...(item.operation === "INSERT" ? [item.policy_version ?? "", item.identity_evidence ?? ""] : []),
     ].join("|"))
     .join("\n");
-  const version = includesInsert ? "keystone.campaign.manifest.v2" : "keystone.campaign.manifest.v1";
+  const version = includesClassBoundEvidence ? "keystone.campaign.manifest.v3" : includesInsert ? "keystone.campaign.manifest.v2" : "keystone.campaign.manifest.v1";
   return createHash("sha256").update(`${version}|${campaignId}|${canonical}`).digest("hex").toUpperCase();
 }
 
@@ -827,6 +844,10 @@ function simulationEligible(item: WorkQueueItem, strategy?: string) {
 function simulationExclusion(item: WorkQueueItem, strategy?: string) {
   if (!/^[0-9a-f]{32}$/i.test(item.stagedCiId)) return "A canonical staged CI sys_id is required.";
   if (item.bucket === "verified" || item.bucket === "needs_verification" || item.bucket === "ready_to_execute") return "The record already advanced beyond simulation.";
+  if (item.bucket === "needs_approval" && (
+    item.simulationEvidenceVersion === CAMPAIGN_SIMULATION_EVIDENCE_VERSION ||
+    item.ci.className === "cmdb_ci_linux_server"
+  )) return "The record already has current simulation evidence awaiting approval.";
   if (["ERROR", "INSERT_AS_INCOMPLETE"].includes(item.ci.operation) && strategy !== "normalize_known_class_alias") return "The staged record is blocked and has no allowlisted retry strategy.";
   if (item.bucket === "blocked" && strategy !== "normalize_known_class_alias") return "The record is blocked and requires individual review.";
   return "";
@@ -842,6 +863,26 @@ function approvalExclusion(
   if (!review || !/^[0-9a-f]{32}$/i.test(review.id)) return "A deferred review bound to the latest simulation is missing.";
   if (review.decision !== "deferred") return `Review is ${review.decision || "unknown"}; only deferred reviews may enter a new manifest.`;
   return "";
+}
+
+function validateFrozenCampaignPlan(snapshot: RemediationCampaignSnapshot, selection: CampaignSelection) {
+  const frozen = validateFrozenCampaignSelection(snapshot, selection);
+  return buildRemediationCampaignPlan(
+    snapshot.migrationRunId,
+    selection.work_group_signature,
+    selection.work_group_signature,
+    frozen.items.map(campaignItem),
+  );
+}
+
+function approvalPlanningEligible(snapshot: RemediationCampaignSnapshot, item: WorkQueueItem) {
+  return !approvalPlanningExclusion(snapshot, item);
+}
+
+function approvalPlanningExclusion(snapshot: RemediationCampaignSnapshot, item: WorkQueueItem) {
+  if (!/^[0-9a-f]{32}$/i.test(item.stagedCiId)) return "A canonical staged CI sys_id is required.";
+  if (item.bucket !== "needs_approval") return "The record is not awaiting mutation approval.";
+  return preReviewExclusion(item, latestSimulationEvidence(snapshot.timeline, item));
 }
 
 function simulationBoundReview(
@@ -869,9 +910,15 @@ function preReviewExclusion(item: WorkQueueItem, evidence: ReturnType<typeof lat
   if (!evidence) return "No completed canonical simulation was found.";
   if (!evidence.simulation_correlation_id) return "Simulation correlation is missing.";
   if (!/^[0-9A-F]{64}$/.test(evidence.simulation_fingerprint ?? "")) return "Canonical simulation fingerprint is missing or malformed.";
-  if (evidence.operation !== "INSERT" && evidence.operation !== "UPDATE" && evidence.operation !== "NO_CHANGE") return (evidence.operation || "Unknown") + " is not eligible for group approval.";
+  if (evidence.operation === "NO_CHANGE") return "NO_CHANGE is reconciled by ServiceNow without mutation approval.";
+  if (evidence.operation !== "INSERT" && evidence.operation !== "UPDATE") return (evidence.operation || "Unknown") + " is not eligible for group approval.";
+  const classBound = evidence.evidence_version === CAMPAIGN_SIMULATION_EVIDENCE_VERSION;
+  if (classBound) {
+    if (evidence.class_policy_version !== CAMPAIGN_CLASS_BOUND_POLICY_VERSION) return "Simulation class-policy evidence is missing or unsupported.";
+    if (!evidence.proposed_class || evidence.proposed_class !== item.ci.className) return "Server-derived simulation class no longer matches the staged class.";
+  }
   if (evidence.operation === "INSERT") {
-    if (!INSERT_CLASS_ALLOWLIST.has(item.ci.className)) return item.ci.className + " is not allowlisted by " + CAMPAIGN_INSERT_POLICY_VERSION + ".";
+    if (!classBound && !INSERT_CLASS_ALLOWLIST.has(item.ci.className)) return item.ci.className + " lacks versioned ServiceNow allowlist evidence and is not covered by legacy " + CAMPAIGN_INSERT_POLICY_VERSION + ".";
     if (evidence.simulation_matched_ci === undefined) return "Authoritative unmatched-identity evidence is missing for INSERT.";
     if (evidence.simulation_matched_ci) return "IRE found an existing CMDB match; INSERT is not eligible.";
     if (item.ci.status !== "live" || item.ci.operation === "INSERT_AS_INCOMPLETE") return "Incomplete staged records cannot enter an INSERT campaign.";
@@ -900,6 +947,9 @@ function latestSimulationEvidence(timeline: TimelineEvent[], item: WorkQueueItem
       strategy_id: detail.strategy_id === "normalize_known_class_alias" ? "normalize_known_class_alias" as const : undefined,
       mapping_version: detail.mapping_version,
       retry_count: detail.retry_count,
+      proposed_class: detail.proposed_class,
+      class_policy_version: detail.class_policy_version,
+      evidence_version: detail.evidence_version,
     };
   }
   return null;
@@ -911,6 +961,14 @@ function campaignLifecycleEvidence(timeline: TimelineEvent[], item: WorkQueueIte
     return detail?.staged_ci_id?.toLowerCase() === item.stagedCiId.toLowerCase();
   })).map(event => ({ event, detail: parseCampaignEventDetail(event.reasoning)! }));
   for (const { detail } of [...evidence].reverse()) {
+    if (detail.action === "reconciliation_passed") return {
+      lifecycle: "verified", bucket: "verified",
+      target_ci_sys_id: detail.target_ci_sys_id,
+    };
+    if (detail.action === "reconciliation_failed") return {
+      lifecycle: "verification_failed", bucket: "blocked",
+      target_ci_sys_id: detail.target_ci_sys_id,
+    };
     if (detail.action === "verification_passed") return {
       lifecycle: "verified", bucket: "verified",
       execution_correlation_id: detail.execution_correlation_id || detail.execution_event_id,
@@ -1024,7 +1082,7 @@ function safeOperationFamily(operation: string) {
 function insertLifecycleEligible(item: WorkQueueItem, detail: Partial<AgentEventDetailV1>) {
   return detail.operation === "INSERT" &&
     detail.simulation_matched_ci === "" &&
-    INSERT_CLASS_ALLOWLIST.has(item.ci.className) &&
+    ((detail.evidence_version === CAMPAIGN_SIMULATION_EVIDENCE_VERSION && detail.proposed_class === item.ci.className) || INSERT_CLASS_ALLOWLIST.has(item.ci.className)) &&
     item.ci.status === "live";
 }
 
@@ -1033,7 +1091,7 @@ const CAMPAIGN_LEDGER_ACTIONS = new Set([
   "approval_review_deferred", "approval_recorded", "approval_resume_prepared",
   "ire_execution_claimed", "ire_execution_completed", "ire_execution_failed",
   "ire_execution_reconciliation_required", "ire_verification_claimed",
-  "verification_passed", "verification_failed",
+  "verification_passed", "verification_failed", "reconciliation_passed", "reconciliation_failed",
 ]);
 
 /**

@@ -26,7 +26,7 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/remediation-campaign/failure-groups` | existing GET resources | POST | Classifies persisted failed simulations into deterministic eligible, blocked, or retry-exhausted groups. |
 | `/api/cmdb/remediation-campaign/simulate` | `/ire/simulate` | POST | Simulates plan items with concurrency capped at three and isolates item failures. |
 | `/api/cmdb/remediation-campaign/retry` | `/ire/simulate` | POST | Re-simulates an eligible failure group sequentially with the single allowlisted class-alias strategy and a one-retry budget. |
-| `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `INSERT`, `UPDATE`, and `NO_CHANGE` items. |
+| `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `INSERT` and `UPDATE` items. `NO_CHANGE` is reconciled without mutation approval. |
 | `/api/cmdb/remediation-campaign/approve` | `/ire/approve` | POST | After the server-only safety gate is opened, recomputes the manifest and submits individual fingerprint-bound approvals sequentially. It never calls Execute or Verify. |
 | `/api/cmdb/remediation-campaign/status` | existing GET resources | POST | Reconstructs campaign execution and verification progress from persisted ServiceNow evidence. |
 | `/api/cmdb/remediation-campaign/plan-packet` | existing GET resources | POST | Read-only deterministic planning for at most five homogeneous Phase E children and 100 records. |
@@ -44,16 +44,23 @@ Campaign requests accept only the migration run, work-group signature, campaign
 ID, frozen manifest ID, staged-record IDs, and the bounded limit. Classes,
 mappings, operations, payloads, and CMDB values are reread and derived on the
 server. The coordinator deduplicates and deterministically orders the selected
-group, enforces a 20-item maximum, and accepts only fresh successful `INSERT`,
-`UPDATE`, or `NO_CHANGE` simulations with an actionable finding, deferred review,
-canonical 64-character fingerprint, and no blocker.
+group, enforces a 20-item maximum, and accepts only fresh successful `INSERT`
+or `UPDATE` simulations with an actionable finding, deferred review, canonical
+64-character fingerprint, and no blocker.
 
-`INSERT` is additionally governed by `bounded-insert-v1`: the authoritative
-simulation must report no existing CMDB match, the proposed class must be
-`cmdb_ci_linux_server`, and the staged record must be complete and healthy.
-Browser requests cannot supply the operation, class, policy version, identity
-evidence, source identity, payload, or CMDB values. INSERT manifests use the
-v2 hash domain and freeze the policy version plus `ire_unmatched` evidence.
+Legacy `INSERT` remains governed by `bounded-insert-v1` for
+`cmdb_ci_linux_server`. New simulation evidence uses
+`keystone.simulation.v2`: ServiceNow persists its exact proposed class,
+`servicenow-allowlisted-class-v1` policy evidence, operation, target match,
+fingerprint, and correlation. Generic classes are eligible only with that
+current evidence, and Phase D rebuilds the payload and revalidates class and
+policy drift. Browser requests cannot supply those fields. The v3 manifest
+hash binds them plus the existing unmatched-identity evidence for INSERT.
+
+`NO_CHANGE` never enters a manifest or packet. ServiceNow performs a
+non-mutating read-back of the matched target. `reconciliation_passed` is a
+terminal binding without approval, Execute, or CMDB write;
+`reconciliation_failed` is blocked.
 
 The approval manifest is SHA-256 over sorted staged CI, finding, review,
 simulation correlation, fingerprint, and operation tuples. The approval route
@@ -101,9 +108,10 @@ campaign and Phase D contracts. Server-only actions are
 Browser input is limited to the run ID, packet ID, parent packet hash, child
 manifest IDs, and staged-record identifiers. Child classes, mappings,
 operations, fingerprints, identity evidence, payloads, and CMDB values remain
-server-derived. The v1 packet cap is 100 homogeneous records across at most
-five children, while each child campaign retains its 20-record cap. `UPDATE`
-and `NO_CHANGE` share the safe-update family; `INSERT` remains separate.
+server-derived. The v2 packet cap is 100 homogeneous records across at most
+five children, while each child campaign retains its 20-record cap. Packets
+contain only `INSERT` or `UPDATE` and are homogeneous by exact server-derived
+class and operation-risk family.
 
 The parent SHA-256 hash binds a versioned packet policy, migration run,
 deterministically ordered child manifest IDs and hashes, child item counts,
@@ -120,17 +128,18 @@ cannot confirm approval or gain write authority. Ambiguous outcomes are
 reconciled from persisted ServiceNow evidence and are never blindly retried.
 
 Packet expiry is deterministically derived as 30 minutes after the oldest
-included completed simulation. Live fan-out is disabled unless the server-only
-`CMDB_AGENT_APPROVAL_PACKET_HASH` exactly equals the recomputed uppercase parent
-SHA-256. `CMDB_AGENT_BATCH_APPROVAL_ENABLED` continues to govern only the
+included completed simulation. Live fan-out is disabled unless a separate UI
+authorization request supplies the exact uppercase parent SHA-256 and the
+server recomputes the same packet before issuing a one-time capability bound to
+that run, packet, hash, and expiry. `CMDB_AGENT_BATCH_APPROVAL_ENABLED` continues to govern only the
 existing single-child campaign approval route.
 
 ### Isolated local demonstration
 
 `npm run demo:approval-packet` starts the production-built UI against a
-loopback-only fixture bridge and preauthorizes exactly the packet generated by
-that fixture. The operator path is `Plan packet` -> `Prepare packet` ->
-`Use exact demo hash` -> `Approve 100 individual chains`. It exercises the real
+loopback-only fixture bridge with packet authorization initially disarmed. The
+operator path is `Plan packet` -> `Prepare packet` -> `Fill exact demo hash` ->
+`Authorize exact packet` -> `Approve 100 individual chains`. It exercises the real
 packet routes, canonical hash confirmation, sequential approval fan-out, status
 reconstruction, and terminal verification display.
 

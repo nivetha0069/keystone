@@ -227,12 +227,13 @@ function buildRemediateChapter(view: WorkspaceViewState, beats: ActivityCard[], 
 
 function buildVerifyChapter(view: WorkspaceViewState, beats: ActivityCard[], isActive: boolean): JourneyChapter {
   const status = view.verifyStatus;
-  const verifiedCount = view.queue.items.filter(item => item.bucket === "verified").length;
-  const verifiedItems = view.queue.items.filter(item => item.bucket === "verified");
+  const verifiedCount = view.terminalOutcomes.length;
+  const outcomeIds = new Set(view.terminalOutcomes.map(outcome => outcome.stagedCiId));
+  const verifiedItems = view.queue.items.filter(item => outcomeIds.has(item.stagedCiId.toLowerCase()));
   const operationCounts = {
-    insert: verifiedItems.filter(item => item.ci.operation === "INSERT").length,
-    update: verifiedItems.filter(item => item.ci.operation === "UPDATE").length,
-    noChange: verifiedItems.filter(item => item.ci.operation === "NO_CHANGE").length,
+    insert: view.terminalOutcomes.filter(outcome => outcome.operation === "INSERT").length,
+    update: view.terminalOutcomes.filter(outcome => outcome.operation === "UPDATE").length,
+    noChange: view.terminalOutcomes.filter(outcome => outcome.operation === "NO_CHANGE").length,
   };
   const classes = new Map<string, number>();
   for (const item of verifiedItems) {
@@ -272,7 +273,7 @@ function buildVerifyChapter(view: WorkspaceViewState, beats: ActivityCard[], isA
       relationshipsTotal,
       verifiedCount,
       groupsResolved,
-      targetCount: verifiedItems.filter(item => Boolean(item.targetCiSysId)).length,
+      targetCount: view.terminalOutcomes.length,
       pendingCount,
       blockedCount,
       operationCounts,

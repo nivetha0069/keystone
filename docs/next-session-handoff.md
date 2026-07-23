@@ -6,10 +6,13 @@ Milestones 5, 6, 7, and 8A are complete and live-accepted. Phase E supports dete
 homogeneous campaigns of at most 20 staged CIs, simulation concurrency of
 three, isolated failures, one allowlisted class-alias retry, frozen SHA-256
 approval manifests, sequential individual ServiceNow approvals, and automatic
-Phase D Execute/Verify continuation. The v1 packet layer composes at most five
-children and 100 records behind `CMDB_AGENT_APPROVAL_PACKET_HASH`. Browser
+Phase D Execute/Verify continuation. The v2 packet layer composes at most five
+children and 100 records behind a one-time, UI-initiated exact-hash capability
+that the server issues only after recomputing the frozen packet. Browser
 Execute and Verify routes are status-only. ServiceNow and IRE retain all write
-authority.
+authority. Versioned ServiceNow simulation evidence now binds the exact
+server-derived class into generic mutation manifests, and Phase D revalidates
+that evidence. Keystone does not mirror ServiceNow's generic-class allowlist.
 
 The working contract and endpoint details are in `docs/cmdb-bridge-api.md`.
 The product roadmap is in `docs/keystone-agentic-cmdb-prd.md`. Live evidence is
@@ -18,16 +21,16 @@ in `docs/lifecycle-acceptance-report.md`.
 Commit `392ec7f` adds the current Agent Workspace demo story: direct bounded
 packet review from the Remediate pause, a presentation-only completed-results
 path with explicit deferred counts, Mara's correlated verification summary,
-and labeled baseline -> verified -> projected health. The same health-rail
-layout is used in Past Summaries, but Past Summaries operation totals remain a
-known staged-operation projection and must not be cited as committed evidence.
+and labeled baseline -> verified -> projected health. Past Summaries and
+Chapter 4 now derive Inserted, Updated, and Reconciled only from correlated
+terminal evidence; staged operations never inflate committed totals.
 
 ## Same-day live-demo checkpoint
 
 The active live run is `DMR0001066`
-(`31b134742b96875060aefba6b891bfcb`) with 50 staged
-`cmdb_ci_linux_server` INSERT candidates. Current ServiceNow-backed Agent
-Workspace evidence reports:
+(`31b134742b96875060aefba6b891bfcb`) with 33 staged
+`cmdb_ci_linux_server` and 17 staged `cmdb_ci_server` INSERT candidates.
+Current ServiceNow-backed Agent Workspace evidence reports:
 
 - 20 correlated verifications passed;
 - 20 verified INSERT target CIs;
@@ -47,6 +50,36 @@ Follow `docs/live-demo-runbook.md` for the live sequence and stop conditions.
 A truthful full-run claim requires 50 verified target bindings and zero
 awaiting-review, ready-to-simulate, executing, blocked, or reconciliation-
 required records after refresh.
+
+The safe continuation is to prepare and stop on the fresh 13-record Linux
+hash. After separate exact-hash authorization, reach 33 verified Linux INSERTs
+and clear the gate. Then deploy the v2 simulation evidence, freshly simulate
+all 17 generic-server records (including the one legacy simulation), prepare
+and stop on the new 17-record hash, and require a second exact-hash
+authorization. Neither slice is migrated until Phase D and correlated
+verification complete.
+
+Final acceptance uses two GET-only refreshes:
+
+```text
+npm.cmd run verify:live-demo -- --run 31b134742b96875060aefba6b891bfcb --expected-total 50 --expect INSERT=50
+```
+
+## Generated multi-packet demo path
+
+The product-level run size is not limited to the 50-record same-day checkpoint
+or the 100-record parent-packet bound. `docs/generated-demo-migration.md`
+documents the priority path for materializing any generated company fixture
+into a fresh, complete identity namespace and landing it in ServiceNow staging.
+The staging CLI is dry-run until its exact file SHA-256 is confirmed and cannot
+approve or execute IRE.
+
+Repository scale acceptance proves that a 500-CI homogeneous run selects 100
+records across five children, excludes those records after terminal evidence,
+and then selects the next 100 while retaining the remaining 300. The
+`verify:live-demo` command derives expected total from the staged run when
+`--expected-total` is omitted; explicit operation mixes remain available for
+controlled demonstrations.
 
 ## Completed live acceptance
 
@@ -111,8 +144,9 @@ write-capable Execute endpoint, or directly write CMDB tables.
 ## Timer-safe local approval-packet demo
 
 Run `npm run demo:approval-packet`, then open the printed localhost URL. In the
-packet panel select `Plan packet`, `Prepare packet`, `Use exact demo hash`, and
-`Approve 100 individual chains`. The panel progresses to 100 approved and 100
+packet panel select `Plan packet`, `Prepare packet`, `Fill exact demo hash`,
+`Authorize exact packet`, and `Approve 100 individual chains`. The panel
+progresses to 100 approved and 100
 verified records without requiring a ServiceNow instance.
 
 This command is an isolated fixture demonstration, not a live acceptance path.

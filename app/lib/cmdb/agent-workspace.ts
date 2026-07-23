@@ -44,6 +44,9 @@ export type AgentEventDetailV1 = {
   idempotency_key?: string;
   work_group_signature?: string;
   operation?: string;
+  proposed_class?: string;
+  class_policy_version?: string;
+  evidence_version?: string;
   simulation_matched_ci?: string;
   retry_count?: number;
   max_retries?: number;
