@@ -18,12 +18,17 @@ The working contract and endpoint details are in `docs/cmdb-bridge-api.md`.
 The product roadmap is in `docs/keystone-agentic-cmdb-prd.md`. Live evidence is
 in `docs/lifecycle-acceptance-report.md`.
 
-Commit `392ec7f` adds the current Agent Workspace demo story: direct bounded
-packet review from the Remediate pause, a presentation-only completed-results
-path with explicit deferred counts, Mara's correlated verification summary,
-and labeled baseline -> verified -> projected health. Past Summaries and
-Chapter 4 now derive Inserted, Updated, and Reconciled only from correlated
+Recent commits `f93be30` and `33e97c8` complete the current demo story:
+successive packets for runs larger than 100 records, in-app one-time exact-hash
+authorization, explicit ServiceNow commit labeling and destination tables,
+bounded Mara autonomy for healthy unmatched insertions, evidence-backed
+subagent handoffs, and truthful maximum-health presentation. Past Summaries and
+Chapter 4 derive Inserted, Updated, and Reconciled only from correlated
 terminal evidence; staged operations never inflate committed totals.
+
+The root `README.md` now describes the product, setup, architecture, manual and
+autonomous flows, batching model, existing-CI behavior, and validation commands.
+`docs/current-state.md` is the concise implementation/status index.
 
 ## Same-day live-demo checkpoint
 
@@ -80,6 +85,29 @@ and then selects the next 100 while retaining the remaining 300. The
 `verify:live-demo` command derives expected total from the staged run when
 `--expected-total` is omitted; explicit operation mixes remain available for
 controlled demonstrations.
+
+## Current UI and operation behavior
+
+- Remediate is ordered as Agent Campaign -> Bounded Approval Packet -> Ranked
+  remediation focus -> staged CI lifecycle.
+- Simulation, planning, preparation, and authorization are labeled as
+  non-committing. `Commit N CIs to ServiceNow` is the mutation boundary.
+- Manual exact-hash authorization occurs entirely in the UI. No restart or
+  hardcoded hash is required for the normal flow.
+- Mara's autonomous mode is armed per run in the UI and additionally requires
+  `CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED=true` for live mutation.
+- Mara automatically handles only healthy unmatched INSERT candidates.
+  UPDATE, ambiguity, stale evidence, drift, failure, and blocker states stop
+  for human review. NO_CHANGE is reconciled without a mutation.
+- IRE simulation finding an existing CI is not an expected HTTP 409. It should
+  return UPDATE or NO_CHANGE evidence. A generic 409 represents a conflict or
+  blocker that must be investigated.
+- Prioritize and Remediate cap displayed lift to the remaining headroom. At
+  100%, recommendations show `Health at maximum`, `Risk reduction`, and
+  `Maintain 100%`.
+- Comprehend presents Mara as supervisor, Router/Atlas/Scout/Weaver/Sentry as
+  reasoning subagents, Ledger as shared audit memory, and IRE as the execution
+  engine.
 
 ## Completed live acceptance
 

@@ -1,101 +1,70 @@
-# AGENTS.md — CMDB Modernization Control Plane (keystone)
+# Keystone Repository Guide
 
-A neutral Next.js frontend for comprehending, prioritizing, and remediating CMDB migration runs,
-backed by ServiceNow. Deployable to Vercel before ServiceNow connectivity is finished.
+Keystone is a Next.js control plane for governed ServiceNow CMDB migration.
+ServiceNow owns workflow evidence and IRE remains the only CI write path.
 
 ## Architecture
 
-- Next.js 16 (App Router, Turbopack). Single page ([app/page.tsx](app/page.tsx)) rendering
-  [app/cmdb-dashboard.tsx](app/cmdb-dashboard.tsx).
-- Demo data and types live in [app/cmdb-data.ts](app/cmdb-data.ts).
-- Server proxy: [app/api/cmdb/[resource]/route.ts](app/api/cmdb/%5Bresource%5D/route.ts).
-  Credentials are server-side only and never reach the browser.
+- Next.js 16 App Router and React 19.
+- Main UI: `app/cmdb-dashboard.tsx`.
+- Shared CMDB logic: `app/lib/cmdb`.
+- Server-only compatibility and campaign routes: `app/api/cmdb`.
+- ServiceNow Scripted REST resources and Script Includes: `servicenow`.
+- Current implementation status: `docs/current-state.md`.
+- Live operator sequence: `docs/live-demo-runbook.md`.
 
-## Environment variables (server-side)
+## Non-negotiable authority boundaries
+
+- Never add a generic ServiceNow or CMDB write proxy.
+- Never write directly to `cmdb_ci*` or `cmdb_rel_ci`.
+- Browser mutation requests remain identifier-only.
+- ServiceNow rebuilds authoritative payloads and revalidates class, policy,
+  approval, correlation, fingerprint, and execution locks.
+- IRE is the only CI mutation path.
+- Packet routes approve but never call Execute or Verify.
+- Phase D owns execution and correlated verification.
+- Do not count staged operations as committed outcomes.
+- Do not store model-provider credentials, full prompts, full source rows, or
+  executable IRE payloads in the browser or Event Ledger.
+
+## Current batching model
+
+- campaigns: at most 20 homogeneous records;
+- simulation concurrency: three;
+- parent packets: at most five children and 100 records;
+- larger runs: successive packets until every staged record is terminal;
+- manual approval: one-time exact fresh parent hash in the UI;
+- Mara autonomy: healthy unmatched INSERT only, gated by
+  `CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED=true`;
+- UPDATE: human exact-hash approval;
+- NO_CHANGE: non-mutating ServiceNow-owned reconciliation.
+
+## Agent model
+
+Mara is the supervisor. Router, Atlas, Scout, Weaver, and Sentry are reasoning
+subagents. Ledger is shared audit memory. IRE is the governed execution engine.
+Authoritative model execution belongs in ServiceNow.
+
+## Demo fallback
+
+The frontend may use built-in fixture data when live resources are unavailable.
+The local approval-packet demo may emulate lifecycle evidence. Neither may be
+described as a live ServiceNow CMDB commit.
+
+## Required checks
+
+Run focused checks for the code changed and preserve:
 
 ```text
-CMDB_API_BASE_URL   # base URL exposing /cis /timeline /relationships /health
-CMDB_API_TOKEN      # bearer token, OR:
-CMDB_API_USERNAME
-CMDB_API_PASSWORD
-CMDB_REMEDIATE_URL  # optional; defaults to {CMDB_API_BASE_URL}/remediate
+npm.cmd run smoke:agent-workspace
+npm.cmd run smoke:remediation-campaign
+npm.cmd run smoke:approval-packet
+npm.cmd run smoke:multi-packet-scale
+npm.cmd run smoke:live-demo-readiness
+npx.cmd tsc --noEmit --incremental false
+npm.cmd run lint
+npm.cmd run build
 ```
 
-## Frontend API routes
-
-The browser calls:
-
-```text
-GET  /api/cmdb/cis
-GET  /api/cmdb/timeline
-GET  /api/cmdb/relationships
-GET  /api/cmdb/health
-POST /api/cmdb/remediate
-```
-
-The proxy forwards GETs to `{CMDB_API_BASE_URL}/{resource}` for exactly these read resources:
-`cis`, `timeline`, `relationships`, `health`. The POST route accepts only `remediate` and
-reconstructs the outgoing payload to enforce:
-
-```json
-{ "fixId": "FIX-01", "tool": "Duplicate analyzer", "route": "IRE", "mode": "proposal" }
-```
-
-**Do not add a generic pass-through write endpoint.** IRE is the only write path.
-
-## Expected logical API data
-
-The normalization functions in `cmdb-dashboard.tsx` tolerate wrapper variations
-(`result`, `data`, `items`, `records`) and snake_case ServiceNow-style field names.
-
-Supported IRE operations: `INSERT`, `UPDATE`, `NO_CHANGE`, `INSERT_AS_INCOMPLETE`, `REVIEW`, `ERROR`.
-
-Minimum useful shapes (see the mock data in `app/cmdb-data.ts` for full examples):
-
-- `/cis` — array of `{ id, name, className, ip, source, operation, confidence, health, updatedAt, provenance[] }`
-- `/timeline` — array of `{ id, seq, step (1–7), name, recordName, className, operation, source, confidence, time, status, reasoning }`
-- `/relationships` — array of `{ id, source, target, type, confidence }`
-- `/health` — object with `score, grade, ciCount, duplicatesMerged, reviewCount, relationshipCount, completeness, correctness, compliance, duplicateRate, staleRecords, fixes[]`
-  where each fix is `{ id, rank, title, description, impact, affected, tool, severity }`
-
-## Demo fallback behavior
-
-The frontend loads built-in demo data first, then requests all four read endpoints in parallel:
-
-- All four return usable data → UI reports **Live API**.
-- Any endpoint fails or lacks usable records → demo data is kept for that area and the UI reports
-  **Demo snapshot**.
-
-This allows Vercel deployment before ServiceNow connectivity is finished.
-**Do not remove the fallback** until the live APIs are proven reliable and a deliberate
-loading/error design has been agreed.
-
-## Current ServiceNow state
-
-Reported working: source intake/import set, staging layer, IRE integration, CMDB publishing,
-event log, `/cis`, `/timeline`, `/relationships`, `/health`, agent functionality, IRE functionality.
-
-Reported incomplete:
-
-- automatic AI CI-class decision;
-- confidence gate;
-- human review queue;
-- wiring the frontend to the live API;
-- full Prioritize backend logic;
-- full Remediate backend execution.
-
-The frontend already contains the UX and mock/normalization layer for these capabilities; backend
-behavior must still be connected and verified.
-
-## Data strategy decided so far
-
-Do not try to ingest every public dataset previously researched. Most public vendor datasets are
-catalogs or telemetry, not actual deployed-company CMDB inventories.
-
-The focused demonstration should use two source families:
-
-<!-- NOTE: the original decision record was truncated at this point. The demo data in
-app/cmdb-data.ts models two apparent families — (1) legacy/manual inventory exports
-(Baxter Inventory CSV, Legacy CMDB export, spreadsheet) and (2) automated discovery
-systems (NetBox, SCCM) — but confirm the intended two families with Nyra before
-building ingestion around them. -->
+ServiceNow changes must also preserve the Phase A, Phase B3A, Phase B3B,
+Phase C, and Phase D smoke suites documented in the live runbook.

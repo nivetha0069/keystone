@@ -74,6 +74,24 @@ Complete these checks before presenting:
 
 ## Live demo sequence
 
+### Existing CI outcomes
+
+An existing ServiceNow CI is a normal IRE result, not a duplicate-insert error:
+
+| Simulation result | Demo explanation | Next action |
+|---|---|---|
+| Existing target differs | ServiceNow identified an update | Obtain exact human approval |
+| Existing target is current | ServiceNow identified no required change | Non-mutating reconciliation and read-back |
+| No existing target | ServiceNow identified a new CI | Governed insertion |
+| Ambiguous or stale evidence | ServiceNow cannot safely continue | Stop and review |
+
+An INSERT packet requires authoritative unmatched evidence. If simulation
+returns a target sys_id, Keystone excludes the record from INSERT eligibility.
+If a known existing CI instead produces the generic
+`ServiceNow rejected the IRE action` HTTP 409 message during simulation, treat
+that as a ServiceNow-side blocker or contract failure and stop. Do not present
+it as normal duplicate prevention.
+
 ### Mara migration mode
 
 The Remediate page starts in **Approval required** mode. In that mode Mara may
@@ -104,6 +122,12 @@ toggle off or changing runs disarms autonomy.
 
 - Show the staged CI count, normalization, class and identity evidence,
   findings, and deterministic work groups.
+- Show Mara as supervisor, Router/Atlas/Scout/Weaver/Sentry as reasoning
+  subagents, their recorded handoffs, Ledger as shared audit memory, and IRE as
+  the governed execution engine.
+- If CMDB health is 100%, explain that remaining recommendations reduce
+  operational risk and maintain quality. The UI must show `Health at maximum`,
+  `Risk reduction`, and `Maintain 100%`, not additional percentage lift.
 - Show that current state reconstructs after refresh from ServiceNow resources
   and Event Ledger evidence.
 

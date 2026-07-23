@@ -288,3 +288,30 @@ offers `Resume agents`. Recovery reuses persisted Comprehend evidence and must
 not duplicate analysis or findings. The repair was installed in ServiceNow;
 the stranded stress run resumed through Mara and Prioritize to
 `awaiting_approval` without duplicate Comprehend analysis.
+
+## Post-Acceptance Demo Readiness Update
+
+Repository commits `f93be30` and `33e97c8` add the current presentation and
+operator workflow without changing the recorded live acceptance totals:
+
+- migration runs can continue through successive 100-record packets;
+- manual exact-hash authorization is issued in the UI after server
+  recomputation and requires no restart;
+- every mutating control explicitly says it commits CIs to ServiceNow while
+  simulation, planning, preparation, and authorization remain labeled as
+  non-mutating;
+- Agent Workspace, Past Summaries, and completed-group views expose the exact
+  evidence-backed ServiceNow destination table;
+- Mara can autonomously drain only healthy unmatched INSERT candidates when
+  the live server capability is enabled;
+- Comprehend presents Mara as supervisor, five reasoning subagents, recorded
+  handoffs, Ledger as shared audit memory, and IRE as the execution engine;
+- Prioritize and Remediate cap projected lift at 100% and use risk-reduction
+  language when no health headroom remains; and
+- the generated-dataset path materializes fresh namespaces for repeatable demos
+  and preserves separate file-hash staging and packet-hash mutation authority.
+
+Focused Agent Workspace, Remediation Campaign, TypeScript, lint, production
+build, and browser checks passed after these changes. This repository
+validation does not advance `DMR0001066`; only new correlated ServiceNow
+evidence can change its live acceptance totals.

@@ -32,7 +32,8 @@
 - Derived Prioritize/remediation work queue.
 - Deterministic failure grouping and retry.
 - Provider-neutral autonomous agent harness.
-- Runtime Agent HR telemetry backed by events and tool calls rather than static persona data.
+- Runtime Comprehend agent-roster telemetry backed by persisted events, tool
+  calls, and recorded Mara/subagent handoffs rather than static persona data.
 - Large-run pagination, queueing, and background execution.
 
 ## 2. Technology Inventory
@@ -154,7 +155,7 @@ Future agent runtime may reason over sanitized data and call allowlisted tools. 
 | `app/cmdb-dashboard.tsx` | Main shell, navigation, data loading, Comprehend/Prioritize/Remediate composition |
 | `app/import-view.tsx` | Intake UI, local preview, public source starters, staging request |
 | `app/live-view.tsx` | Event Ledger visualization and Agent Board |
-| `app/hr-view.tsx` | Agent HR/control-tower visual surface |
+| `app/hr-view.tsx` | Legacy agent persona surface; the live demo roster is rendered in Comprehend from persisted evidence |
 | `app/ai-usage/page.tsx` | Read-only per-run AI usage telemetry |
 | `app/agents-data.ts` | Current static agent persona data |
 | `app/cmdb-data.ts` | UI contracts and demo fixtures |
@@ -688,7 +689,7 @@ app/
   cmdb-dashboard.tsx         application shell and core views
   import-view.tsx            intake gateway
   live-view.tsx              Event Ledger visualization
-  hr-view.tsx                Agent HR visual surface
+  hr-view.tsx                Legacy agent persona surface
   agents-data.ts             static persona data
   cmdb-data.ts               UI contracts and demo fixtures
   globals.css                visual system

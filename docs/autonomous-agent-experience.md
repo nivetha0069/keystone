@@ -147,7 +147,7 @@ If more structured output is required, the Script Include may use an existing fi
 
 The frontend:
 
-- polls the run-scoped Event Ledger while Agent HR is open;
+- polls the run-scoped Event Ledger while Comprehend is open;
 - resolves generic Comprehend events to specialists using recorded action evidence;
 - shows chronological decision, action, observation, result, and handoff cards;
 - shows Mara only when actor `Mara` events actually exist;
@@ -183,11 +183,13 @@ Must pause:
 - stale simulation fingerprint;
 - any production CMDB mutation.
 
-At scale, pausing does not require one browser confirmation per CI. Milestone
-8A may present one human confirmation for an exact parent hash covering 100–200
-homogeneous records. That confirmation is a governance action by the user, not
-an agent tool. ServiceNow still persists and enforces an individual approval
-chain for every included CI, and Phase D remains the only execution owner.
+At scale, pausing does not require one browser confirmation per CI. The current
+packet policy permits one human confirmation for an exact parent hash covering
+at most 100 homogeneous records across five 20-record children. That
+confirmation is a governance action by the user, not an agent tool. ServiceNow
+still persists and enforces an individual approval chain for every included
+CI, and Phase D remains the only execution owner. Larger runs continue through
+successive freshly prepared packets.
 
 Execution remains identifier-only from the browser. ServiceNow rebuilds the authoritative payload and IRE remains the only CMDB write path.
 
@@ -210,7 +212,9 @@ The frontend adds no additional model usage.
 ## Acceptance Criteria
 
 - Comprehend's real LLM tool choices appear live in sequence.
-- Agent HR shows Router, Atlas, Scout, Weaver, Sentry, Ledger, Comprehend, and Mara from persisted evidence.
+- Comprehend shows Mara as supervisor and Router, Atlas, Scout, Weaver, and
+  Sentry as reasoning subagents from persisted evidence. Ledger is labeled as
+  shared audit memory and IRE as the governed execution engine.
 - Mara model execution occurs only in ServiceNow Script Includes.
 - The browser contains no provider key and calls no external LLM endpoint.
 - Mara can continue safe investigation without human clicks.

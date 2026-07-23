@@ -25,13 +25,16 @@ The current Next.js compatibility routes proxy browser calls through `/api/cmdb/
 | `/api/cmdb/remediation-campaign/plan` | existing GET resources | POST | Builds a stable homogeneous, server-derived plan of at most 20 staged CIs. |
 | `/api/cmdb/remediation-campaign/failure-groups` | existing GET resources | POST | Classifies persisted failed simulations into deterministic eligible, blocked, or retry-exhausted groups. |
 | `/api/cmdb/remediation-campaign/simulate` | `/ire/simulate` | POST | Simulates plan items with concurrency capped at three and isolates item failures. |
+| `/api/cmdb/remediation-campaign/simulate-all` | `/ire/simulate` + existing GET resources | POST | Repeatedly derives and simulates every normally eligible homogeneous group, refreshing evidence between groups. It performs no approval or CMDB mutation. |
 | `/api/cmdb/remediation-campaign/retry` | `/ire/simulate` | POST | Re-simulates an eligible failure group sequentially with the single allowlisted class-alias strategy and a one-retry budget. |
 | `/api/cmdb/remediation-campaign/prepare-approval` | existing GET resources + `/remediate` | POST | Creates missing identifier-bound deferred-review proposals, reloads authoritative evidence, and freezes a SHA-256 manifest for eligible `INSERT` and `UPDATE` items. `NO_CHANGE` is reconciled without mutation approval. |
 | `/api/cmdb/remediation-campaign/approve` | `/ire/approve` | POST | After the server-only safety gate is opened, recomputes the manifest and submits individual fingerprint-bound approvals sequentially. It never calls Execute or Verify. |
 | `/api/cmdb/remediation-campaign/status` | existing GET resources | POST | Reconstructs campaign execution and verification progress from persisted ServiceNow evidence. |
 | `/api/cmdb/remediation-campaign/plan-packet` | existing GET resources | POST | Read-only deterministic planning for at most five homogeneous Phase E children and 100 records. |
 | `/api/cmdb/remediation-campaign/prepare-packet` | existing GET resources + `/remediate` | POST | Creates only missing deferred-review proposals, reloads ServiceNow, and freezes the children plus parent hash. |
+| `/api/cmdb/remediation-campaign/authorize-packet` | existing GET resources | POST | Recomputes the exact prepared packet and issues a one-time, server-held capability bound to the run, packet, hash, membership, and expiry. It performs no approval or CMDB mutation. |
 | `/api/cmdb/remediation-campaign/approve-packet` | `/ire/approve` | POST | After an exact server-side parent-hash gate, recomputes all evidence and fans out sequential individual approvals. It never calls Execute or Verify. |
+| `/api/cmdb/remediation-campaign/autonomous-packet` | existing GET resources + `/remediate` + `/ire/approve` | POST | Under the server-only Mara capability, prepares and approves one exact healthy unmatched INSERT packet, then leaves execution and verification to Phase D. UPDATE and exception scopes are rejected. |
 | `/api/cmdb/remediation-campaign/packet-status` | existing GET resources | POST | Reconstructs packet, child, approval, execution, verification, and blocker progress from ServiceNow evidence. |
 
 All read endpoints accept an optional `run` query parameter containing a `migration_run` sys_id.
@@ -131,8 +134,16 @@ Packet expiry is deterministically derived as 30 minutes after the oldest
 included completed simulation. Live fan-out is disabled unless a separate UI
 authorization request supplies the exact uppercase parent SHA-256 and the
 server recomputes the same packet before issuing a one-time capability bound to
-that run, packet, hash, and expiry. `CMDB_AGENT_BATCH_APPROVAL_ENABLED` continues to govern only the
-existing single-child campaign approval route.
+that run, packet, hash, membership, and expiry. The normal flow requires no
+restart and consumes the capability as approval begins.
+`CMDB_AGENT_BATCH_APPROVAL_ENABLED` continues to govern only the existing
+single-child campaign approval route.
+
+The separate `autonomous-packet` action requires
+`CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED=true` outside the loopback fixture. Its
+server policy accepts only homogeneous healthy unmatched INSERT packets.
+UPDATE, drift, stale evidence, ambiguity, failure, or blocker evidence is a
+hard stop rather than an autonomous approval.
 
 ### Isolated local demonstration
 

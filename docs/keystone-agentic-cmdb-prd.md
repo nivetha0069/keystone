@@ -41,33 +41,62 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - The Agent Workspace derives its queue, lifecycle chapters, Mara summaries, blockers, and verification outcomes from current ServiceNow resources and Event Ledger evidence.
 - Phase E campaigns plan homogeneous groups of at most 20, simulate at concurrency three, freeze canonical manifests, isolate failures, and fan one confirmation into sequential individual ServiceNow approvals.
 - Milestone 8A packets compose at most five existing child manifests and 100 homogeneous records behind an exact server-only parent-hash gate. Packet routes never call Execute or Verify.
+- The current UI issues a one-time exact-hash capability after the operator
+  pastes the freshly prepared parent hash and the server recomputes the packet.
+  No restart or hardcoded hash is required for the normal manual flow.
+- Runs larger than 100 records continue through successive packets. Repository
+  acceptance covers a 500-CI run advancing through five 100-record packets.
+- Mara can autonomously simulate and drain healthy unmatched INSERT candidates
+  when the per-run UI mode and server-only
+  `CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED` capability are both enabled. UPDATE,
+  ambiguity, stale evidence, failures, and blockers stop for human review.
+- Versioned ServiceNow simulation evidence binds proposed class, class policy,
+  operation, target match, correlation, and fingerprint into generic mutation
+  manifests. Keystone does not maintain a competing generic-class allowlist.
+- Healthy NO_CHANGE records use ServiceNow-owned non-mutating target read-back
+  and become terminal without approval or Execute.
+- Past Summaries and Agent Workspace operation totals derive only from
+  correlated terminal verification or reconciliation evidence and show the
+  exact ServiceNow destination table.
+- Prioritize and Remediate share capped health-opportunity presentation. At
+  100%, recommendations are labeled as risk reduction and `Maintain 100%`.
 - Agent Workspace can present a verified subset while explicitly deferring remaining work. That presentation state is local, non-authoritative, and states that ServiceNow was not changed for deferred records.
 - `docs/system-architecture.md`, `docs/servicenow-schema-inventory.md`, `docs/servicenow-field-gap-matrix.md`, `docs/cmdb-bridge-api.md`, `docs/ire-flow.md`, and `docs/agent-harness.md` establish the core architecture and governance boundaries.
 - Git history shows recent milestones focused on real ServiceNow-backed event semantics and the single-record IRE proxy contract. The latest reviewed commit before this PRD work is `6a4a562 Add single-record IRE proxy contract`.
 
 ### Partial Capabilities
 
-- Comprehend is partially represented by UI adapters, ServiceNow-backed staged outcomes, timeline events, findings, confidence indicators, and provenance views. It is not yet an autonomous Comprehend agent running from this repository.
-- Prioritize is partially represented by health/fix data, priority display, relationship and confidence context, and recalculation by reloading ServiceNow-backed data. It is not yet a deterministic prioritization engine plus agent planner.
-- Remediate now provides single-record and bounded campaign/packet workflows. Broader automatic progression across multiple heterogeneous groups remains operator-driven.
-- Live Ops is partially real: `app/live-view.tsx` consumes the real timeline/event ledger data and avoids fake timers. It is still a visualization of events, not an orchestrator.
-- Agent HR is a useful narrative and persona surface, but it is static data in `app/agents-data.ts`, not runtime agent telemetry.
-- The IRE control loop is wired to the browser workbench. Execute and Verify browser routes are status-only; the ServiceNow-owned Phase D continuation performs both operations.
-- Source-controlled ServiceNow artifacts and project-owned Phase B3A, B3B, C, and D acceptance suites cover the deployed endpoint and continuation contracts.
+- Comprehend combines ServiceNow-backed staged outcomes, timeline events,
+  findings, confidence, provenance, Mara supervision, specialist activity, and
+  recorded handoffs. Some source adapters and fallback narratives remain
+  presentation-oriented.
+- Prioritize uses deterministic ranking and capped health-opportunity
+  presentation. The underlying ServiceNow health aggregation remains coarse.
+- Remediate provides single-record, campaign, packet, and bounded autonomous
+  healthy-INSERT workflows. Attribute editing and broad policy-driven UPDATE
+  autonomy remain open.
+- The IRE control loop is wired to the browser workbench. Execute and Verify
+  browser routes are status-only; the ServiceNow-owned Phase D continuation
+  performs both operations.
+- Source-controlled ServiceNow artifacts and project-owned Phase B3A, B3B, C,
+  and D acceptance suites cover the deployed endpoint and continuation
+  contracts.
 
 ### Mocked Capabilities
 
 - Demo data remains in `app/cmdb-data.ts`, including mock CIs, timeline events, relationships, and health data.
 - The dashboard still falls back to mock data when no run is selected or when configured ServiceNow resources are unavailable.
-- Agent HR uses static agent personas and claims that can overstate the current runtime implementation if shown without context.
+- Demo fallback agent activity remains non-authoritative and must be labeled as
+  fixture data rather than live ServiceNow evidence.
 - Some import source presets and demo starters are local UX helpers rather than live source-system integrations.
 - The Sankey and graph experiences can use demo fallback data when live run data is unavailable.
 
 ### Missing Capabilities
 
-- No provider-neutral agent runtime is implemented.
-- A deterministic evidence-derived work queue exists; a durable provider-neutral agent runtime remains open.
-- No autonomous Comprehend, Prioritize, or Remediation loop exists in this repository.
+- A general repository-owned provider-neutral model runtime is not implemented;
+  authoritative model execution intentionally belongs in ServiceNow.
+- A deterministic evidence-derived work queue and bounded ServiceNow Mara loop
+  exist. Broader remediation strategies remain open.
 - The frontend single-record IRE workbench supports simulation, approval, and automatic Execute/Verify monitoring.
 - Deterministic failure grouping and a one-attempt class-alias retry loop now exist; broader strategies remain deferred.
 - Relationship promotion remains deferred; endpoint CIs must be verified first.
@@ -81,13 +110,14 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - The generic CMDB route in `app/api/cmdb/[resource]/route.ts` contains commented-out legacy URL construction and some rough indentation.
 - There are two normalization paths: older bridge normalizers in `app/lib/cmdb/bridge-normalizers.ts` and newer Comprehend adapters in `app/lib/cmdb/comprehend-adapter.ts`. This is manageable now but should be consolidated or clearly scoped.
 - ServiceNow bridge limitations documented in `docs/cmdb-bridge-api.md` remain important: simple CSV parsing in the ServiceNow import script, `payload` and `detail` string-size constraints, coarse health, no pagination, and hardcoded team assumptions in some write endpoints.
-- The documentation sometimes describes intended agent behavior more strongly than the code currently supports.
-- Static Agent HR content can blur the line between demo narrative and implemented autonomy.
+- Documentation must continue to distinguish persisted live agent handoffs from
+  demo fallback activity.
 
 ### Documentation And Code Discrepancies
 
 - The docs correctly define ServiceNow as authoritative, but the UI still presents some agent-oriented experiences from static and derived data.
-- Past Summaries currently counts staged operation types and can overstate committed outcomes. Agent Workspace Chapter 4 and correlated Phase D verification are authoritative for live demonstrations.
+- Past Summaries and Agent Workspace Chapter 4 now share correlated terminal
+  outcome derivation; staged operations do not count as committed.
 - ServiceNow's health endpoint does not expose historical baseline, verified, and projected fields for the active demo run. Agent Workspace therefore labels its health progression as derived rather than reported.
 - `docs/agent-harness.md` remains the provider-neutral authority boundary; deterministic queue and ServiceNow Mara evidence exist, while a general repository-owned provider adapter remains deferred.
 
@@ -101,6 +131,13 @@ Keystone becomes meaningfully agentic when the system can continue through safe,
 - Milestone 6: Complete. The deterministic work queue and playback state reconstruct from ServiceNow evidence after refresh.
 - Milestone 7: Complete and live-accepted. Phase E adds stable homogeneous planning, three-wide simulation, deterministic failure groups, one allowlisted bounded retry, frozen manifests, and sequential individual approvals for campaigns of at most 20 CIs. Live acceptance proved one resolved class-alias retry and one isolated missing-identity blocker without approval, Execute, Verify, or a CMDB write.
 - Milestone 8A: Complete and live-accepted. Bounded approval packets let one explicit human confirmation authorize an exact parent hash covering up to five already-frozen 20-record campaign manifests and 100 homogeneous records. ServiceNow still records and enforces one individual approval and one Phase D continuation per CI. Live acceptance proved one exact-hash `INSERT` through correlated verification with the packet route invoking neither Execute nor Verify. No model receives approval or write authority.
+- Post-8A demo readiness: Complete in the repository. The UI supports in-app
+  exact-hash capability issuance, successive packets beyond 100 records,
+  explicit ServiceNow commit labeling and target-table summaries, bounded Mara
+  healthy-INSERT autonomy, generic class-bound simulation evidence,
+  non-mutating NO_CHANGE reconciliation, two-refresh readiness checks, and
+  truthful maximum-health presentation. The active 50-CI live run remains
+  nonterminal until ServiceNow evidence reaches the stated success criteria.
 
 The active same-day demo run `DMR0001066` is in progress rather than terminal:
 20 of 50 Linux-server INSERT candidates have correlated ServiceNow verification,

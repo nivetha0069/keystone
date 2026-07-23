@@ -1,74 +1,120 @@
-﻿# Agent Harness
+# Keystone Agent Harness
 
-## Milestone 1 scope
+## Current model
 
-Provider-neutral agent work is documentation-only in Milestone 1. Do not implement model calls, background agent execution, ServiceNow write tools, or a dedicated `agent_trace` table yet.
+The authoritative agent harness runs in ServiceNow, not in the Next.js browser.
+Mara supervises bounded migration work while Router, Atlas, Scout, Weaver, and
+Sentry provide specialized reasoning and deterministic evidence.
 
-## Goals
+```text
+Mara
+  +-- Router: next-safe-step routing
+  +-- Atlas: class and attribute evidence
+  +-- Scout: identity and duplicate evidence
+  +-- Weaver: relationship evidence
+  +-- Sentry: confidence and policy gates
 
-Agents may interpret, classify, explain, and recommend. Deterministic code must validate required fields, calculate scores, enforce permissions, and execute writes through ServiceNow-controlled services.
+Ledger: shared audit memory
+IRE: governed execution engine
+```
 
-Agent outputs are proposals, not facts.
+Ledger and IRE are supporting services, not reasoning subagents.
 
-## Conceptual interface
+## Runtime ownership
 
-```ts
-export interface KeystoneAgent<Input, Result> {
-  id: string;
-  name: string;
-  version: string;
-  capabilities: string[];
-  analyze(input: Input, context: AgentContext): Promise<Result>;
+ServiceNow Script Includes own:
+
+- model-provider routing and credentials;
+- compact prompt construction;
+- tool allowlists;
+- bounded iteration and retry limits;
+- run/team ownership checks;
+- deterministic fallback decisions;
+- Event Ledger recording;
+- authoritative staged-record reads; and
+- IRE simulation requests.
+
+The frontend reads persisted, run-scoped evidence. It does not execute an
+authoritative agent loop or call a model provider.
+
+## Agent output contract
+
+Agent decisions are proposals until deterministic ServiceNow validation proves
+their inputs and policy. Recommended structured output includes:
+
+```json
+{
+  "observation": "Repeated missing identity pattern detected.",
+  "decision": "Group the affected records before simulation.",
+  "action": "group_identity_failures",
+  "handoff_to": "Scout",
+  "approval_required": false
 }
 ```
 
-The harness should eventually enforce:
+Every action must:
 
-- structured JSON input and output
-- schema validation
-- timeouts and retry limits
-- provider abstraction
-- trace id and prompt version
-- agent version
-- token and latency metrics
-- evidence requirements
-- confidence bounds
-- abstention support
-- no credential access
-- no direct CMDB write tools
-- allowlisted tables and tools only
-- human approval before material action
+- use an allowlisted tool;
+- accept identifiers rather than arbitrary table names or executable payloads;
+- carry run-scoped correlation;
+- be bounded and replay-safe;
+- preserve compact evidence;
+- abstain or stop when confidence or identity is insufficient; and
+- remain separate from mutation authority.
 
-## Initial persistence model
+## Persistence
 
-Do not add `recommendation` or `agent_trace` tables now.
+Use existing ServiceNow records:
 
-Use existing tables:
+- `finding` for concise findings, recommendations, and root-cause summaries;
+- `review_decision` for human or policy review;
+- `event_ledger` for compact decision, action, observation, handoff, lifecycle,
+  correlation, and outcome evidence; and
+- `ai_usage` for sanitized model-call accounting.
 
-- `finding`: stores concise findings, recommendations, or AI summaries. Use `type` as the record-kind discriminator where choices allow.
-- `review_decision`: stores human or policy review of a finding.
-- `event_ledger`: stores compact lifecycle metadata for agent start/completion/error and playback.
+Do not store complete prompts, hidden reasoning, full model responses, complete
+source rows, credentials, or executable IRE payloads in Event Ledger detail.
 
-Do not store complete model prompts, complete model responses, full source rows, or large artifacts in `event_ledger.detail`.
+## Autonomy boundary
 
-## Class Mapping Agent, later milestone
+Agents may autonomously:
 
-The first future agent should recommend a target CMDB class from staged source attributes. It must return ranked candidates, evidence, confidence, and abstention when uncertain.
+- inspect and normalize staged data;
+- group findings and failures;
+- calculate deterministic priority;
+- request non-mutating IRE simulation;
+- reconcile healthy records that require no mutation;
+- prepare bounded approval evidence; and
+- explain the next safe action.
 
-The deterministic gate remains responsible for:
+With `CMDB_MARA_AUTONOMOUS_COMMIT_ENABLED=true` and the per-run UI toggle, Mara
+may also advance healthy, unmatched insertion candidates through exact
+server-derived packets and monitor ServiceNow Phase D verification.
 
-- allowed target classes
-- required identifiers
-- confidence thresholds
-- review requirements
-- final ServiceNow write eligibility
+Mara must stop for:
 
-## When separate tables become justified
+- updates to existing CIs;
+- ambiguous identity;
+- low confidence;
+- unsupported class or attribute;
+- stale simulation or policy evidence;
+- protected-service impact;
+- failures or blockers; and
+- any scope outside the healthy-insertion autonomy policy.
 
-A separate `recommendation` table becomes justified when recommendations need independent assignment, lifecycle, prioritization history, grouping, or execution status beyond what `finding` and `review_decision` can safely represent.
+## Write boundary
 
-A separate `agent_trace` table becomes justified when audit requirements require searchable prompt versions, model IDs, token metrics, latency, full structured outputs, input hashes, or replay/debug data at a volume or size unsuitable for `finding` and compact `event_ledger` entries.
+No agent receives a direct CMDB write tool. ServiceNow rebuilds authoritative
+payloads from staged evidence, IRE remains the only CI mutation path, and Phase
+D owns execution and correlated read-back verification.
 
-## Security rules
+## Acceptance
 
-Agents must never receive ServiceNow credentials. They must not have unrestricted ServiceNow query tools, arbitrary encoded-query execution, browser-originated write access, or direct CMDB write capabilities. Server-side integration code and future ServiceNow Script Includes remain the only place where credentials and authoritative write orchestration belong.
+- Visible agent activity must correspond to persisted ServiceNow evidence.
+- Missing backend events must render as waiting, not fabricated activity.
+- Unknown tools, arbitrary tables, payload authority, and repeated unsafe
+  actions must be rejected.
+- Model/provider secrets must never reach the browser.
+- Agent summaries must not be counted as committed outcomes.
+- Terminal migration claims require correlated ServiceNow verification or
+  successful non-mutating reconciliation.

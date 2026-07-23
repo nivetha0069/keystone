@@ -2,7 +2,11 @@
 
 ## Scope and source of truth
 
-Keystone is an external CMDB migration control plane for the Comprehend -> Prioritize -> Remediate lifecycle. The current ServiceNow schema source of truth is `docs/servicenow-schema-inventory.md`; implementation must not create, rename, delete, or modify ServiceNow tables or fields during Milestone 1.
+Keystone is an external CMDB migration control plane for the
+Import -> Comprehend -> Prioritize -> Remediate -> Verify lifecycle. The
+current ServiceNow schema source of truth is
+`docs/servicenow-schema-inventory.md`. Current lifecycle, packet, autonomy, and
+readiness behavior is summarized in `docs/current-state.md`.
 
 Existing ServiceNow scope: `x_kest_dotwalkers`.
 
@@ -17,6 +21,9 @@ Existing tables:
 
 The staging tables are the system of record for migration workflow state. The CMDB remains the system of record for production configuration items. Keystone must never write directly to `cmdb_ci` or `cmdb_rel_ci` from external application code.
 
+`x_kest_dotwalkers_ai_usage` is the single approved schema extension and stores
+sanitized model-call accounting.
+
 ## Runtime architecture
 
 ```text
@@ -27,7 +34,7 @@ Browser
 Keystone Next.js application
   |
   | server-side API gateway
-  | auth, validation, compatibility routing, orchestration UI
+  | auth, identifier validation, compatibility routing, campaign coordination
   v
 ServiceNow Scripted REST API and Script Includes
   |
@@ -37,6 +44,7 @@ ServiceNow Scripted REST API and Script Includes
   +--> finding
   +--> review_decision
   +--> event_ledger
+  +--> ai_usage
   |
   v
 ServiceNow IRE simulation / identification
@@ -51,7 +59,15 @@ ServiceNow IRE execution
 CMDB CI records and later governed relationships
 ```
 
-The existing `/api/cmdb/*` compatibility routes remain in place for the current UI and demo fallback. New migration-run APIs should be introduced alongside them in a later milestone, not as replacements during Milestone 1.
+Mara, Router, Atlas, Scout, Weaver, and Sentry run or are represented through
+ServiceNow-owned agent evidence. Ledger is shared audit memory. IRE is the
+execution engine. No model-provider credential or authoritative agent loop
+belongs in the browser.
+
+The existing `/api/cmdb/*` compatibility routes support read resources,
+identifier-only lifecycle actions, campaigns, approval packets, autonomous
+packet coordination, and the demo fallback. They are not generic ServiceNow
+write proxies.
 
 ## CPR lifecycle mapping
 
@@ -61,15 +77,31 @@ Comprehend shows how uploaded data moved through staging, validation, class prop
 
 ### Prioritize
 
-Prioritize ranks work using deterministic application logic. During Milestone 1, priority contracts may exist in TypeScript, but there is no separate recommendation table. A `finding` record may represent a finding, recommendation, or AI summary through its `type` value and compact text in `recommendation`.
+Prioritize ranks work using deterministic application logic. Displayed health
+lift is capped to the remaining 0-100 headroom and allocated in ranked order.
+At 100%, recommendations remain visible as risk reduction with no numerical
+lift claim. A `finding` record may represent a finding, recommendation, or AI
+summary through its `type` and compact recommendation text.
 
 ### Remediate
 
-Remediate prepares governed actions only. The browser and Keystone server do not submit an authoritative final IRE payload. ServiceNow must rebuild or revalidate payloads from approved staged data before simulation or execution.
+Remediate simulates and coordinates governed actions without submitting an
+authoritative final IRE payload. ServiceNow rebuilds and revalidates payloads
+from staged and approved evidence. Campaigns contain at most 20 homogeneous
+records; parent packets contain at most five children and 100 records. Larger
+runs continue through successive packets.
+
+Manual mode requires an in-app one-time authorization bound to the exact
+freshly prepared parent hash. Autonomous mode may commit only healthy unmatched
+insertion candidates when the server-only capability is enabled. Updates and
+exceptions remain human-governed.
 
 ## ServiceNow orchestration boundary
 
-Future ServiceNow orchestration should be implemented in Script Includes or application services called by Scripted REST resources. Avoid migration orchestration in Business Rules so execution remains explicit, testable, replayable, and tied to user or policy approval.
+ServiceNow orchestration is implemented in Script Includes and application
+services called by Scripted REST resources. Avoid migration orchestration in
+Business Rules so execution remains explicit, testable, replayable, and tied
+to user or policy approval.
 
 ## Event ledger usage
 
