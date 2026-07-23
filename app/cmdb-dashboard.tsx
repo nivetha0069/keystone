@@ -761,9 +761,14 @@ export function CmdbDashboard() {
       <div className="brand">
         <span className="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
-            <path d="M3.6 15.4 L6 9.6 L10 6.8 L14.4 7.2 L18.6 10 L20.4 14.8 L18.8 18.4 L5.2 18.4 Z" fill="rgba(199, 243, 77, .13)" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-            <path d="M10 6.8 L11.6 12.4 L18.6 10" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" strokeLinecap="round" opacity=".55" />
-            <path d="M11.6 12.4 L8.6 18.4 M11.6 12.4 L15.2 18.4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity=".38" />
+            {/* 5-petal lotus fanning up from a base */}
+            {[-52, -26, 0, 26, 52].map(a => (
+              <path key={a}
+                d="M12 17.4 C 9 13.4 9.4 8.2 12 4.6 C 14.6 8.2 15 13.4 12 17.4 Z"
+                fill="rgba(199, 243, 77, .13)" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"
+                transform={`rotate(${a} 12 17.4)`} />
+            ))}
+            <path d="M6 17.2 Q 12 20.6 18 17.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" opacity=".6" />
           </svg>
         </span>
         <div className="brand-copy"><strong>CMDB</strong><small>MODERNIZATION CONTROL</small></div>
