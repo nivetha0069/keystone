@@ -39,10 +39,11 @@ import {
   type WorkQueueItemSource,
   type WorkQueueSummary,
 } from "./lib/cmdb/work-queue";
-import { deriveCorrelatedVerifiedOutcomes } from "./lib/cmdb/terminal-outcomes";
+import { deriveCorrelatedVerifiedOutcomes, summarizeServiceNowDestinations } from "./lib/cmdb/terminal-outcomes";
 import type {
   RemediationApprovalManifest,
   RemediationCampaignApprovalResult,
+  RemediationCampaignBulkSimulationResult,
   RemediationCampaignPlan,
   RemediationCampaignRetryResult,
   RemediationCampaignSimulationResult,
@@ -73,7 +74,7 @@ import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
 import { ImportGatewayView, type ImportedRun } from "./import-view";
 import { MaraCompanion } from "./mara-companion";
-import { AgentWorkspaceView, OPERATION_META, SummaryMetric } from "./agent-workspace";
+import { AgentWorkspaceView, OPERATION_META, ServiceNowDestinationTables, SummaryMetric } from "./agent-workspace";
 import { deriveWorkspaceViewState } from "./lib/cmdb/workspace-view-state";
 import { PageNavigation } from "./components/PageNavigation";
 import { formatTechnicalSource, parseMaraObservation } from "./lib/cmdb/mara-observation";
@@ -115,6 +116,7 @@ type CampaignPlanView = RemediationCampaignPlan & { approval_enabled?: boolean }
 type CampaignViewState = {
   plan?: CampaignPlanView;
   failureGroups?: RemediationFailureGroupsResult;
+  bulkSimulation?: RemediationCampaignBulkSimulationResult;
   simulation?: RemediationCampaignSimulationResult;
   retry?: RemediationCampaignRetryResult;
   manifest?: RemediationApprovalManifest;
@@ -122,7 +124,7 @@ type CampaignViewState = {
   status?: RemediationCampaignStatus;
   restored?: boolean;
 };
-type CampaignPendingAction = "plan" | "failure-groups" | "simulate" | "retry" | "prepare-approval" | "approve" | "status";
+type CampaignPendingAction = "plan" | "failure-groups" | "simulate" | "simulate-all" | "retry" | "prepare-approval" | "approve" | "status";
 type ApprovalPacketPlanView = ApprovalPacketPlan & { approval_enabled?: boolean; demo_mode?: boolean };
 type FrozenApprovalPacketView = FrozenApprovalPacket & { approval_enabled?: boolean; authorization_expires_at?: string; demo_mode?: boolean };
 type ApprovalPacketViewState = {
@@ -1227,6 +1229,7 @@ function RemediateView(props: {
     pending: { ciId: selectedCi?.id, action: pendingAction },
     demoFallback,
   }), [demoFallback, findings, health.fixes, ireRecords, pendingAction, reviews, selectedCi?.id, stagedCis, timeline]);
+  const simulationReadyCount = queue.items.filter(item => item.bucket === "ready_to_simulate").length;
   const selectedQueueItem = queue.items.find(item => item.id === selectedCi?.id);
   const drilldownItems = queue.items.slice(0, 100);
   const lifecycle = selectedQueueItem?.lifecycle ?? deriveIreLifecycleState(workbench);
@@ -1503,7 +1506,7 @@ function RemediateView(props: {
     }
   }
 
-  async function runCampaignAction(action: "plan" | "simulate" | "retry" | "prepare-approval" | "approve", requestedSignature?: string) {
+  async function runCampaignAction(action: "plan" | "simulate" | "simulate-all" | "retry" | "prepare-approval" | "approve", requestedSignature?: string) {
     if (!activeRunId || campaignPending) return;
     setCampaignPending(action);
     setCampaignError("");
@@ -1511,13 +1514,19 @@ function RemediateView(props: {
       const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(action === "plan" && requestedSignature
-          ? { migration_run_id: activeRunId, work_group_signature: requestedSignature, limit: 20 }
-          : campaignRequestBody(action === "approve")),
+        body: JSON.stringify(action === "simulate-all"
+          ? { migration_run_id: activeRunId }
+          : action === "plan" && requestedSignature
+            ? { migration_run_id: activeRunId, work_group_signature: requestedSignature, limit: 20 }
+            : campaignRequestBody(action === "approve")),
       });
       const payload = await response.json().catch(() => ({ error: response.statusText })) as Record<string, unknown>;
       if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `Campaign ${action} failed with HTTP ${response.status}.`);
       if (action === "plan") setCampaign(current => ({ failureGroups: current.failureGroups, plan: payload as CampaignPlanView }));
+      else if (action === "simulate-all") {
+        setManifestConfirmed(false);
+        setCampaign(current => ({ failureGroups: current.failureGroups, bulkSimulation: payload as RemediationCampaignBulkSimulationResult }));
+      }
       else if (action === "simulate") setCampaign(current => ({ ...current, simulation: payload as RemediationCampaignSimulationResult, manifest: undefined, approval: undefined, status: undefined }));
       else if (action === "retry") setCampaign(current => ({ ...current, retry: payload as RemediationCampaignRetryResult, simulation: undefined, manifest: undefined, approval: undefined, status: undefined }));
       else if (action === "prepare-approval") {
@@ -1535,9 +1544,27 @@ function RemediateView(props: {
     }
   }
 
+  const currentCommitStage = approvalPacket.status?.stage ?? approvalPacket.approval?.stage ?? campaign.status?.stage ?? campaign.approval?.stage ?? "idle";
+  const cmdbCommitActive = ["approving", "executing", "verifying"].includes(currentCommitStage);
+  const cmdbCommitComplete = currentCommitStage === "completed";
+  const cmdbCommitLabel = cmdbCommitActive
+    ? "COMMITTING TO SERVICENOW CMDB NOW"
+    : cmdbCommitComplete
+      ? "CURRENT SCOPE COMMITTED AND VERIFIED"
+      : "NOT COMMITTING TO SERVICENOW CMDB";
+  const cmdbCommitDetail = cmdbCommitActive
+    ? "The exact approved scope is in the ServiceNow-owned IRE Execute and automatic Verify chain."
+    : cmdbCommitComplete
+      ? "Correlated ServiceNow evidence reports the current approved scope as executed and verified."
+      : "Simulation, planning, packet preparation, and exact-hash authorization do not create or update CMDB CIs.";
+
   return <div className="page">
     <section className="page-heading"><div><span className="eyebrow accent">BOUNDED AGENT REMEDIATION</span><h1>Governed campaigns, one chain per CI.</h1><p>Plan and approve a frozen group once. ServiceNow independently executes and verifies every eligible staged CI.</p></div><div className="ire-lock"><Icon name="shield" size={18} /><span><small>WRITE CONTROL</small><strong>IRE enforced</strong></span></div></section>
-    <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE</small><strong>ServiceNow rebuilds</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - APPROVE</small><strong>One group confirmation</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - SERVER EXECUTE</small><strong>ServiceNow runs IRE</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - AUTO VERIFY</small><strong>Correlation monitored</strong></div></div></section>
+    <section className="remediation-flow panel"><div className="flow-item active"><span><Icon name="spark" /></span><div><small>1 - SIMULATE · NO COMMIT</small><strong>ServiceNow rebuilds only</strong></div></div><Icon name="arrow" /><div className="flow-item active"><span><Icon name="check" /></span><div><small>2 - COMMIT APPROVAL</small><strong>Starts the CMDB commit chain</strong></div></div><Icon name="arrow" /><div className="flow-item locked"><span><Icon name="shield" /></span><div><small>3 - SERVER EXECUTE</small><strong>ServiceNow writes through IRE</strong></div></div><Icon name="arrow" /><div className="flow-item"><span><Icon name="database" /></span><div><small>4 - AUTO VERIFY</small><strong>Committed target read back</strong></div></div></section>
+    <section className={`cmdb-commit-status ${cmdbCommitActive ? "active" : cmdbCommitComplete ? "complete" : "idle"}`} role="status" aria-live="polite">
+      <Icon name={cmdbCommitActive ? "shield" : cmdbCommitComplete ? "check" : "clock"} size={18} />
+      <div><small>CMDB COMMIT STATUS</small><strong>{cmdbCommitLabel}</strong><p>{cmdbCommitDetail}</p></div>
+    </section>
     <section className="panel work-queue-panel">
       <div className="panel-heading"><div><span className="section-index">01</span><div><h2>Derived agent work queue</h2><p>Queue state is reconstructed from staged CIs, IRE responses, health findings, and Event Ledger playback.</p></div></div><span className={`source-pill ${queue.liveBackedCount ? "live" : demoFallback ? "demo" : ""}`}>{queue.liveBackedCount ? `${queue.liveBackedCount} live-backed` : demoFallback ? "demo fallback" : "derived staging"}</span></div>
       <div className="queue-buckets">
@@ -1547,6 +1574,7 @@ function RemediateView(props: {
     <AgentCampaignPanel
       activeRunId={activeRunId}
       campaign={campaign}
+      simulationReadyCount={simulationReadyCount}
       pending={campaignPending}
       error={campaignError}
       confirmed={manifestConfirmed}
@@ -1562,6 +1590,7 @@ function RemediateView(props: {
           .finally(() => setCampaignPending(null));
       }}
       onSimulate={() => void runCampaignAction("simulate")}
+      onSimulateAll={() => void runCampaignAction("simulate-all")}
       onRetry={() => void runCampaignAction("retry")}
       onPrepare={() => void runCampaignAction("prepare-approval")}
       onApprove={() => void runCampaignAction("approve")}
@@ -1638,8 +1667,8 @@ function RemediateView(props: {
         </div>
         <div className="ire-action-footer">
           <div className="ire-action-grid">
-            <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating…" : "Simulate"}</button>
-            <button className="ghost-button" title="Authorizes one fingerprint-bound ServiceNow execution for this staged CI." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={approve}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Saving…" : "Approve"}</button>
+            <button className="primary-button" disabled={!liveRunReady || Boolean(pendingAction)} onClick={() => void runIreAction("simulate")}><Icon name="spark" size={15} /> {pendingAction === "simulate" ? "Simulating · No CMDB commit…" : "Simulate · No CMDB commit"}</button>
+            <button className="ghost-button" title="Starts one fingerprint-bound ServiceNow IRE commit and automatic verification chain for this staged CI." disabled={!liveRunReady || !approvable || Boolean(pendingAction)} onClick={approve}><Icon name="check" size={15} /> {pendingAction === "approve" ? "Starting ServiceNow CMDB commit…" : "Commit this CI to ServiceNow"}</button>
             <div className="ire-auto-continuation"><Icon name="shield" size={15} /><span><strong>Execute + Verify are automatic</strong><small>ServiceNow execution and verification are monitored from Event Ledger evidence.</small></span></div>
           </div>
         </div>
@@ -1699,8 +1728,8 @@ function ApprovalPacketPanel(props: {
       <span className={`campaign-stage ${stage === "blocked" || stage === "expired" ? "blocked" : stage === "completed" ? "complete" : ""}`}>{stage.replaceAll("_", " ")}</span>
     </div>
     <div className="campaign-controls">
-      <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} />{pending === "plan-packet" ? "Planning packet…" : plan ? "Replan packet" : "Plan packet"}</button>
-      <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} />{pending === "prepare-packet" ? "Freezing children…" : "Prepare packet"}</button>
+      <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} />{pending === "plan-packet" ? "Planning · No CMDB commit…" : plan ? "Replan packet · No CMDB commit" : "Plan packet · No CMDB commit"}</button>
+      <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} />{pending === "prepare-packet" ? "Preparing · No CMDB commit…" : "Prepare packet · No CMDB commit"}</button>
       <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onRefresh}><Icon name="refresh" size={15} />{pending === "packet-status" ? "Reconstructing…" : "Refresh packet"}</button>
     </div>
     {!activeRunId && <div className="campaign-notice"><Icon name="shield" size={15} />Select a live migration run to plan a bounded approval packet.</div>}
@@ -1738,8 +1767,8 @@ function ApprovalPacketPanel(props: {
       {frozen.demo_mode && <div className="campaign-notice packet-demo-notice"><Icon name="spark" size={15} /><span><strong>Isolated demo</strong> No ServiceNow or CMDB endpoint is reachable. The same two-step UI authorization flow is enforced.</span><button className="ghost-button" onClick={() => onConfirmation(frozen.packet_hash || "")}>Fill exact demo hash</button></div>}
       {!frozen.approval_enabled && stage === "review_ready" && <div className="campaign-notice"><Icon name="shield" size={15} />Live fan-out is locked. Matching the hash enables a separate one-time authorization action; authorization itself performs no IRE work.</div>}
       <div className="campaign-controls packet-approval-actions">
-        <button className="ghost-button" disabled={!canAuthorize || Boolean(pending)} onClick={onAuthorize}><Icon name="shield" size={15} />{pending === "authorize-packet" ? "Authorizing exact hash…" : "Authorize exact packet"}</button>
-        <button className="primary-button" title={approvalButtonTitle} disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} />{pending === "approve-packet" ? "Approving individually…" : `Approve ${frozen.items.length} individual chains`}</button>
+        <button className="ghost-button" disabled={!canAuthorize || Boolean(pending)} onClick={onAuthorize}><Icon name="shield" size={15} />{pending === "authorize-packet" ? "Authorizing · No CMDB commit…" : "Authorize exact packet · No CMDB commit"}</button>
+        <button className="primary-button" title={approvalButtonTitle} disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} />{pending === "approve-packet" ? "Starting ServiceNow CMDB commits…" : `Commit ${frozen.items.length} CIs to ServiceNow`}</button>
       </div>
     </div>}
     {status && <div className="packet-progress"><div className="campaign-list-head"><strong>ServiceNow-reconstructed progress</strong><span>{status.items.length} records</span></div>{status.children.map(child => <div className="packet-progress-row" key={child.campaign_id}><strong>{child.campaign_id}</strong><span>{child.verified} verified · {child.blocked} blocked · {child.item_count} total</span><code>{child.manifest_id}</code></div>)}</div>}
@@ -1750,6 +1779,7 @@ function ApprovalPacketPanel(props: {
 function AgentCampaignPanel(props: {
   activeRunId: string;
   campaign: CampaignViewState;
+  simulationReadyCount: number;
   pending: CampaignPendingAction | null;
   error: string;
   confirmed: boolean;
@@ -1758,16 +1788,17 @@ function AgentCampaignPanel(props: {
   onPlanFailure: (signature: string) => void;
   onRefreshFailures: () => void;
   onSimulate: () => void;
+  onSimulateAll: () => void;
   onRetry: () => void;
   onPrepare: () => void;
   onApprove: () => void;
   onRefresh: () => void;
 }) {
-  const { activeRunId, campaign, pending, error, confirmed, onConfirmed, onPlan, onPlanFailure, onRefreshFailures, onSimulate, onRetry, onPrepare, onApprove, onRefresh } = props;
+  const { activeRunId, campaign, simulationReadyCount, pending, error, confirmed, onConfirmed, onPlan, onPlanFailure, onRefreshFailures, onSimulate, onSimulateAll, onRetry, onPrepare, onApprove, onRefresh } = props;
   const plan = campaign.plan;
   const manifest = campaign.manifest;
-  const summary = campaign.status?.summary ?? campaign.approval?.summary ?? manifest?.summary ?? campaign.retry?.summary ?? campaign.simulation?.summary;
-  const stage = campaign.status?.stage ?? campaign.approval?.stage ?? manifest?.stage ?? campaign.retry?.stage ?? campaign.simulation?.stage ?? plan?.stage ?? "planning";
+  const summary = campaign.status?.summary ?? campaign.approval?.summary ?? manifest?.summary ?? campaign.bulkSimulation?.summary ?? campaign.retry?.summary ?? campaign.simulation?.summary;
+  const stage = campaign.status?.stage ?? campaign.approval?.stage ?? manifest?.stage ?? campaign.bulkSimulation?.stage ?? campaign.retry?.stage ?? campaign.simulation?.stage ?? plan?.stage ?? "planning";
   const exclusions = manifest?.exclusions ?? plan?.exclusions ?? [];
   const insertItems = manifest?.items.filter(item => item.operation === "INSERT") ?? [];
   const retryPlan = Boolean(plan?.strategy_id);
@@ -1776,22 +1807,24 @@ function AgentCampaignPanel(props: {
 
   return <section className="panel agent-campaign-panel">
     <div className="panel-heading">
-      <div><span className="section-index">02</span><div><h2>Agent Campaign</h2><p>Deterministic, homogeneous campaigns of up to 20 staged CIs. Simulation concurrency is capped at three; approvals fan out sequentially.</p></div></div>
+      <div><span className="section-index">02</span><div><h2>Agent Campaign</h2><p>Simulate one group or every eligible homogeneous group. Groups contain up to 20 staged CIs and simulation concurrency stays capped at three.</p></div></div>
       <span className={`campaign-stage ${stage === "blocked" ? "blocked" : stage === "completed" ? "complete" : ""}`}>{stage.replaceAll("_", " ")}</span>
     </div>
 
     <div className="campaign-controls">
-      <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} /> {pending === "plan" ? "Planning…" : plan ? "Replan" : "Plan campaign"}</button>
+      <button className="primary-button" disabled={!activeRunId || Boolean(pending)} onClick={onPlan}><Icon name="graph" size={15} /> {pending === "plan" ? "Planning…" : plan ? "Replan · No CMDB commit" : "Plan campaign · No CMDB commit"}</button>
       <button className="ghost-button" disabled={!activeRunId || Boolean(pending)} onClick={onRefreshFailures}><Icon name="refresh" size={15} /> {pending === "failure-groups" ? "Grouping failures…" : "Refresh failures"}</button>
-      <button className="ghost-button" disabled={!plan || retryPlan || Boolean(pending)} onClick={onSimulate}><Icon name="spark" size={15} /> {pending === "simulate" ? "Simulating…" : retryPlan ? "Use bounded retry" : "Simulate group"}</button>
+      <button className="primary-button" disabled={!activeRunId || simulationReadyCount === 0 || Boolean(pending)} onClick={onSimulateAll}><Icon name="spark" size={15} /> {pending === "simulate-all" ? "Simulating · No CMDB commit…" : `Simulate all eligible (${simulationReadyCount}) · No CMDB commit`}</button>
+      <button className="ghost-button" disabled={!plan || retryPlan || Boolean(pending)} onClick={onSimulate}><Icon name="spark" size={15} /> {pending === "simulate" ? "Simulating · No CMDB commit…" : retryPlan ? "Use bounded retry" : "Simulate group · No CMDB commit"}</button>
       {retryPlan && <button className="ghost-button" disabled={!plan || Boolean(pending)} onClick={onRetry}><Icon name="refresh" size={15} /> {pending === "retry" ? "Retrying once…" : `Retry ${plan?.items.length ?? 0} once`}</button>}
-      <button className="ghost-button" disabled={!canPrepare || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} /> {pending === "prepare-approval" ? "Freezing…" : "Freeze approval"}</button>
+      <button className="ghost-button" disabled={!canPrepare || Boolean(pending)} onClick={onPrepare}><Icon name="shield" size={15} /> {pending === "prepare-approval" ? "Freezing · No CMDB commit…" : "Freeze approval · No CMDB commit"}</button>
       <button className="ghost-button" disabled={!plan || Boolean(pending)} onClick={onRefresh}><Icon name="refresh" size={15} /> {pending === "status" ? "Refreshing…" : "Refresh status"}</button>
     </div>
 
     {!activeRunId && <div className="campaign-notice"><Icon name="shield" size={15} />Select a live migration run to create a server-derived campaign plan.</div>}
     {error && <div className="ire-error"><Icon name="x" size={15} />{error}</div>}
     {campaign.restored && <div className="campaign-notice"><Icon name="refresh" size={15} />Campaign progress restored from persisted ServiceNow approval, execution, and verification evidence.</div>}
+    {campaign.bulkSimulation && <div className="campaign-notice"><Icon name={campaign.bulkSimulation.stage === "completed" ? "check" : "x"} size={15} />Bulk simulation {campaign.bulkSimulation.stage}: {campaign.bulkSimulation.summary.succeeded} succeeded across {campaign.bulkSimulation.group_count} homogeneous groups, {campaign.bulkSimulation.summary.failed} failed. No approval or execution was performed.{campaign.bulkSimulation.halted ? ` ${campaign.bulkSimulation.halted.message}` : ""}</div>}
 
     {campaign.failureGroups && <div className="campaign-columns campaign-failure-groups">
       <div className="campaign-list">
@@ -1854,7 +1887,7 @@ function AgentCampaignPanel(props: {
       <div className="manifest-items">{manifest.items.map(item => <div key={item.staged_ci_id}><strong>{item.name}</strong><span>{item.operation}</span><small title={item.simulation_fingerprint}>{item.simulation_fingerprint.slice(0, 16)}… · retry {item.retry_count}{item.mapping_version ? ` · mapping ${item.mapping_version}` : ""}</small></div>)}</div>
       <label className="campaign-confirmation"><input type="checkbox" checked={confirmed} onChange={event => onConfirmed(event.target.checked)} /><span>I confirm this exact manifest, its staged CI identifiers, operations, and canonical simulation fingerprints.</span></label>
       {!plan?.approval_enabled && <div className="campaign-notice"><Icon name="shield" size={15} />Grouped approval is safety-gated. Set the server-only campaign approval flag only for an explicitly authorized live manifest.</div>}
-      <button className="primary-button" disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} /> {pending === "approve" ? "Approving sequentially…" : `Approve ${manifest.items.length} governed chains`}</button>
+      <button className="primary-button" disabled={!canApprove || Boolean(pending)} onClick={onApprove}><Icon name="check" size={15} /> {pending === "approve" ? "Starting ServiceNow CMDB commits…" : `Commit ${manifest.items.length} CIs to ServiceNow`}</button>
     </div>}
   </section>;
 }
@@ -2255,6 +2288,7 @@ function PastRunSummaryBody({ cis, timeline, health, findings, reviews, entry }:
 
   const queue = deriveRemediationWorkQueue({ cis, timeline, findings, reviews, healthFixes: health.fixes });
   const outcomes = deriveCorrelatedVerifiedOutcomes(queue.items, timeline);
+  const destinationTables = summarizeServiceNowDestinations(outcomes);
   const operations = (() => {
     const counts = new Map<string, number>();
     for (const outcome of outcomes) counts.set(outcome.operation, (counts.get(outcome.operation) ?? 0) + 1);
@@ -2318,6 +2352,11 @@ function PastRunSummaryBody({ cis, timeline, health, findings, reviews, entry }:
             </div>)}
           </div>
         : <p className="summary-empty">No correlated terminal outcomes were verified.</p>}
+    </div>
+
+    <div className="summary-section">
+      <h3>ServiceNow destination tables</h3>
+      <ServiceNowDestinationTables destinations={destinationTables} compact />
     </div>
 
     <div className="summary-section">

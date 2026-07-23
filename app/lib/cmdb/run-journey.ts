@@ -7,6 +7,7 @@
 import type { ActivityCard, PhaseStatus, WorkspaceViewState, WorkspacePhaseId } from "./workspace-view-state";
 import type { AgentWorkGroup } from "./agent-workspace";
 import type { WorkQueueItem } from "./work-queue";
+import { summarizeServiceNowDestinations, type ServiceNowDestinationSummary } from "./terminal-outcomes";
 
 export type JourneyChapterId = "comprehend" | "prioritize" | "remediate" | "verify";
 
@@ -36,7 +37,7 @@ export type JourneyEvidence =
       pendingCount: number;
       blockedCount: number;
       operationCounts: { insert: number; update: number; noChange: number };
-      classCounts: { className: string; count: number }[];
+      destinationTables: ServiceNowDestinationSummary[];
       healthSource: WorkspaceViewState["health"]["source"];
     };
 
@@ -228,21 +229,12 @@ function buildRemediateChapter(view: WorkspaceViewState, beats: ActivityCard[], 
 function buildVerifyChapter(view: WorkspaceViewState, beats: ActivityCard[], isActive: boolean): JourneyChapter {
   const status = view.verifyStatus;
   const verifiedCount = view.terminalOutcomes.length;
-  const outcomeIds = new Set(view.terminalOutcomes.map(outcome => outcome.stagedCiId));
-  const verifiedItems = view.queue.items.filter(item => outcomeIds.has(item.stagedCiId.toLowerCase()));
   const operationCounts = {
     insert: view.terminalOutcomes.filter(outcome => outcome.operation === "INSERT").length,
     update: view.terminalOutcomes.filter(outcome => outcome.operation === "UPDATE").length,
     noChange: view.terminalOutcomes.filter(outcome => outcome.operation === "NO_CHANGE").length,
   };
-  const classes = new Map<string, number>();
-  for (const item of verifiedItems) {
-    const className = item.ci.className || "unknown class";
-    classes.set(className, (classes.get(className) ?? 0) + 1);
-  }
-  const classCounts = [...classes.entries()]
-    .map(([className, count]) => ({ className, count }))
-    .sort((left, right) => right.count - left.count || left.className.localeCompare(right.className));
+  const destinationTables = summarizeServiceNowDestinations(view.terminalOutcomes);
   const pendingCount = view.queue.items.filter(item => item.bucket !== "verified" && item.bucket !== "blocked" && item.bucket !== "simulation_failed").length;
   const blockedCount = view.queue.items.filter(item => item.bucket === "blocked" || item.bucket === "simulation_failed").length;
   const relationshipsReady = view.snapshot.relationships.ready;
@@ -277,7 +269,7 @@ function buildVerifyChapter(view: WorkspaceViewState, beats: ActivityCard[], isA
       pendingCount,
       blockedCount,
       operationCounts,
-      classCounts,
+      destinationTables,
       healthSource: view.health.source,
     },
     inspect: "verify",

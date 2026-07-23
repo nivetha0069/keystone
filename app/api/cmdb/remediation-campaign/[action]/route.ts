@@ -7,6 +7,7 @@ import {
   remediationFailureGroups,
   remediationCampaignStatus,
   retryRemediationCampaign,
+  simulateAllRemediationCampaigns,
   simulateRemediationCampaign,
   type CampaignSelection,
 } from "../../../../lib/cmdb/remediation-campaign";
@@ -26,7 +27,7 @@ import {
 } from "../../../../lib/cmdb/approval-packet-authority";
 import { invokeCampaignIre, invokeCampaignProposal, loadCampaignSnapshot } from "../../../../lib/cmdb/server-campaign-bridge";
 
-const ACTIONS = new Set(["plan", "failure-groups", "simulate", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "authorize-packet", "approve-packet", "packet-status"]);
+const ACTIONS = new Set(["plan", "failure-groups", "simulate", "simulate-all", "retry", "prepare-approval", "approve", "status", "plan-packet", "prepare-packet", "authorize-packet", "approve-packet", "packet-status"]);
 const FORBIDDEN_EXECUTABLE_FIELDS = new Set([
   "attributes", "class", "class_name", "cmdb_values", "decision", "mapping", "mapping_version",
   "identity_evidence", "operation", "payload", "policy_version", "proposed_class", "rationale",
@@ -55,6 +56,18 @@ export async function POST(request: Request, context: { params: Promise<{ action
       });
     }
     if (action === "failure-groups") return Response.json(remediationFailureGroups(snapshot));
+    if (action === "simulate-all") {
+      return Response.json(await simulateAllRemediationCampaigns(
+        snapshot,
+        () => loadCampaignSnapshot(selection.migration_run_id),
+        (item, generated) => invokeCampaignIre("simulate", {
+          migration_run_id: selection.migration_run_id,
+          staged_ci_id: item.staged_ci_id,
+          correlation_id: generated.correlation_id,
+          idempotency_key: generated.idempotency_key,
+        }),
+      ));
+    }
     if (!selection.work_group_signature || !selection.campaign_id || !selection.staged_ci_ids?.length) {
       throw campaignError("INVALID_REQUEST", "Campaign id, work-group signature, and staged CI identifiers are required.");
     }

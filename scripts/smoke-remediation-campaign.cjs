@@ -111,6 +111,68 @@ assert.equal(simulation.summary.succeeded, 19);
 assert.equal(simulation.summary.failed, 1);
 assert.equal(generatedSimulationCorrelations.size, 20, "campaign correlations are unique even when sys_ids share prefixes");
 
+const bulkCis = Array.from({ length: 45 }, (_, index) => ({
+  ...cis[0],
+  id: sysId(2000 + index),
+  stagedCiId: sysId(2000 + index),
+  name: `bulk-server-${String(index + 1).padStart(2, "0")}`,
+  ip: `10.20.${Math.floor(index / 250)}.${(index % 250) + 1}`,
+}));
+const bulkBase = { ...base, cis: bulkCis, health: { ...health, ciCount: bulkCis.length } };
+const bulkTimeline = [];
+let bulkActive = 0;
+let bulkMaxActive = 0;
+let bulkSeq = 0;
+const runBulk = maxGroups => campaign.simulateAllRemediationCampaigns(
+  bulkBase,
+  async () => ({ ...bulkBase, timeline: [...bulkTimeline] }),
+  async (item, request) => {
+    bulkActive++;
+    bulkMaxActive = Math.max(bulkMaxActive, bulkActive);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    bulkActive--;
+    const sequence = ++bulkSeq;
+    const fingerprint = fp(2000 + sequence);
+    bulkTimeline.push({
+      id: sysId(3000 + sequence), seq: sequence, step: 5, name: "simulated", recordName: item.name,
+      className: item.class_name, operation: "UPDATE", source: "Remediate", confidence: 0.95,
+      time: `2026-07-22 13:${String(Math.floor(sequence / 60)).padStart(2, "0")}:${String(sequence % 60).padStart(2, "0")}`,
+      status: "complete",
+      reasoning: JSON.stringify({
+        schema: "keystone.agent.v1", phase: "remediate", actor: "Remediate", decision_source: "deterministic",
+        action: "ire_simulation_completed", status: "completed", summary: "Simulation completed",
+        migration_run_id: RUN, staged_ci_id: item.staged_ci_id,
+        simulation_correlation_id: request.correlation_id, simulation_fingerprint: fingerprint,
+        operation: "UPDATE", proposed_class: item.class_name,
+        class_policy_version: campaign.CAMPAIGN_CLASS_BOUND_POLICY_VERSION,
+        evidence_version: campaign.CAMPAIGN_SIMULATION_EVIDENCE_VERSION,
+      }),
+    });
+    return {
+      success: true, action: "simulate", state: "simulated_pending_approval", status: "matched",
+      simulation_correlation_id: request.correlation_id, simulation_fingerprint: fingerprint,
+    };
+  },
+  maxGroups,
+);
+const bulkSimulation = await runBulk(10);
+assert.equal(bulkSimulation.stage, "completed", "simulate-all reaches terminal simulation coverage when no eligible records remain");
+assert.equal(bulkSimulation.group_count, 3, "45 records are simulated as bounded groups of 20, 20, and 5");
+assert.equal(bulkSimulation.summary.succeeded, 45);
+assert.equal(bulkSimulation.summary.failed, 0);
+assert.equal(new Set(bulkSimulation.items.map(item => item.staged_ci_id)).size, 45, "simulate-all never repeats a staged record");
+assert.equal(bulkMaxActive, 3, "simulate-all preserves the per-group concurrency cap of three");
+assert.ok(bulkSimulation.groups.every(group => group.concurrency === 3));
+
+bulkTimeline.length = 0;
+bulkSeq = 0;
+bulkActive = 0;
+bulkMaxActive = 0;
+const boundedBulkSimulation = await runBulk(1);
+assert.equal(boundedBulkSimulation.stage, "partial", "the server safety bound stops a large bulk request cleanly");
+assert.equal(boundedBulkSimulation.halted.code, "CAMPAIGN_BULK_LIMIT_REACHED");
+assert.equal(boundedBulkSimulation.summary.succeeded, 20);
+
 let transportCalls = 0;
 const transportSimulation = await campaign.simulateRemediationCampaign(base, {
   migration_run_id: RUN, work_group_signature: plan.work_group_signature, campaign_id: plan.campaign_id,
@@ -499,6 +561,8 @@ assert.match(route, /"source_identifier"/);
 assert.match(route, /"policy_version"/);
 assert.match(route, /invokeCampaignProposal/);
 assert.match(route, /"failure-groups"/);
+assert.match(route, /"simulate-all"/);
+assert.match(route, /simulateAllRemediationCampaigns/);
 assert.match(route, /\[a-zA-Z0-9:._ -\]\*/, "campaign route must round-trip server-generated signatures containing class-label spaces");
 assert.match(route, /retryRemediationCampaign/);
 assert.match(route, /loadCampaignSnapshot\(selection\.migration_run_id\)/, "proposal preparation reloads authoritative ServiceNow evidence");
@@ -514,6 +578,10 @@ assert.match(dashboard, /Campaign progress restored from persisted ServiceNow/);
 assert.match(dashboard, /Deterministic failure groups/);
 assert.match(dashboard, /Retry evidence/);
 assert.match(dashboard, /runCampaignAction\("retry"\)/);
+assert.match(dashboard, /Simulate all eligible/);
+assert.match(dashboard, /NOT COMMITTING TO SERVICENOW CMDB/);
+assert.match(dashboard, /No CMDB commit/);
+assert.match(dashboard, /Commit \$\{frozen\.items\.length\} CIs to ServiceNow/);
 assert.equal(/runIreAction\("execute"|runIreAction\("verify"/.test(dashboard), false, "UI never triggers Execute or Verify");
 
 console.log("remediation campaign smoke passed");

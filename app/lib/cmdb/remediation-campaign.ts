@@ -7,6 +7,7 @@ import { deriveRemediationWorkQueue, isCiScopedTimelineEvent, sortTimelineByFres
 
 export const CAMPAIGN_LIMIT = 20;
 export const CAMPAIGN_SIMULATION_CONCURRENCY = 3;
+export const CAMPAIGN_BULK_MAX_GROUPS = 100;
 export const CAMPAIGN_INSERT_POLICY_VERSION = "bounded-insert-v1";
 export const CAMPAIGN_CLASS_BOUND_POLICY_VERSION = "servicenow-allowlisted-class-v1";
 export const CAMPAIGN_SIMULATION_EVIDENCE_VERSION = "keystone.simulation.v2";
@@ -86,6 +87,19 @@ export type RemediationCampaignSimulationResult = {
   campaign_id: string;
   work_group_signature: string;
   concurrency: 3;
+  items: RemediationCampaignActionItem[];
+  summary: CampaignSummary;
+  halted?: { code: string; message: string };
+};
+
+export type RemediationCampaignBulkSimulationResult = {
+  success: boolean;
+  stage: "completed" | "partial" | "blocked";
+  migration_run_id: string;
+  concurrency: 3;
+  max_groups: number;
+  group_count: number;
+  groups: RemediationCampaignSimulationResult[];
   items: RemediationCampaignActionItem[];
   summary: CampaignSummary;
   halted?: { code: string; message: string };
@@ -238,10 +252,12 @@ export function planRemediationCampaign(
   snapshot: RemediationCampaignSnapshot,
   requestedSignature?: string,
   requestedLimit = CAMPAIGN_LIMIT,
+  includeRetryStrategies = true,
 ): RemediationCampaignPlan {
   const context = campaignContext(snapshot);
   const limit = clampLimit(requestedLimit);
-  const available = campaignGroups(context.queueItems, context.groups);
+  const available = campaignGroups(context.queueItems, context.groups)
+    .filter(group => includeRetryStrategies || !group.strategy);
   const selected = requestedSignature
     ? available.find(group => group.signature === requestedSignature)
     : available.find(group => group.items.some(item => simulationEligible(item, group.strategy)));
@@ -420,6 +436,101 @@ export async function simulateRemediationCampaign(
     work_group_signature: plan.work_group_signature,
     concurrency: CAMPAIGN_SIMULATION_CONCURRENCY,
     items: results,
+    summary,
+    halted,
+  };
+}
+
+/**
+ * Simulate every currently eligible, non-retry group for a run. Group
+ * membership remains server-derived and each group is re-planned from a fresh
+ * ServiceNow snapshot before the next bounded simulation begins.
+ */
+export async function simulateAllRemediationCampaigns(
+  initialSnapshot: RemediationCampaignSnapshot,
+  refreshSnapshot: () => Promise<RemediationCampaignSnapshot>,
+  simulate: (item: RemediationCampaignItem, request: { correlation_id: string; idempotency_key: string }) => Promise<IreActionResponse>,
+  requestedMaxGroups = CAMPAIGN_BULK_MAX_GROUPS,
+): Promise<RemediationCampaignBulkSimulationResult> {
+  const maxGroups = Math.max(1, Math.min(CAMPAIGN_BULK_MAX_GROUPS, Math.floor(requestedMaxGroups) || CAMPAIGN_BULK_MAX_GROUPS));
+  const groups: RemediationCampaignSimulationResult[] = [];
+  const seenCampaigns = new Set<string>();
+  let snapshot = initialSnapshot;
+  let halted: RemediationCampaignBulkSimulationResult["halted"];
+  let stage: RemediationCampaignBulkSimulationResult["stage"] = "completed";
+
+  while (groups.length < maxGroups) {
+    let plan: RemediationCampaignPlan;
+    try {
+      plan = planRemediationCampaign(snapshot, undefined, CAMPAIGN_LIMIT, false);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String((error as Error & { code: string }).code) : "CAMPAIGN_FAILED";
+      if (code === "CAMPAIGN_GROUP_NOT_FOUND" || code === "CAMPAIGN_EMPTY") break;
+      throw error;
+    }
+    if (seenCampaigns.has(plan.campaign_id)) {
+      stage = "blocked";
+      halted = { code: "CAMPAIGN_EVIDENCE_NOT_REFRESHED", message: "ServiceNow evidence did not advance after simulation; bulk processing stopped before repeating a campaign." };
+      break;
+    }
+    seenCampaigns.add(plan.campaign_id);
+    const result = await simulateRemediationCampaign(snapshot, {
+      migration_run_id: plan.migration_run_id,
+      campaign_id: plan.campaign_id,
+      work_group_signature: plan.work_group_signature,
+      staged_ci_ids: plan.items.map(item => item.staged_ci_id),
+      limit: plan.max_items,
+    }, simulate);
+    groups.push(result);
+    if (result.halted) {
+      stage = "blocked";
+      halted = result.halted;
+      break;
+    }
+    if (result.summary.succeeded === 0) {
+      stage = "blocked";
+      halted = { code: "CAMPAIGN_NO_PROGRESS", message: "The current group produced no successful simulations; bulk processing stopped before retrying it." };
+      break;
+    }
+    snapshot = await refreshSnapshot();
+    if (snapshot.migrationRunId !== initialSnapshot.migrationRunId) {
+      throw campaignError("CAMPAIGN_RUN_MISMATCH", "Refreshed campaign evidence belongs to a different migration run.");
+    }
+  }
+
+  if (stage === "completed" && groups.length === maxGroups) {
+    try {
+      planRemediationCampaign(snapshot, undefined, CAMPAIGN_LIMIT, false);
+      stage = "partial";
+      halted = { code: "CAMPAIGN_BULK_LIMIT_REACHED", message: `Bulk simulation reached its safety bound of ${maxGroups} groups. Run Simulate all eligible again to continue.` };
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String((error as Error & { code: string }).code) : "CAMPAIGN_FAILED";
+      if (code !== "CAMPAIGN_GROUP_NOT_FOUND" && code !== "CAMPAIGN_EMPTY") throw error;
+    }
+  }
+
+  const items = groups.flatMap(group => group.items);
+  const summary = groups.reduce<CampaignSummary>((aggregate, group) => ({
+    total: aggregate.total + group.summary.total,
+    eligible: aggregate.eligible + group.summary.eligible,
+    excluded: aggregate.excluded + group.summary.excluded,
+    succeeded: aggregate.succeeded + group.summary.succeeded,
+    failed: aggregate.failed + group.summary.failed,
+    approved: aggregate.approved + group.summary.approved,
+    executing: aggregate.executing + group.summary.executing,
+    verifying: aggregate.verifying + group.summary.verifying,
+    verified: aggregate.verified + group.summary.verified,
+    blocked: aggregate.blocked + group.summary.blocked,
+  }), emptySummary(0));
+  return {
+    success: stage === "completed",
+    stage,
+    migration_run_id: initialSnapshot.migrationRunId,
+    concurrency: CAMPAIGN_SIMULATION_CONCURRENCY,
+    max_groups: maxGroups,
+    group_count: groups.length,
+    groups,
+    items,
     summary,
     halted,
   };

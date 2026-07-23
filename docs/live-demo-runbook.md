@@ -90,9 +90,23 @@ Complete these checks before presenting:
 
 ### 3. Simulate eligible work
 
-- In Remediate, use the bounded Agent Campaign flow for records that are ready
-  to simulate.
-- Simulation may run three-wide, but it remains non-mutating.
+- Confirm the persistent `CMDB COMMIT STATUS` banner says
+  `NOT COMMITTING TO SERVICENOW CMDB`. Buttons for simulation, planning,
+  preparation, and authorization are explicitly marked `No CMDB commit`.
+- In Remediate, select `Simulate all eligible (N)` in Agent Campaign. Keystone
+  repeatedly derives the next homogeneous group from fresh ServiceNow evidence
+  until no normally eligible record remains.
+- Each group contains at most 20 records. Groups run sequentially and each
+  group may simulate three records concurrently, but simulation remains
+  non-mutating.
+- The bulk action accepts only the migration-run identifier. It never approves,
+  executes, verifies, or submits browser-provided classes, operations, or
+  payloads.
+- Automatic bulk simulation excludes retry-strategy groups. Review the
+  deterministic failure groups and use the explicit one-time bounded retry for
+  an allowlisted retry group.
+- A systemic failure, a group with no successful simulations, or ServiceNow
+  evidence that does not advance stops the bulk action before another group.
 - Resolve only ServiceNow-accepted classes and allowlisted retry groups. Missing identity, unsupported classes,
   exhausted retry budgets, and ambiguous evidence remain blocked.
 - A current simulation persists its proposed class, class-policy version,
@@ -101,8 +115,8 @@ Complete these checks before presenting:
 - `NO_CHANGE` never enters a mutation packet. ServiceNow reads back the matched
   target; success is terminal without approval, Execute, or a CMDB write, and
   failed or ambiguous reconciliation is blocked.
-- Continue until the intended homogeneous records have fresh completed
-  simulations.
+- Confirm the action reports `completed` and the queue reports zero records
+  ready to simulate before planning a packet.
 
 ### 4. Plan and prepare one bounded packet
 
@@ -129,6 +143,9 @@ Complete these checks before presenting:
 
 ### 6. Approve and observe Phase D
 
+- This is the mutation boundary. The final button says
+  `Commit N CIs to ServiceNow`; selecting it starts the exact approved CMDB
+  commit scope through ServiceNow-owned IRE execution and automatic read-back.
 - Keep the complete packet hash in the confirmation field.
 - Submit the single packet confirmation once.
 - The one-time authorization is consumed as approval begins; no restart or
@@ -147,7 +164,10 @@ Complete these checks before presenting:
 - Return to Agent Workspace and refresh evidence.
 - Open Chapter 4, Verify.
 - Show Mara's verification summary, verified operation counts, target CI count,
-  class counts, blockers, and correlated ServiceNow read-back.
+  blockers, and correlated ServiceNow read-back. The Agent Workspace Verify
+  chapter, run-summary window, and Past Summaries each show the exact
+  evidence-bound ServiceNow destination table with inserted, updated, and
+  reconciled-without-write counts.
 - Show baseline, verified-now, and projected health. When ServiceNow does not
   supply historical health fields, Keystone labels the progression as derived
   from staged CI health plus realized and remaining work-group lift.

@@ -7,10 +7,19 @@ export type CorrelatedVerifiedOutcome = {
   stagedCiId: string;
   operation: TerminalOperation;
   targetCiSysId: string;
+  targetTable: string;
   executionCorrelation?: string;
   executionEventId?: string;
   verificationEventId: string;
   kind: "mutation" | "reconciliation";
+};
+
+export type ServiceNowDestinationSummary = {
+  table: string;
+  total: number;
+  inserted: number;
+  updated: number;
+  reconciled: number;
 };
 
 export type LiveDemoReadinessReport = {
@@ -106,6 +115,7 @@ export function deriveCorrelatedVerifiedOutcomes(
         stagedCiId,
         operation,
         targetCiSysId,
+        targetTable: proposedClass,
         verificationEventId: terminal.event.id,
         kind: "reconciliation",
       });
@@ -137,10 +147,23 @@ export function deriveCorrelatedVerifiedOutcomes(
       terminalOperation(detail.operation) === operation,
     );
     if (!execution) continue;
+    const simulation = events.find(({ detail }) =>
+      detail.action === "ire_simulation_completed" &&
+      token(detail.simulation_correlation_id ?? detail.correlation_id) === simulationCorrelation &&
+      canonicalFingerprint(detail.simulation_fingerprint) === simulationFingerprint,
+    );
+    const targetTable = className(simulation?.detail.proposed_class) ??
+      className(execution.detail.proposed_class) ??
+      className(terminal.detail.proposed_class) ??
+      className(execution.event.className) ??
+      className(terminal.event.className) ??
+      className(item.ci.className);
+    if (!targetTable) continue;
     outcomes.push({
       stagedCiId,
       operation,
       targetCiSysId,
+      targetTable,
       executionCorrelation,
       executionEventId: execution.event.id,
       verificationEventId: terminal.event.id,
@@ -148,6 +171,25 @@ export function deriveCorrelatedVerifiedOutcomes(
     });
   }
   return outcomes.sort((left, right) => left.stagedCiId.localeCompare(right.stagedCiId));
+}
+
+export function summarizeServiceNowDestinations(outcomes: CorrelatedVerifiedOutcome[]): ServiceNowDestinationSummary[] {
+  const destinations = new Map<string, ServiceNowDestinationSummary>();
+  for (const outcome of outcomes) {
+    const current = destinations.get(outcome.targetTable) ?? {
+      table: outcome.targetTable,
+      total: 0,
+      inserted: 0,
+      updated: 0,
+      reconciled: 0,
+    };
+    current.total++;
+    if (outcome.operation === "INSERT") current.inserted++;
+    else if (outcome.operation === "UPDATE") current.updated++;
+    else current.reconciled++;
+    destinations.set(outcome.targetTable, current);
+  }
+  return [...destinations.values()].sort((left, right) => right.total - left.total || left.table.localeCompare(right.table));
 }
 
 export function evaluateLiveDemoReadiness(input: {
@@ -199,7 +241,7 @@ export function readinessSignature(report: LiveDemoReadinessReport) {
     terminalTotal: report.terminalTotal,
     operationCounts: report.operationCounts,
     lifecycleCounts: report.lifecycleCounts,
-    outcomes: report.outcomes.map(outcome => [outcome.stagedCiId, outcome.operation, outcome.targetCiSysId, outcome.kind]),
+    outcomes: report.outcomes.map(outcome => [outcome.stagedCiId, outcome.operation, outcome.targetCiSysId, outcome.targetTable, outcome.kind]),
   });
 }
 

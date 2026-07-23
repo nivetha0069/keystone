@@ -17,6 +17,7 @@ import {
   type JourneyChapterId,
 } from "./lib/cmdb/run-journey";
 import { readRegistry, type RegistryEntry } from "./lib/cmdb/run-registry";
+import { summarizeServiceNowDestinations, type ServiceNowDestinationSummary } from "./lib/cmdb/terminal-outcomes";
 
 type WorkspaceFocus = "overview" | "approvals";
 
@@ -407,8 +408,8 @@ function EvidenceBlock({ chapter, onOpenRemediation }: { chapter: JourneyChapter
           <div className="journey-verification-detail">
             <span>NO CHANGE {evidence.operationCounts.noChange}</span>
             <span>BLOCKED {evidence.blockedCount}</span>
-            {evidence.classCounts.map(item => <span key={item.className}>{item.className} {item.count}</span>)}
           </div>
+          <ServiceNowDestinationTables destinations={evidence.destinationTables} />
         </div>
         {(evidence.baseline !== null || evidence.verified !== null || evidence.projected !== null) && <div className="journey-health">
           <div className="journey-health-cell">
@@ -524,12 +525,13 @@ function RunSummaryModal({ view, cis, runLabel, runId, onClose, onOpenRun }: {
 
   const operations = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const ci of cis) counts.set(ci.operation, (counts.get(ci.operation) ?? 0) + 1);
+    for (const outcome of view.terminalOutcomes) counts.set(outcome.operation, (counts.get(outcome.operation) ?? 0) + 1);
     const order = Object.keys(OPERATION_META);
     return [...counts.entries()]
       .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
       .map(([op, count]) => ({ op, count, meta: OPERATION_META[op] ?? { label: op, tone: "muted" as const } }));
-  }, [cis]);
+  }, [view.terminalOutcomes]);
+  const destinationTables = useMemo(() => summarizeServiceNowDestinations(view.terminalOutcomes), [view.terminalOutcomes]);
 
   const verifiedCount = queue.items.filter(item => item.bucket === "verified").length;
   const groupsResolved = snapshot.groups.filter(group => group.affected > 0 && group.realizedLift >= group.projectedLift).length;
@@ -571,7 +573,7 @@ function RunSummaryModal({ view, cis, runLabel, runId, onClose, onOpenRun }: {
       </div>
 
       <div className="summary-section">
-        <h3>Record outcomes</h3>
+        <h3>Correlated terminal outcomes</h3>
         {operations.length > 0
           ? <div className="summary-ops">
               {operations.map(({ op, count, meta }) => <div key={op} className={"summary-op " + meta.tone}>
@@ -579,7 +581,12 @@ function RunSummaryModal({ view, cis, runLabel, runId, onClose, onOpenRun }: {
                 <small>{meta.label}</small>
               </div>)}
             </div>
-          : <p className="summary-empty">No staged records have been evaluated yet.</p>}
+          : <p className="summary-empty">No correlated terminal outcomes were verified.</p>}
+      </div>
+
+      <div className="summary-section">
+        <h3>ServiceNow destination tables</h3>
+        <ServiceNowDestinationTables destinations={destinationTables} compact />
       </div>
 
       <div className="summary-section">
@@ -639,5 +646,23 @@ export function SummaryMetric({ label, value, tone }: { label: string; value: nu
   return <div className={"summary-metric " + (tone ?? "muted")}>
     <strong>{value}</strong>
     <small>{label}</small>
+  </div>;
+}
+
+export function ServiceNowDestinationTables({ destinations, compact = false }: {
+  destinations: ServiceNowDestinationSummary[];
+  compact?: boolean;
+}) {
+  if (!destinations.length) return <p className="summary-empty">No verified ServiceNow destination table is available yet.</p>;
+  return <div className={"servicenow-destinations" + (compact ? " compact" : "")}>
+    {destinations.map(destination => <div className="servicenow-destination-row" key={destination.table}>
+      <span className="servicenow-table-icon"><Icon name="database" size={15} /></span>
+      <div>
+        <small>SERVICENOW TABLE</small>
+        <code>{destination.table}</code>
+        <span>{destination.inserted > 0 ? `${destination.inserted} inserted` : ""}{destination.inserted > 0 && destination.updated > 0 ? " · " : ""}{destination.updated > 0 ? `${destination.updated} updated` : ""}{(destination.inserted > 0 || destination.updated > 0) && destination.reconciled > 0 ? " · " : ""}{destination.reconciled > 0 ? `${destination.reconciled} reconciled (no write)` : ""}</span>
+      </div>
+      <strong>{destination.total}<small>{destination.total === 1 ? " CI" : " CIs"}</small></strong>
+    </div>)}
   </div>;
 }

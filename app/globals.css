@@ -382,6 +382,13 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .flow-item.active > span { color: var(--lime); border-color: rgba(199, 243, 77, .35); background: rgba(199, 243, 77, .05); }
 .flow-item.locked > span { color: var(--lime); }
 .flow-item > div { display: flex; flex-direction: column; gap: 4px; }.flow-item small { color: var(--faint); font: 8px var(--mono); letter-spacing: .08em; }.flow-item strong { font-size: 11px; font-weight: 500; }
+.cmdb-commit-status { display: flex; align-items: center; gap: 12px; margin: -14px 0 26px; padding: 14px 18px; color: var(--lime); border: 1px solid rgba(199, 243, 77, .28); background: rgba(199, 243, 77, .035); }
+.cmdb-commit-status > div { display: grid; gap: 3px; }
+.cmdb-commit-status small { color: var(--muted); font: 8px var(--mono); letter-spacing: .12em; }
+.cmdb-commit-status strong { color: var(--ink); font: 12px var(--mono); letter-spacing: .04em; }
+.cmdb-commit-status p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.cmdb-commit-status.active { color: var(--amber); border-color: rgba(232, 178, 61, .42); background: rgba(232, 178, 61, .065); }
+.cmdb-commit-status.complete { color: var(--green); border-color: rgba(89, 197, 139, .35); background: rgba(89, 197, 139, .055); }
 .work-queue-panel { overflow: hidden; margin-bottom: 24px; }
 .agent-campaign-panel { overflow: hidden; margin-bottom: 24px; }
 .campaign-stage { padding: 5px 9px; color: var(--amber); border: 1px solid rgba(232, 178, 61, .32); background: rgba(232, 178, 61, .05); font: 8px var(--mono); letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
@@ -1794,6 +1801,17 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .journey-verification-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
 .journey-verification-detail { display: flex; flex-wrap: wrap; gap: 6px; }
 .journey-verification-detail span { padding: 4px 7px; color: var(--muted); background: rgba(255,255,255,.025); border: 1px solid var(--line); font: 8.5px var(--mono); letter-spacing: .04em; }
+.servicenow-destinations { display: grid; gap: 8px; margin-top: 12px; }
+.servicenow-destination-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 11px; min-width: 0; padding: 11px 12px; border: 1px solid rgba(89, 197, 139, .25); background: rgba(89, 197, 139, .035); }
+.servicenow-table-icon { width: 32px; height: 32px; display: grid; place-items: center; color: var(--green); border: 1px solid rgba(89, 197, 139, .28); background: rgba(89, 197, 139, .05); }
+.servicenow-destination-row > div { min-width: 0; display: grid; gap: 3px; }
+.servicenow-destination-row > div > small { color: var(--faint); font: 7.5px var(--mono); letter-spacing: .12em; }
+.servicenow-destination-row code { overflow-wrap: anywhere; color: var(--green); font: 11px/1.4 var(--mono); }
+.servicenow-destination-row > div > span { color: var(--muted); font-size: 9px; }
+.servicenow-destination-row > strong { color: var(--ink); font: 22px var(--display); white-space: nowrap; }
+.servicenow-destination-row > strong small { color: var(--muted); font: 8px var(--mono); }
+.servicenow-destinations.compact { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-top: 0; }
+.servicenow-destinations.compact .servicenow-destination-row { min-height: 64px; }
 .journey-health-source {
   margin: 10px 0 0;
   padding: 0 1px;

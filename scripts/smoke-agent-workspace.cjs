@@ -158,13 +158,17 @@ assert.equal(verifiedEvidence?.kind, "verify");
 assert.equal(verifiedEvidence?.verifiedCount, 1);
 assert.equal(verifiedEvidence?.targetCount, 1);
 assert.equal(verifiedEvidence?.operationCounts.insert, 1);
-assert.deepEqual(verifiedEvidence?.classCounts, [{ className: "cmdb_ci_linux_server", count: 1 }]);
+assert.deepEqual(verifiedEvidence?.destinationTables, [{
+  table: "cmdb_ci_linux_server", total: 1, inserted: 1, updated: 0, reconciled: 0,
+}]);
 
 const workspaceSource = fs.readFileSync(path.join(root, "app", "agent-workspace.tsx"), "utf8");
 assert.match(workspaceSource, /Review next bounded packet/, "Agent Workspace must expose the bounded packet route");
 assert.match(workspaceSource, /View completed results/, "Agent Workspace must expose a presentation-only defer route");
 assert.match(workspaceSource, /ServiceNow was not changed/, "the defer route must disclose its non-authoritative scope");
 assert.match(workspaceSource, /MARA&amp;apos;S VERIFICATION SUMMARY|MARA&apos;S VERIFICATION SUMMARY/, "Verify must expose a durable Mara summary");
+assert.match(workspaceSource, /ServiceNow destination tables/, "Agent Workspace summary must expose destination tables");
+assert.match(workspaceSource, /SERVICENOW TABLE/, "verified groups must label the exact target table clearly");
 
 const execute = sanitizeIreRequest("execute", {
   migration_run_id: runId,
@@ -211,7 +215,7 @@ function event(seq, name, source, reasoning) {
   return { id: "e" + seq, seq, step: seq >= 4 ? 5 : 4, name, recordName: "Migration run", className: "Run event", operation: "NO_CHANGE", source, confidence: 1, time: "now", status: "complete", reasoning };
 }
 function detail(action) {
-  const base = { action, staged_ci_id: cis[0].id, simulation_correlation_id: "ks-sim-1", simulation_fingerprint: "A".repeat(64) };
+  const base = { action, staged_ci_id: cis[0].id, simulation_correlation_id: "ks-sim-1", simulation_fingerprint: "A".repeat(64), proposed_class: "cmdb_ci_linux_server" };
   if (action === "approval_recorded") Object.assign(base, { decision: "approved", policy_approved: false, approval_event_id: "3".repeat(32) });
   if (action === "ire_execution_completed" || action === "verification_passed") Object.assign(base, {
     approval_event_id: "3".repeat(32), execution_correlation_id: "4".repeat(32),

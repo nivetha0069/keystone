@@ -19,7 +19,7 @@ require.extensions[".ts"] = function (module, filename) {
 };
 
 const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
-const { deriveCorrelatedVerifiedOutcomes, evaluateLiveDemoReadiness, readinessSignature } = require("../app/lib/cmdb/terminal-outcomes.ts");
+const { deriveCorrelatedVerifiedOutcomes, evaluateLiveDemoReadiness, readinessSignature, summarizeServiceNowDestinations } = require("../app/lib/cmdb/terminal-outcomes.ts");
 
 const RUN = "1".repeat(32);
 const ids = ["a".repeat(32), "b".repeat(32), "c".repeat(32)];
@@ -35,6 +35,10 @@ assert.equal(report.ready, true);
 assert.deepEqual(report.operationCounts, { INSERT: 1, UPDATE: 1, NO_CHANGE: 1 });
 assert.equal(report.mutationTotal, 2);
 assert.equal(report.reconciliationTotal, 1);
+assert.ok(report.outcomes.every(outcome => outcome.targetTable === "cmdb_ci_server"), "every terminal outcome carries its evidence-bound ServiceNow table");
+assert.deepEqual(summarizeServiceNowDestinations(report.outcomes), [{
+  table: "cmdb_ci_server", total: 3, inserted: 1, updated: 1, reconciled: 1,
+}]);
 assert.equal(readinessSignature(report), readinessSignature(readiness(JSON.parse(JSON.stringify(timeline)), { INSERT: 1, UPDATE: 1, NO_CHANGE: 1 })));
 
 const stagedProjection = readiness([], { INSERT: 1 });

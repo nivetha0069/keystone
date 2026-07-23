@@ -82,20 +82,25 @@ target table. ServiceNow queues Comprehend through the existing import contract.
 
 1. Open the returned migration-run sys_id in Agent Workspace.
 2. Wait for Comprehend and Prioritize evidence to finish.
-3. Run bounded simulation campaigns until no record remains ready to simulate.
-   Each child contains at most 20 records and simulation concurrency remains
-   three.
-4. Reconcile healthy `NO_CHANGE` outcomes through the ServiceNow-owned
+3. In Agent Campaign, select `Simulate all eligible (N)`. Keystone drains the
+   normally eligible work as sequential homogeneous groups of at most 20
+   records, refreshing ServiceNow evidence between groups. Simulation
+   concurrency remains three within each group. This action performs no
+   approval, execution, or verification.
+4. Handle retry-strategy groups separately through the explicit one-time
+   bounded retry. Bulk simulation stops on systemic failure, no progress, or
+   evidence that fails to advance.
+5. Reconcile healthy `NO_CHANGE` outcomes through the ServiceNow-owned
    read-back. They never enter mutation packets.
-5. Plan and prepare the next homogeneous mutation packet. Each parent contains
+6. Plan and prepare the next homogeneous mutation packet. Each parent contains
    at most 100 records across five children.
-6. Stop on the complete freshly prepared 64-character packet hash.
-7. Paste that exact hash in the UI, select `Authorize exact packet`, confirm the
+7. Stop on the complete freshly prepared 64-character packet hash.
+8. Paste that exact hash in the UI, select `Authorize exact packet`, confirm the
    three checks are green, and approve once. The server recomputes the packet
    before issuing a one-time exact-hash capability; no restart is required.
-8. Observe sequential individual approvals and ServiceNow-owned Phase D
+9. Observe sequential individual approvals and ServiceNow-owned Phase D
    Execute/Verify chains. The one-time gate is consumed when approval begins.
-9. Repeat packet planning until every staged record has a terminal outcome.
+10. Repeat packet planning until every staged record has a terminal outcome.
 
 Completed records are excluded from later packet planning. The next packet is
 derived from fresh ServiceNow evidence; a run never stops merely because one
