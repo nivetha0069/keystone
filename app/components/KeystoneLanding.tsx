@@ -48,7 +48,6 @@ const PRINCIPLES = [
   { icon: "🔒", title: "Governed by design", desc: "Every write goes through IRE. No direct CMDB mutations. Full audit trail on every action." },
   { icon: "🧠", title: "AI-assisted, human-approved", desc: "Agent classifies and prioritizes. Humans review evidence and authorize execution." },
   { icon: "📊", title: "Evidence-first", desc: "Every decision carries provenance, confidence scores, and reasoning you can inspect." },
-  { icon: "⚡", title: "Vercel-deployable", desc: "Runs as a Next.js app. Works with demo data immediately; connect ServiceNow when ready." },
 ];
 
 const STATS = [

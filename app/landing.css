@@ -47,7 +47,7 @@
 .landing-pipeline-stage span { color: var(--faint); font-size: 10.5px; line-height: 1.4; }
 .landing-pipeline-connector { position: absolute; top: 28px; right: -20px; width: 40px; height: 1px; background: linear-gradient(90deg, rgba(199,243,77,.3), rgba(199,243,77,.08)); }
 
-.landing-principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.landing-principles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 960px; margin: 0 auto; }
 .landing-principle-card { padding: 28px 24px; background: var(--surface); border: 1px solid var(--line); transition: border-color .25s ease, transform .25s ease; }
 .landing-principle-card:hover { border-color: rgba(199,243,77,.25); transform: translateY(-3px); }
 .landing-principle-icon { font-size: 24px; display: block; margin-bottom: 14px; }
@@ -75,6 +75,7 @@
   .landing-hero-new { padding: 0 20px; margin-top: 24px; }
   .landing-stats { grid-template-columns: repeat(2, 1fr); }
   .landing-section { padding: 0 20px; margin-top: 64px; }
+  .landing-principles { grid-template-columns: 1fr; }
   .landing-pipeline-connector { display: none; }
   .landing-footer { padding: 32px 20px 48px; margin-top: 80px; }
 }
