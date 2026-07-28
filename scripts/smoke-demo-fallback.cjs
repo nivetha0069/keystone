@@ -193,9 +193,11 @@ async function main() {
   });
 
   const instance = (await readJson("/api/cmdb/instance")).body;
-  check("instance returns a clearly fake host", () => {
-    assert.equal(instance.host, fixture.DEMO_INSTANCE_HOST);
-    assert.match(instance.host, /\.invalid$/);
+  check("demo mode names no instance host at all", () => {
+    // Demo mode is not pretending to be connected, so it must not invent a
+    // hostname for the header pill — the toggle is the only signal needed.
+    assert.equal(instance.host, undefined);
+    assert.equal(fixture.DEMO_INSTANCE_HOST, undefined);
   });
 
   // --- Cross-referencing (what the work queue depends on) -------------------
