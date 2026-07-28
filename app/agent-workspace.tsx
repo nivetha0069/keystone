@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ConfigurationItem, HealthData, Relationship, TimelineEvent } from "./cmdb-data";
+import { useDemoMode } from "./components/DemoToggle";
 import { Icon } from "./icons";
 import type { CprPhaseId } from "./lib/cmdb/agent-workspace";
 import type { RemediationFinding, RemediationReview } from "./lib/cmdb/comprehend-adapter";
@@ -60,6 +61,7 @@ export function AgentWorkspaceView(props: {
     props.relationships, props.reviews, props.runId, props.runLabel, props.runState, props.timeline,
   ]);
 
+  const demoMode = useDemoMode();
   const journey = useMemo(() => deriveRunJourney(view), [view]);
   const presentationKey = props.runId || props.runLabel;
   const [completedResultsKey, setCompletedResultsKey] = useState<string | null>(null);
@@ -69,13 +71,17 @@ export function AgentWorkspaceView(props: {
     [journey, showCompletedResults, view],
   );
 
-  const sourceLabel = props.apiState === "live" || props.apiState === "partial"
-    ? "LIVE FACTORY FLOOR"
-    : props.apiState === "connecting"
-      ? "CONNECTING TO SERVICENOW"
-      : props.runLabel
-        ? "SERVICENOW EVIDENCE UNAVAILABLE"
-        : "DEMO FALLBACK";
+  // Demo mode reaches "live" on every resource because the simulated transport
+  // always answers, so it has to be checked before the transport state.
+  const sourceLabel = demoMode
+    ? "DEMO FACTORY FLOOR"
+    : props.apiState === "live" || props.apiState === "partial"
+      ? "LIVE FACTORY FLOOR"
+      : props.apiState === "connecting"
+        ? "CONNECTING TO SERVICENOW"
+        : props.runLabel
+          ? "SERVICENOW EVIDENCE UNAVAILABLE"
+          : "DEMO FALLBACK";
 
   const [summaryOpen, setSummaryOpen] = useState(false);
   const openSummary = useCallback(() => setSummaryOpen(true), []);

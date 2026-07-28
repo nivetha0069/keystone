@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ConfigurationItem, TimelineEvent } from "./cmdb-data";
+import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import {
   buildMaraReasoningSteps,
@@ -52,7 +53,7 @@ const checkStatusLabel: Record<MaraCheckStatus, string> = {
 };
 
 async function readEvidence<T>(resource: string, runId: string, normalize: (payload: unknown) => T) {
-  const response = await fetch(`/api/cmdb/${resource}?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
+  const response = await cmdbFetch(`/api/cmdb/${resource}?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`${resource}: ${response.status}`);
   return normalize(await response.json());
 }

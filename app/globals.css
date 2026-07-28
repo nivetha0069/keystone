@@ -94,6 +94,15 @@ button { color: inherit; }
 .sidebar-toggle:focus-visible { outline: 2px solid rgba(199, 243, 77, .55); outline-offset: 1px; }
 .top-actions { display: flex; align-items: center; gap: 12px; }
 .instance { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 10.5px var(--mono); }
+
+/* Manual demo toggle. Intentionally understated: findable without competing
+   with the run context beside it. Amber only once demo mode is actually on. */
+.demo-toggle { height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); background: transparent; color: var(--faint); font: 9.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; transition: .2s ease; }
+.demo-toggle > i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); transition: .2s ease; }
+.demo-toggle:hover { color: var(--muted); border-color: var(--line-strong); }
+.demo-toggle.active { color: var(--amber); border-color: rgba(232, 178, 61, .34); background: rgba(232, 178, 61, .05); }
+.demo-toggle.active > i { background: var(--amber); box-shadow: 0 0 6px rgba(232, 178, 61, .6); }
+.page-heading-actions { display: flex; align-items: center; gap: 10px; }
 .live-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(89, 197, 139, .65); }
 .live-dot.demo { background: var(--faint); box-shadow: none; }
 .ghost-button, .filter-button { height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 13px; border: 1px solid var(--line-strong); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; transition: .2s ease; }

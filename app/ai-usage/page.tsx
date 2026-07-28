@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DemoToggle, useDemoMode } from "../components/DemoToggle";
 import { Icon } from "../icons";
+import { DEMO_RUN_ID, isDemoRunId } from "../lib/cmdb/demo-fixture";
+import { demoModeReady, restoreDemoMode, syncDemoModeUrl } from "../lib/cmdb/demo-mode";
+import { cmdbFetch } from "../lib/cmdb/demo-transport";
 import {
   AiUsageCall,
   AiUsageResponse,
@@ -70,6 +74,9 @@ export default function AiUsagePage() {
   const [runLabel, setRunLabel] = useState("");
   const [lastSync, setLastSync] = useState("");
   const inFlight = useRef(false);
+  const demoMode = useDemoMode();
+  const demoModeApplied = useRef<boolean | null>(null);
+  const realRun = useRef("");
 
   const load = useCallback(async (run: string, { silent = false }: { silent?: boolean } = {}) => {
     const trimmed = run.trim();
@@ -87,8 +94,8 @@ export default function AiUsagePage() {
       // drives auto-refresh (poll while active, stop at terminal). Both are
       // GETs — this page never mutates ServiceNow.
       const [usageResponse, runResponse] = await Promise.all([
-        fetch(`/api/cmdb/usage?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }),
-        fetch(`/api/cmdb/run?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }).catch(() => null),
+        cmdbFetch(`/api/cmdb/usage?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }),
+        cmdbFetch(`/api/cmdb/run?run=${encodeURIComponent(trimmed)}`, { method: "GET", cache: "no-store" }).catch(() => null),
       ]);
 
       const rawUsage = await usageResponse.json().catch(() => ({}));
@@ -132,6 +139,7 @@ export default function AiUsagePage() {
   // Auto-resolve on mount: URL > localStorage. No manual paste required.
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      restoreDemoMode();
       const resolved = resolveActiveRun();
       if (isSysId(resolved)) {
         setRunId(resolved);
@@ -147,6 +155,34 @@ export default function AiUsagePage() {
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Demo mode owns the run on this page too, and never persists it to the run
+  // context — switching back off restores whatever real run was resolved.
+  useEffect(() => {
+    if (!demoModeReady()) return;
+    if (demoModeApplied.current === demoMode) return;
+    const first = demoModeApplied.current === null;
+    syncDemoModeUrl();
+    if (!demoMode && first) {
+      demoModeApplied.current = demoMode;
+      return;
+    }
+    if (demoMode && !first) realRun.current = runId;
+
+    const timer = window.setTimeout(() => {
+      demoModeApplied.current = demoMode;
+      const next = demoMode ? DEMO_RUN_ID : realRun.current;
+      setRunId(next);
+      setRunDraft(next);
+      setRunState("");
+      setRunLabel("");
+      setData(null);
+      if (isSysId(next)) void load(next);
+      else { setState("idle"); setMessage(""); }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoMode]);
 
   // Poll while the backend is still working on this run. Stops on any terminal
   // state and on unmount. Never issues a write.
@@ -168,15 +204,19 @@ export default function AiUsagePage() {
     setRunId(trimmed);
     setRunDraft(trimmed);
     setShowChangeRun(false);
-    rememberRun(trimmed);
-    writeRunToUrl(trimmed);
+    // Never persist the simulated run — see isDemoRunId for why this is keyed on
+    // the id rather than the demo-mode flag.
+    if (!isDemoRunId(trimmed)) {
+      rememberRun(trimmed);
+      writeRunToUrl(trimmed);
+    }
     setData(null);
     setRunState("");
     setRunLabel("");
     void load(trimmed);
   }
 
-  const backHref = runId ? `/?run=${encodeURIComponent(runId)}` : "/";
+  const backHref = runId ? `/control-plane?run=${encodeURIComponent(runId)}` : "/control-plane";
   const calls = useMemo(() => data?.calls ?? [], [data]);
   const clientTotals: AiUsageTotals = useMemo(() => computeTotals(calls), [calls]);
   const phaseGroups = useMemo(() => groupByPhase(calls), [calls]);
@@ -203,7 +243,10 @@ export default function AiUsagePage() {
               <h1>AI usage for this run</h1>
               <p>Token consumption and model calls across Comprehend, Mara, and Prioritize — read-only, per migration run.</p>
             </div>
-            <Link className="ghost-button" href={backHref}><Icon name="chevron" size={14} /> Back to control plane</Link>
+            <div className="page-heading-actions">
+              <DemoToggle />
+              <Link className="ghost-button" href={backHref}><Icon name="chevron" size={14} /> Back to control plane</Link>
+            </div>
           </section>
 
           <section className="run-context panel">
@@ -235,7 +278,7 @@ export default function AiUsagePage() {
               <div className="run-context-summary">
                 <div><strong style={{ color: "var(--amber)" }}>No migration run is selected.</strong><p style={{ margin: "4px 0 0", color: "var(--muted)" }}>Open a run in the control plane and it will flow through here automatically.</p></div>
                 <div className="run-context-actions">
-                  <Link className="primary-button" href="/"><Icon name="chevron" size={13} /> Open control plane</Link>
+                  <Link className="primary-button" href="/control-plane"><Icon name="chevron" size={13} /> Open control plane</Link>
                   <button className="ghost-button" onClick={() => setShowChangeRun(current => !current)}>{showChangeRun ? "Cancel" : "Enter sys_id"}</button>
                 </div>
               </div>
