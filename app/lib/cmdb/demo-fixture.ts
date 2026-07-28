@@ -42,7 +42,6 @@ export function isDemoRunId(runId: string | undefined | null): boolean {
 }
 export const DEMO_RUN_NUMBER = "DWR-DEMO-0001";
 export const DEMO_RUN_LABEL = "Baxter estate consolidation (demo)";
-export const DEMO_INSTANCE_HOST = "demo.keystone.invalid";
 /** Terminal so pipeline polling stops, but outside RUN_STATES_BLOCKING_IRE so Remediate stays reachable. */
 export const DEMO_RUN_STATE = "simulated";
 
@@ -436,8 +435,13 @@ export function demoRunPayload() {
   };
 }
 
+/**
+ * Deliberately reports no host. Demo mode is not pretending to be connected to
+ * an instance, so there is nothing to name — the demo toggle is the only signal
+ * the header needs.
+ */
 export function demoInstancePayload() {
-  return { host: DEMO_INSTANCE_HOST };
+  return {};
 }
 
 const USAGE_SEEDS: Array<[string, string, number, number, number, string]> = [
