@@ -70,6 +70,14 @@ import {
 import { isDraftRunState, isTerminalRunState, TERMINAL_RUN_STATES } from "./lib/cmdb/run-lifecycle";
 import { rememberRun, resolveActiveRun } from "./lib/cmdb/run-context";
 import { forgetRunEntry, isRunTerminal as isRegistryRunTerminal, readRegistry, rememberRunEntry, type RegistryEntry } from "./lib/cmdb/run-registry";
+import { DemoToggle, useDemoMode } from "./components/DemoToggle";
+import {
+  DEMO_RUN_ID,
+  DEMO_RUN_LABEL,
+  isDemoRunId,
+} from "./lib/cmdb/demo-fixture";
+import { demoModeReady, restoreDemoMode, syncDemoModeUrl } from "./lib/cmdb/demo-mode";
+import { cmdbFetch, resetDemoWriteState } from "./lib/cmdb/demo-transport";
 import { Icon, type IconName } from "./icons";
 import { LiveOpsView } from "./live-view";
 import { AgentHrView } from "./hr-view";
@@ -168,7 +176,7 @@ async function readEndpoint(resource: ResourceName, runId = "") {
   const query = hasRun ? `?run=${encodeURIComponent(runId)}` : "";
   let response: Response;
   try {
-    response = await fetch(`/api/cmdb/${resource}${query}`, { cache: "no-store" });
+    response = await cmdbFetch(`/api/cmdb/${resource}${query}`, { cache: "no-store" });
   } catch (error) {
     throw new EndpointError(resource, 0, "backend", error instanceof Error ? error.message : "network error");
   }
@@ -207,7 +215,7 @@ const terminalRunStates = new Set<string>(TERMINAL_RUN_STATES);
 
 async function readRunStatus(runId: string): Promise<MaraRunRecord | null> {
   if (!runId) return null;
-  const response = await fetch(`/api/cmdb/run?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
+  const response = await cmdbFetch(`/api/cmdb/run?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`run: ${response.status}`);
   return normalizeMaraRun(await response.json());
 }
@@ -276,6 +284,11 @@ export function CmdbDashboard() {
   // the request resolves so rerenders and retries cannot start it twice.
   const comprehendStarted = useRef(new Set<string>());
   const pollInFlight = useRef(false);
+  const demoMode = useDemoMode();
+  // The real run to return to when demo mode is switched back off.
+  const runBeforeDemo = useRef<{ id: string; label: string }>({ id: "", label: "" });
+  const liveRunRef = useRef<{ id: string; label: string }>({ id: "", label: "" });
+  const demoModeApplied = useRef<boolean | null>(null);
 
   // Restore after hydration so the server and first client render agree.
   useEffect(() => {
@@ -318,6 +331,68 @@ export function CmdbDashboard() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  // Resolve the persisted demo preference after hydration, matching the sidebar
+  // pattern above: the server always renders demo mode off.
+  useEffect(() => {
+    const timer = window.setTimeout(() => { restoreDemoMode(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  // Keep a live copy of the current run so the toggle effect below can read it
+  // without re-subscribing every time the run changes.
+  useEffect(() => {
+    liveRunRef.current = { id: activeRunId, label: activeRunLabel };
+  }, [activeRunId, activeRunLabel]);
+
+  /**
+   * Swap the whole view between the real run and the simulated one.
+   *
+   * Everything downstream already keys off `activeRunId`, so pointing it at the
+   * demo run reuses the existing load/poll/reset machinery — including
+   * `RemediateView`'s `key={activeRunId}`, which discards any simulated IRE,
+   * campaign, and packet progress on the way out.
+   */
+  useEffect(() => {
+    if (!demoModeReady()) return;
+    if (demoModeApplied.current === demoMode) return;
+    const first = demoModeApplied.current === null;
+    syncDemoModeUrl();
+    if (!demoMode && first) {
+      demoModeApplied.current = demoMode;
+      return;
+    }
+    if (demoMode && !first) runBeforeDemo.current = { ...liveRunRef.current };
+    // Simulated write evidence is dropped in both directions: entering demo mode
+    // starts clean, and leaving it must not leave fabricated approval or
+    // execution evidence behind where it could read as ServiceNow evidence.
+    resetDemoWriteState();
+
+    const timer = window.setTimeout(() => {
+      // Advanced here rather than in the effect body: if a cleanup cancels this
+      // timer, the ref must not already claim the swap happened, or the run
+      // never gets switched and polling keeps hitting the previous run.
+      demoModeApplied.current = demoMode;
+      setActionMessage("");
+      setQueuedFix(null);
+      setRemediationTargetId("");
+      setAnalysisState("idle");
+      setAnalysisMessage("");
+      if (demoMode) {
+        setActiveRunId(DEMO_RUN_ID);
+        setActiveRunLabel(DEMO_RUN_LABEL);
+        setRunDraft(DEMO_RUN_ID);
+        setSection(current => current === "import" ? "workspace" : current);
+        return;
+      }
+      const restored = runBeforeDemo.current;
+      setInstanceHost(null);
+      setActiveRunId(restored.id);
+      setActiveRunLabel(restored.label);
+      setRunDraft(restored.id);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [demoMode]);
 
   const loadData = useCallback(async (runId: string) => {
     // Cold state (no active run): skip every read endpoint. Unscoped calls
@@ -480,7 +555,7 @@ export function CmdbDashboard() {
     setAnalysisState("starting");
     setAnalysisMessage(recoverHandoff ? "Resuming Mara from completed Comprehend evidence…" : "Starting Comprehend analysis…");
     try {
-      const response = await fetch("/api/cmdb/comprehend", {
+      const response = await cmdbFetch("/api/cmdb/comprehend", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ migration_run_id: runId }),
@@ -545,12 +620,14 @@ export function CmdbDashboard() {
     return () => window.clearTimeout(timer);
   }, [activeRunId, loadData]);
   useEffect(() => {
-    if (!activeRunId) return;
+    // Demo mode owns the run id but must not overwrite `?run=`: that parameter
+    // is how the operator gets back to their real run when demo mode goes off.
+    if (!activeRunId || demoMode || isDemoRunId(activeRunId)) return;
     const url = new URL(window.location.href);
     if (url.searchParams.get("run") === activeRunId) return;
     url.searchParams.set("run", activeRunId);
     window.history.replaceState({}, "", url);
-  }, [activeRunId]);
+  }, [activeRunId, demoMode]);
   // Live Ops keeps its dedicated high-frequency timeline refresh.
   useEffect(() => {
     if (section !== "live" || livePaused || !activeRunId) return;
@@ -566,16 +643,19 @@ export function CmdbDashboard() {
     const timer = window.setInterval(() => { void refreshRunResources(activeRunId); }, 8000);
     return () => window.clearInterval(timer);
   }, [activeRunId, section, livePaused, runRecord?.state, refreshRunResources]);
+  // Re-resolves on a mode change so the header pill shows the simulated host in
+  // demo mode and the genuine instance again once it is switched off.
   useEffect(() => {
-    fetch("/api/cmdb/instance", { cache: "no-store" })
+    cmdbFetch("/api/cmdb/instance", { cache: "no-store" })
       .then(response => (response.ok ? response.json() : null))
       .then(data => { if (data && typeof data.host === "string" && data.host) setInstanceHost(data.host); })
       .catch(() => {});
-  }, []);
+  }, [demoMode]);
   // Enrich the persisted registry entry once the /run response lands so the
   // Runs queue page can show real names + source system + run numbers.
+  // Never in demo mode — the simulated run must not end up in the Runs queue.
   useEffect(() => {
-    if (!activeRunId || !runRecord) return;
+    if (!activeRunId || !runRecord || demoMode || isDemoRunId(activeRunId)) return;
     rememberRunEntry({
       id: activeRunId,
       label: activeRunLabel,
@@ -583,7 +663,7 @@ export function CmdbDashboard() {
       sourceSystem: runRecord.sourceSystem,
       runNumber: runRecord.number,
     });
-  }, [activeRunId, activeRunLabel, runRecord]);
+  }, [activeRunId, activeRunLabel, runRecord, demoMode]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); }, [section]);
   useEffect(() => {
     try { window.localStorage.setItem("keystone.section", section); } catch {}
@@ -666,20 +746,25 @@ export function CmdbDashboard() {
     setLivePaused(false);
     setLiveRefreshCount(0);
     setSection("workspace");
-    rememberRun(runId);
-    // Persist to the client-side runs registry so the Runs queue page can
-    // switch between recent runs even after a browser reload.
-    if (runId) {
-      rememberRunEntry({
-        id: runId,
-        label,
-        imported: Boolean(run && run.id && run.id === runId && run.label),
-      });
+    // Demo mode never writes to the persisted run context or registry, and never
+    // touches `?run=` — otherwise the simulated run would surface in the Runs
+    // queue and survive the toggle being switched back off.
+    if (!demoMode && !isDemoRunId(runId)) {
+      rememberRun(runId);
+      // Persist to the client-side runs registry so the Runs queue page can
+      // switch between recent runs even after a browser reload.
+      if (runId) {
+        rememberRunEntry({
+          id: runId,
+          label,
+          imported: Boolean(run && run.id && run.id === runId && run.label),
+        });
+      }
+      const url = new URL(window.location.href);
+      if (runId) url.searchParams.set("run", runId);
+      else url.searchParams.delete("run");
+      window.history.replaceState({}, "", url);
     }
-    const url = new URL(window.location.href);
-    if (runId) url.searchParams.set("run", runId);
-    else url.searchParams.delete("run");
-    window.history.replaceState({}, "", url);
     if (!changed) void loadData(runId);
   }
 
@@ -724,7 +809,7 @@ export function CmdbDashboard() {
         simulation_correlation_id: simulation.correlation,
         simulation_fingerprint: simulation.fingerprint,
       };
-      const response = await fetch("/api/cmdb/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(identifierBody) });
+      const response = await cmdbFetch("/api/cmdb/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(identifierBody) });
       if (!response.ok) throw new Error("not configured");
       await loadData(activeRunId);
       setActionMessage("Proposal recorded. The exact simulation is awaiting approval.");
@@ -854,7 +939,7 @@ export function CmdbDashboard() {
             runRecord={runRecord}
           />
         </div>
-        <div className="top-actions"><span className="instance"><span className={instanceHost ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><a className="ghost-button" href={activeRunId ? `/ai-usage?run=${encodeURIComponent(activeRunId)}` : "/ai-usage"}><Icon name="spark" size={15} /> AI Usage</a><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
+        <div className="top-actions"><span className="instance"><span className={instanceHost && !demoMode ? "live-dot" : "live-dot demo"} /> {instanceHost ?? "demo mode"}</span><DemoToggle /><a className="ghost-button" href={activeRunId ? `/ai-usage?run=${encodeURIComponent(activeRunId)}` : "/ai-usage"}><Icon name="spark" size={15} /> AI Usage</a><button className="ghost-button" onClick={openEventLedger}><Icon name="clock" size={15} /> Event ledger</button><div className="avatar">NS</div></div>
       </header>
 
       {section === "import" && <ImportGatewayView onOpenRun={openRun} />}
@@ -919,6 +1004,11 @@ function ComprehendView(props: {
   const activeFrame = frames[frameIndex];
   const nodeStates = derivePlaybackNodeStates(frames, frameIndex);
   const totalEvents = timeline.length;
+  // `apiState === "demo"` historically meant "no run selected". Manual demo mode
+  // *does* have a run id, so it needs its own signal rather than overloading that
+  // one — otherwise every panel label here reads as live.
+  const demoMode = useDemoMode();
+  const demoFallback = demoMode || (!activeRunId && apiState === "demo");
   // Prefer real backend signals: a failed start, then the ServiceNow run state,
   // then the transport state. Nothing here invents progress.
   const runStatus =
@@ -927,7 +1017,9 @@ function ComprehendView(props: {
     : runState ? runState.replaceAll("_", " ").replace(/^./, char => char.toUpperCase())
     : analysisState === "started" ? "Analysis started"
     : apiState === "connecting" ? "Loading ServiceNow run"
-    : apiState === "live" ? "Live backend connected"
+    // Demo mode reaches apiState "live" because the simulated transport always
+    // answers, so it must be excluded before claiming a live backend.
+    : apiState === "live" ? (demoFallback ? "Demo snapshot" : "Live backend connected")
     : apiState === "partial" ? "Partial backend data"
     : apiState === "error" ? "ServiceNow run unavailable"
     : "Demo snapshot";
@@ -938,7 +1030,6 @@ function ComprehendView(props: {
   const canRecoverHandoff = runState === "analyzing" && comprehendComplete && !downstreamStarted;
   const canManuallyStart = (isDraftRunState(runState) || canRecoverHandoff) && Boolean(activeRunId) && analysisState !== "starting";
   const startButtonLabel = canRecoverHandoff ? "Resume agent handoff" : analysisState === "error" ? "Retry analysis" : "Start analysis";
-  const demoFallback = !activeRunId && apiState === "demo";
   const proposedEdgeLabel = `${relationships.length.toLocaleString()} PROPOSED ${relationships.length === 1 ? "EDGE" : "EDGES"}`;
   const proposedEdgeDelta = `${relationships.length.toLocaleString()} proposed ${relationships.length === 1 ? "edge" : "edges"}`;
   return <div className="page">
@@ -1006,8 +1097,8 @@ function ComprehendView(props: {
     </section>
 
     <section className="visual-grid">
-      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
-      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? proposedEdgeLabel : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
+      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{demoFallback ? (cisLive ? `${allCis.length.toLocaleString()} SIMULATED RECORDS` : "DEMO FLOW") : cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
+      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" && !demoFallback ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? (demoFallback ? `${proposedEdgeLabel} · SIMULATED` : proposedEdgeLabel) : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
     </section>
 
     <section className="panel table-panel">
@@ -1016,7 +1107,7 @@ function ComprehendView(props: {
         {cis.map(ci => <tr key={ci.id} onClick={() => setSelectedCi(ci)}><td><div className="ci-cell"><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={15} /></span><div><strong>{ci.name}</strong><small>{ci.id} · {ci.ip}</small></div></div></td><td>{ci.className}</td><td><span className="source-name">{ci.source}</span></td><td><OperationPill value={ci.operation} /></td><td><Confidence value={ci.confidence} /></td><td><div className="health-cell"><span>{ci.health}</span><i><b style={{ width: `${ci.health}%` }} /></i></div></td><td><button className="row-arrow" aria-label={`Inspect ${ci.name}`} onClick={() => setSelectedCi(ci)}><Icon name="arrow" size={16} /></button></td></tr>)}
         {!cis.length && <tr><td colSpan={7} className="empty-state">No configuration items match this view.</td></tr>}
       </tbody></table></div>
-      <div className="table-footer"><span>{cis.length} shown · {cisLive ? "Live ServiceNow staged data" : demoFallback ? "Demo snapshot" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
+      <div className="table-footer"><span>{cis.length} shown · {demoFallback ? "Simulated snapshot — no ServiceNow request was made" : cisLive ? "Live ServiceNow staged data" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
     </section>
   </div>;
 }
@@ -1221,7 +1312,11 @@ function RemediateView(props: {
   const packetRecoveryAttempted = useRef("");
   const packetReviewAttempted = useRef(0);
   const failureGroupsLoadedRun = useRef("");
-  const demoFallback = !activeRunId && apiState === "demo";
+  // `apiState === "demo"` historically meant "no run selected". Manual demo mode
+  // *does* have a run id, so it needs its own signal rather than overloading that
+  // one — otherwise every panel label here reads as live.
+  const demoMode = useDemoMode();
+  const demoFallback = demoMode || (!activeRunId && apiState === "demo");
 
   useEffect(() => {
     if (!activeRunId || !packetReviewIntent || packetReviewAttempted.current === packetReviewIntent) return;
@@ -1230,7 +1325,7 @@ function RemediateView(props: {
       setPacketPending("prepare-packet");
       setPacketError("");
       try {
-        const response = await fetch("/api/cmdb/remediation-campaign/prepare-packet", {
+        const response = await cmdbFetch("/api/cmdb/remediation-campaign/prepare-packet", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ migration_run_id: activeRunId }),
@@ -1293,7 +1388,7 @@ function RemediateView(props: {
     const timer = window.setTimeout(async () => {
       setCampaignPending("status");
       try {
-        const response = await fetch("/api/cmdb/remediation-campaign/status", {
+        const response = await cmdbFetch("/api/cmdb/remediation-campaign/status", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1319,7 +1414,7 @@ function RemediateView(props: {
 
   const loadFailureGroups = useCallback(async () => {
     if (!activeRunId) return;
-    const response = await fetch("/api/cmdb/remediation-campaign/failure-groups", {
+    const response = await cmdbFetch("/api/cmdb/remediation-campaign/failure-groups", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ migration_run_id: activeRunId, limit: 20 }),
@@ -1362,7 +1457,7 @@ function RemediateView(props: {
     if (!campaign.plan || campaignPending === "status") return;
     setCampaignPending("status");
     try {
-      const response = await fetch("/api/cmdb/remediation-campaign/status", {
+      const response = await cmdbFetch("/api/cmdb/remediation-campaign/status", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(campaignRequestBody()),
@@ -1393,7 +1488,7 @@ function RemediateView(props: {
     if (!activeRunId || packetPending === "packet-status") return;
     setPacketPending("packet-status");
     try {
-      const response = await fetch("/api/cmdb/remediation-campaign/packet-status", {
+      const response = await cmdbFetch("/api/cmdb/remediation-campaign/packet-status", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(packetRequestBody(Boolean(approvalPacket.packet))),
@@ -1459,7 +1554,7 @@ function RemediateView(props: {
 
     setPendingAction(action);
     try {
-      const response = await fetch(`/api/cmdb/ire/${action}`, {
+      const response = await cmdbFetch(`/api/cmdb/ire/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -1504,7 +1599,7 @@ function RemediateView(props: {
     setPacketPending(action);
     setPacketError("");
     try {
-      const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
+      const response = await cmdbFetch(`/api/cmdb/remediation-campaign/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(action === "authorize-packet"
@@ -1547,7 +1642,7 @@ function RemediateView(props: {
     try {
       setMaraAutonomyStage("simulating");
       setMaraAutonomyMessage("Mara is simulating every eligible group. This does not commit to the CMDB.");
-      const simulationResponse = await fetch("/api/cmdb/remediation-campaign/simulate-all", {
+      const simulationResponse = await cmdbFetch("/api/cmdb/remediation-campaign/simulate-all", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ migration_run_id: activeRunId }),
@@ -1565,7 +1660,7 @@ function RemediateView(props: {
         }
         setMaraAutonomyStage("preparing");
         setMaraAutonomyMessage(`Mara is rebuilding healthy evidence and preparing autonomous packet ${wave}.`);
-        const response = await fetch("/api/cmdb/remediation-campaign/autonomous-packet", {
+        const response = await cmdbFetch("/api/cmdb/remediation-campaign/autonomous-packet", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1602,7 +1697,7 @@ function RemediateView(props: {
         let terminal = false;
         for (let poll = 0; poll < 240; poll++) {
           setMaraAutonomyStage("monitoring");
-          const statusResponse = await fetch("/api/cmdb/remediation-campaign/packet-status", {
+          const statusResponse = await cmdbFetch("/api/cmdb/remediation-campaign/packet-status", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(statusBody),
@@ -1638,7 +1733,7 @@ function RemediateView(props: {
     setCampaignPending(action);
     setCampaignError("");
     try {
-      const response = await fetch(`/api/cmdb/remediation-campaign/${action}`, {
+      const response = await cmdbFetch(`/api/cmdb/remediation-campaign/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(action === "simulate-all"
@@ -2292,7 +2387,7 @@ function RunsQueueView(props: {
     // in its previous state rather than falsely marking it dead.
     const results = await Promise.allSettled(
       current.map(async entry => {
-        const response = await fetch(`/api/cmdb/run?run=${encodeURIComponent(entry.id)}`, { cache: "no-store" });
+        const response = await cmdbFetch(`/api/cmdb/run?run=${encodeURIComponent(entry.id)}`, { cache: "no-store" });
         if (!response.ok) throw new Error(`${entry.id} → ${response.status}`);
         const body = await response.json();
         const state = body?.result?.result?.state || body?.result?.state || body?.state || "unknown";
@@ -2432,11 +2527,11 @@ function PastRunSummaryCard({ entry, isActive, onOpen }: {
       try {
         const qs = `?run=${encodeURIComponent(entry.id)}`;
         const [cisRes, timelineRes, healthRes, findingsRes, reviewsRes] = await Promise.all([
-          fetch(`/api/cmdb/cis${qs}`, { cache: "no-store" }),
-          fetch(`/api/cmdb/timeline${qs}`, { cache: "no-store" }),
-          fetch(`/api/cmdb/health${qs}`, { cache: "no-store" }),
-          fetch(`/api/cmdb/findings${qs}`, { cache: "no-store" }),
-          fetch(`/api/cmdb/reviews${qs}`, { cache: "no-store" }),
+          cmdbFetch(`/api/cmdb/cis${qs}`, { cache: "no-store" }),
+          cmdbFetch(`/api/cmdb/timeline${qs}`, { cache: "no-store" }),
+          cmdbFetch(`/api/cmdb/health${qs}`, { cache: "no-store" }),
+          cmdbFetch(`/api/cmdb/findings${qs}`, { cache: "no-store" }),
+          cmdbFetch(`/api/cmdb/reviews${qs}`, { cache: "no-store" }),
         ]);
         if (!cisRes.ok || !timelineRes.ok || !healthRes.ok || !findingsRes.ok || !reviewsRes.ok) {
           throw new Error(`Upstream returned ${[cisRes.status, timelineRes.status, healthRes.status, findingsRes.status, reviewsRes.status].join("/")}`);

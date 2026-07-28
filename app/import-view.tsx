@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
 import { importedRunFromResponse, isSysId, stagedCountFromResponse, type ImportedRun } from "./lib/cmdb/run-id";
@@ -152,7 +153,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
         const extension = file.name.split(".").pop()?.toLowerCase() || "file";
         const text = await file.text();
         const payload = buildStructuredStagingPayloadFromText(text, extension, sourceName.trim()) || text;
-        response = await fetch("/api/cmdb/import", {
+        response = await cmdbFetch("/api/cmdb/import", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -184,7 +185,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
             throw new Error(`Adapter ${effectiveAdapter.label} rejected the payload: ${message}`);
           }
         }
-        response = await fetch("/api/cmdb/import", {
+        response = await cmdbFetch("/api/cmdb/import", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
