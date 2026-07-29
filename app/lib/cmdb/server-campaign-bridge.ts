@@ -1,5 +1,7 @@
 import "server-only";
 
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { HealthData } from "../../cmdb-data";
 import {
   normalizeComprehendCis,
@@ -36,23 +38,13 @@ export async function invokeCampaignIre(
   const url = ireActionUrl(action);
   if (!url) return failedResponse(action, "NOT_CONFIGURED", "ServiceNow IRE endpoint is not configured.");
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        ...(authorizationHeader() ? { authorization: authorizationHeader()! } : {}),
-      },
-      body: JSON.stringify(body),
-      cache: "no-store",
-    });
-    const payload = await response.json().catch(() => ({}));
-    const normalized = normalizeIreActionResponse(action, payload);
+    const response = await postJson(url, body);
+    const normalized = normalizeIreActionResponse(action, response.payload);
     if (response.ok) return normalized;
     return {
       ...normalized,
       success: false,
-      error: normalized.error ?? httpError(response.status, payload),
+      error: normalized.error ?? httpError(response.status, response.payload),
     };
   } catch (error) {
     return failedResponse(action, "UPSTREAM_UNREACHABLE", error instanceof Error ? error.message : "ServiceNow IRE endpoint is unreachable.");
@@ -64,23 +56,13 @@ export async function invokeCampaignProposal(body: Record<string, string>): Prom
   const url = process.env.CMDB_REMEDIATE_URL || (base ? base + "/remediate" : null);
   if (!url) return failedResponse("approve", "NOT_CONFIGURED", "ServiceNow remediation proposal endpoint is not configured.");
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        ...(authorizationHeader() ? { authorization: authorizationHeader()! } : {}),
-      },
-      body: JSON.stringify({ ...body, mode: "proposal" }),
-      cache: "no-store",
-    });
-    const payload = await response.json().catch(() => ({}));
-    const normalized = normalizeIreActionResponse("approve", payload);
+    const response = await postJson(url, { ...body, mode: "proposal" });
+    const normalized = normalizeIreActionResponse("approve", response.payload);
     if (response.ok && normalized.success) return normalized;
     return {
       ...normalized,
       success: false,
-      error: normalized.error ?? httpError(response.status, payload),
+      error: normalized.error ?? httpError(response.status, response.payload),
     };
   } catch (error) {
     return failedResponse("approve", "UPSTREAM_UNREACHABLE", error instanceof Error ? error.message : "ServiceNow remediation proposal endpoint is unreachable.");
@@ -123,6 +105,42 @@ function authorizationHeader() {
     return `Basic ${btoa(`${process.env.CMDB_API_USERNAME}:${process.env.CMDB_API_PASSWORD}`)}`;
   }
   return undefined;
+}
+
+function postJson(url: string, payload: Record<string, string>) {
+  const target = new URL(url);
+  const body = JSON.stringify(payload);
+  const request = target.protocol === "https:" ? httpsRequest : target.protocol === "http:" ? httpRequest : null;
+  if (!request) return Promise.reject(new Error(`Unsupported endpoint protocol: ${target.protocol}`));
+  return new Promise<{ ok: boolean; status: number; payload: unknown }>((resolve, reject) => {
+    const outgoing = request(target, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        ...(authorizationHeader() ? { authorization: authorizationHeader()! } : {}),
+      },
+    }, response => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", chunk => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        let parsed: unknown = {};
+        try {
+          parsed = responseBody ? JSON.parse(responseBody) : {};
+        } catch {
+          parsed = {};
+        }
+        const status = response.statusCode ?? 502;
+        resolve({ ok: status >= 200 && status < 300, status, payload: parsed });
+      });
+    });
+    outgoing.on("error", reject);
+    outgoing.end(body);
+  });
 }
 
 function httpError(status: number, payload: unknown): IreActionError {

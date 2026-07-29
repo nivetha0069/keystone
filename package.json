@@ -24,6 +24,7 @@
     "smoke:approval-packet": "node scripts/smoke-approval-packet.cjs",
     "smoke:multi-packet-scale": "node scripts/smoke-multi-packet-scale.cjs",
     "smoke:approval-packet-demo": "node scripts/demo-approval-packet.cjs --check",
+    "e2e:demo": "node scripts/demo-approval-packet.cjs --e2e",
     "demo:approval-packet": "node scripts/demo-approval-packet.cjs",
     "smoke:playback": "node scripts/smoke-playback.cjs",
     "smoke:run-parser": "node scripts/smoke-run-parser.cjs",

@@ -59,6 +59,16 @@ async function main() {
     process.exitCode = code ?? 0;
   });
 
+  if (process.argv.includes("--e2e")) {
+    try {
+      const result = await exerciseDemoLifecycle(frozen);
+      console.log(JSON.stringify(result));
+    } finally {
+      stop();
+    }
+    return;
+  }
+
   console.log("");
   console.log("Keystone bounded approval packet demo");
   console.log(`  URL: ${WEB_ORIGIN}/?run=${RUN_ID}`);
@@ -67,6 +77,94 @@ async function main() {
   console.log("  Flow: Plan packet -> Prepare packet -> Fill hash -> Authorize exact packet -> Approve -> watch Verify");
   console.log("  Safety: loopback fixture only; ServiceNow credentials and CMDB endpoints are removed from the child environment.");
   console.log("");
+}
+
+async function exerciseDemoLifecycle(expectedPacket) {
+  await waitForKeystone();
+  const prepared = await postKeystone("prepare-packet", { migration_run_id: RUN_ID });
+  assert.equal(prepared.stage, "review_ready");
+  assert.equal(prepared.demo_mode, true);
+  assert.equal(prepared.packet_id, expectedPacket.packet_id);
+  assert.equal(prepared.packet_hash, expectedPacket.packet_hash);
+  assert.equal(prepared.items.length, 100);
+  assert.equal(prepared.children.length, 5);
+
+  const scope = {
+    migration_run_id: RUN_ID,
+    packet_id: prepared.packet_id,
+    packet_hash: prepared.packet_hash,
+    child_manifest_ids: prepared.children.map(child => child.manifest_id),
+    staged_ci_ids: prepared.items.map(item => item.staged_ci_id),
+  };
+  const authorized = await postKeystone("authorize-packet", {
+    ...scope,
+    confirmation_hash: prepared.packet_hash,
+  });
+  assert.equal(authorized.approval_enabled, true);
+
+  const approval = await postKeystone("approve-packet", scope);
+  assert.equal(approval.success, true);
+  assert.equal(approval.stage, "executing");
+  assert.equal(approval.aggregate.approved, 100);
+  assert.equal(approval.aggregate.blocked, 0);
+
+  const deadline = Date.now() + 20_000;
+  let status;
+  do {
+    await delay(500);
+    status = await postKeystone("packet-status", scope);
+  } while (status.stage !== "completed" && Date.now() < deadline);
+  assert.equal(status.stage, "completed");
+  assert.equal(status.aggregate.verified, 100);
+  assert.equal(status.aggregate.blocked, 0);
+  assert.equal(status.items.length, 100);
+  assert.equal(status.items.every(item => item.state === "verified"), true);
+
+  return {
+    success: true,
+    mode: "isolated-demo",
+    runId: RUN_ID,
+    packetId: prepared.packet_id,
+    records: prepared.items.length,
+    children: prepared.children.length,
+    approved: approval.aggregate.approved,
+    verified: status.aggregate.verified,
+    blocked: status.aggregate.blocked,
+  };
+}
+
+async function waitForKeystone() {
+  const deadline = Date.now() + 30_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${WEB_ORIGIN}/api/cmdb/instance`, { cache: "no-store" });
+      if (response.ok) return;
+      lastError = new Error(`Keystone returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw lastError instanceof Error ? lastError : new Error("Keystone did not become ready.");
+}
+
+async function postKeystone(action, body) {
+  const response = await fetch(`${WEB_ORIGIN}/api/cmdb/remediation-campaign/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof payload.error === "string" ? payload.error : `${action} returned HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function createFixture() {
