@@ -121,6 +121,23 @@ async function main() {
     assert.equal(fixture.isDemoRunId(undefined), false);
   });
 
+  check("leaving demo mode clears the presets off the live import form", () => {
+    // The demo preset fills the Import form with its one source URL. If the
+    // effect only ran when demoMode was true, toggling off would leave the LIVE
+    // form armed with that URL — editable, pointed at the real staging
+    // endpoint — and one click would POST a demo payload to ServiceNow. The
+    // transport's referencesDemoRun guard does not cover this case, because the
+    // body carries the source URL rather than the demo run id.
+    const view = fs.readFileSync(path.join(root, "app", "import-view.tsx"), "utf8");
+    const effect = view.slice(view.indexOf("const demoMode = useDemoMode()"), view.indexOf("const previewColumns"));
+    assert.ok(!/if\s*\(!demoMode\)\s*return;/.test(effect),
+      "the demo preset effect must not early-return on demoMode=false — it has to reset the form");
+    assert.ok(/setSourceUrl\(demoMode \? DEMO_SOURCE_URL : ""\)/.test(effect),
+      "leaving demo mode must clear the source URL back to empty");
+    assert.ok(/demoModeApplied/.test(effect),
+      "the effect must distinguish first mount from a real toggle so it does not clobber a live form on load");
+  });
+
   check("every persistence site is guarded by run id, not the mode flag", () => {
     // A flag-only guard loses the race on toggle-off: effects re-run with
     // demoMode already false while activeRunId is still the simulated one, and

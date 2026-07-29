@@ -44,17 +44,34 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
   const [stagedRun, setStagedRun] = useState<ImportedRun | undefined>();
   const [adapterChoice, setAdapterChoice] = useState<SourceAdapterId | "auto">("auto");
   const demoMode = useDemoMode();
+  const demoModeApplied = useRef<boolean | null>(null);
 
   // Demo mode tells one story with one source: preset the import to the single
-  // demo URL so every demo run starts identically. Deferred a tick to satisfy
-  // the set-state-in-effect lint rule, matching the dashboard's restore pattern.
+  // demo URL so every demo run starts identically.
+  //
+  // Leaving demo mode MUST clear those values again. Without the reset the live
+  // form stays armed with the demo AWS URL — editable, and pointed at the real
+  // staging endpoint — so one click would POST a demo payload to ServiceNow.
+  // The `referencesDemoRun` guard in the transport does not cover this: the
+  // body carries the source URL, not the demo run id.
+  //
+  // Deferred a tick to satisfy the set-state-in-effect lint rule, matching the
+  // dashboard's restore pattern.
   useEffect(() => {
-    if (!demoMode) return;
+    if (demoModeApplied.current === demoMode) return;
+    const first = demoModeApplied.current === null;
+    if (!demoMode && first) {
+      demoModeApplied.current = demoMode;
+      return;
+    }
     const timer = window.setTimeout(() => {
-      setMode("url");
-      setSourceUrl(DEMO_SOURCE_URL);
-      setSourceName(DEMO_SOURCE_NAME);
-      setRunName("AWS-IPRANGES-DEMO");
+      demoModeApplied.current = demoMode;
+      setMode(demoMode ? "url" : "file");
+      setSourceUrl(demoMode ? DEMO_SOURCE_URL : "");
+      setSourceName(demoMode ? DEMO_SOURCE_NAME : "External company dataset");
+      setRunName(demoMode ? "AWS-IPRANGES-DEMO" : `MIG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`);
+      setFile(null);
+      setPasteValue("");
       setPreviewRows([]);
       setParseError("");
       setStatus("idle");
