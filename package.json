@@ -45,6 +45,7 @@
     "smoke:selected-ci-evidence": "node scripts/smoke-selected-ci-evidence.cjs",
     "smoke:source-adapters": "node scripts/smoke-source-adapters.cjs",
     "smoke:demo-fallback": "node scripts/smoke-demo-fallback.cjs",
+    "e2e:demo-mode": "node scripts/e2e-demo-mode.cjs",
     "verify:cold-load": "node scripts/verify-cold-load-no-400.cjs",
     "verify:full-cycle": "node scripts/verify-full-cycle.cjs",
     "verify:live-demo": "node scripts/verify-live-demo-readiness.cjs",
