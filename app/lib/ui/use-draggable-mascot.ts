@@ -295,6 +295,14 @@ export function useDraggableMascot(): UseDraggableMascotResult {
   // Corner anchor (bottom-right, clear of the mobile nav) is the safe default;
   // only switch to absolute left/top once the user has deliberately moved her.
   const cornerAnchored = !mounted || !hasCustom;
+
+  // `isMobile` comes from matchMedia: false on the server, real on the client.
+  // React runs the client initializer on the hydration render too, so exposing
+  // it directly made the first client render disagree with the server HTML on
+  // both the `mara-mobile` class and the corner offsets (12/88 vs 22/22) — a
+  // hydration mismatch React refuses to patch up. Report the server value until
+  // mounted; the post-mount re-render then applies the real one.
+  const effectiveIsMobile = mounted && isMobile;
   const base: React.CSSProperties = {
     position: "fixed",
     touchAction: "none",
@@ -306,8 +314,8 @@ export function useDraggableMascot(): UseDraggableMascotResult {
   const style: React.CSSProperties = cornerAnchored
     ? {
         ...base,
-        right: isMobile ? 12 : 22,
-        bottom: isMobile ? 88 : 22,
+        right: effectiveIsMobile ? 12 : 22,
+        bottom: effectiveIsMobile ? 88 : 22,
         left: "auto",
         top: "auto",
       }
@@ -326,7 +334,7 @@ export function useDraggableMascot(): UseDraggableMascotResult {
     onKeyDown,
     resetPosition,
     wasDragged,
-    isMobile,
+    isMobile: effectiveIsMobile,
     debug: {
       x: safePosition.x,
       y: safePosition.y,
