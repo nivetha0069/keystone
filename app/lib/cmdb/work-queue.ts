@@ -82,12 +82,15 @@ export function deriveRemediationWorkQueue(input: {
   pending?: { ciId?: string; action?: "simulate" | "approve" | "execute" | "verify" | null };
   demoFallback?: boolean;
 }): WorkQueueSummary {
+  const demoTimelineLookup = input.demoFallback ? buildDemoTimelineLookup(input.timeline) : undefined;
   const items = input.cis
     .filter(ci => ci.id || ci.stagedCiId)
     .map(ci => {
       const stagedCiId = ci.stagedCiId || ci.id;
       const workbench = input.ireRecords?.[ci.id] ?? {};
-      const matchingEvents = matchingLedgerEvents(ci, input.timeline);
+      const matchingEvents = demoTimelineLookup
+        ? matchingDemoLedgerEvents(ci, demoTimelineLookup)
+        : matchingLedgerEvents(ci, input.timeline);
       const ledgerLifecycle = lifecycleFromLedger(matchingEvents);
       const actionLifecycle = lifecycleFromWorkbench(workbench, input.pending?.ciId === ci.id ? input.pending.action : null);
       const playback = playbackIdentifiers(matchingEvents);
@@ -339,6 +342,34 @@ function timelineTimestamp(value: string) {
 
 function matchingLedgerEvents(ci: ConfigurationItem, timeline: TimelineEvent[]) {
   return sortTimelineByFreshness(timeline.filter(event => isCiScopedTimelineEvent(event, ci)));
+}
+
+type DemoTimelineLookup = Map<string, TimelineEvent[]>;
+
+function buildDemoTimelineLookup(timeline: TimelineEvent[]): DemoTimelineLookup {
+  const lookup: DemoTimelineLookup = new Map();
+  for (const event of timeline) {
+    if (isMaraObservationEvent(event)) continue;
+    const keys = [
+      event.recordName,
+      lastMetadataValue(event.reasoning, "staged_ci_id"),
+      lastMetadataValue(event.reasoning, "target_ci_sys_id"),
+      lastMetadataValue(event.reasoning, "ci_sys_id"),
+    ].filter((value): value is string => Boolean(value));
+    for (const key of new Set(keys)) {
+      lookup.set(key, [...(lookup.get(key) ?? []), event]);
+    }
+  }
+  return lookup;
+}
+
+function matchingDemoLedgerEvents(ci: ConfigurationItem, lookup: DemoTimelineLookup) {
+  const candidates = new Set<TimelineEvent>();
+  for (const key of [ci.id, ci.stagedCiId, ci.name]) {
+    if (!key) continue;
+    for (const event of lookup.get(key) ?? []) candidates.add(event);
+  }
+  return sortTimelineByFreshness([...candidates].filter(event => isCiScopedTimelineEvent(event, ci)));
 }
 
 function relatedFindings(ci: ConfigurationItem, findings: RemediationFinding[]) {

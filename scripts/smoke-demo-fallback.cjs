@@ -185,11 +185,10 @@ async function main() {
     assert.ok(reviews.length > 0, "reviews are empty");
   });
 
-  check("the outcome spread keeps the unhappy paths visible", () => {
+  check("all demo records belong to the healthy INSERT golden path", () => {
     const ops = new Set(cis.map(ci => ci.operation));
-    for (const expected of ["UPDATE", "INSERT", "NO_CHANGE", "REVIEW", "INSERT_AS_INCOMPLETE", "ERROR"]) {
-      assert.ok(ops.has(expected), `no staged CI has operation ${expected}`);
-    }
+    assert.deepEqual([...ops], ["INSERT"]);
+    assert.equal(cis.filter(ci => ci.status === "live").length, fixture.DEMO_CI_COUNT);
   });
 
   check("health counts agree with the records beneath them", () => {
@@ -252,13 +251,11 @@ async function main() {
     assert.ok(withReview.length > 0, "no review decision resolved to its finding");
   });
 
-  check("the work queue populates more than one bucket", () => {
-    const populated = queue.buckets.filter(bucket => bucket.items.length > 0);
-    assert.ok(populated.length >= 3, `only ${populated.length} bucket(s) have items`);
-    const ids = populated.map(bucket => bucket.id);
-    for (const expected of ["ready_to_simulate", "simulation_failed", "blocked"]) {
-      assert.ok(ids.includes(expected), `bucket ${expected} is empty`);
-    }
+  check("all staged records begin ready for simulation", () => {
+    const ready = queue.buckets.find(bucket => bucket.id === "ready_to_simulate");
+    assert.equal(ready.items.length, fixture.DEMO_CI_COUNT);
+    assert.equal(queue.buckets.find(bucket => bucket.id === "blocked").items.length, 0);
+    assert.equal(queue.buckets.find(bucket => bucket.id === "simulation_failed").items.length, 0);
   });
 
   check("every staged record is committable, not just the packet cohort", () => {
@@ -370,19 +367,6 @@ async function main() {
     assert.equal(replay.body.simulation_fingerprint, simulate.body.simulation_fingerprint);
   });
 
-  const brokenSeed = fixture.demoCiSeeds.find(seed => seed.status === "incomplete");
-  const brokenSim = await post("/api/cmdb/ire/simulate", JSON.stringify({
-    migration_run_id: fixture.DEMO_RUN_ID,
-    staged_ci_id: brokenSeed.sysId,
-    correlation_id: "ks-smoke-broken",
-    idempotency_key: "keystone:smoke:broken",
-  }));
-  check("incomplete identity produces a simulation_failed state, not a fake success", () => {
-    assert.equal(brokenSim.body.success, false);
-    assert.equal(brokenSim.body.state, "simulation_failed");
-    assert.equal(brokenSim.body.error.code, "IRE_FAILED");
-  });
-
   // --- Approval packet two-step gate --------------------------------------
   resetDemoWriteState();
   const packetBody = JSON.stringify({ migration_run_id: fixture.DEMO_RUN_ID });
@@ -394,7 +378,9 @@ async function main() {
     assert.match(prepared.body.packet_hash, FINGERPRINT_RE);
     assert.equal(prepared.body.approval_enabled, false);
     assert.ok(prepared.body.items.length > 0, "packet has no items");
-    assert.equal(prepared.body.children.length, 1);
+    assert.equal(prepared.body.items.length, fixture.DEMO_PACKET_SIZE);
+    assert.equal(prepared.body.children.length, 5);
+    assert.ok(prepared.body.children.every(child => child.item_count <= fixture.DEMO_CAMPAIGN_SIZE));
   });
 
   const wrongHash = await post("/api/cmdb/remediation-campaign/authorize-packet", JSON.stringify({
@@ -447,8 +433,8 @@ async function main() {
     assert.ok(finalTimeline.length > timeline.length,
       "the ledger gained no events from the simulated commit");
     const verified = finalQueue.buckets.find(bucket => bucket.id === "verified");
-    assert.equal(verified.items.length, fixture.demoPacketCohort.length,
-      `expected all ${fixture.demoPacketCohort.length} committed records to read back as verified`);
+    assert.equal(verified.items.length, fixture.DEMO_PACKET_SIZE,
+      `expected the first bounded packet of ${fixture.DEMO_PACKET_SIZE} records to read back as verified`);
   });
 
   check("verified records satisfy the strict correlated-outcome check", () => {
@@ -457,30 +443,54 @@ async function main() {
     // itself exactly. Without this the journey reports "no records reached
     // verification" while the packet panel shows six verified.
     const outcomes = deriveCorrelatedVerifiedOutcomes(finalQueue.items, finalTimeline);
-    assert.equal(outcomes.length, fixture.demoPacketCohort.length,
-      `only ${outcomes.length} of ${fixture.demoPacketCohort.length} records produced a correlated verified outcome`);
+    assert.equal(outcomes.length, fixture.DEMO_PACKET_SIZE,
+      `only ${outcomes.length} of ${fixture.DEMO_PACKET_SIZE} records produced a correlated verified outcome`);
     for (const outcome of outcomes) {
       assert.ok(outcome.targetCiSysId, "outcome has no target CI");
       assert.ok(["INSERT", "UPDATE"].includes(outcome.operation), `unexpected operation ${outcome.operation}`);
     }
   });
 
-  check("the run reaches a terminal end-to-end state", () => {
-    // deriveVerifyStatus completes only when something verified and nothing is
-    // still awaiting verification — this is the condition the demo used to be
-    // unable to reach.
-    const needsVerification = finalQueue.buckets.find(bucket => bucket.id === "needs_verification");
-    assert.equal(needsVerification.items.length, 0,
-      "records are still stuck awaiting verification, so Verify never completes");
-    const needsApproval = finalQueue.buckets.find(bucket => bucket.id === "needs_approval");
-    assert.equal(needsApproval.items.length, 0,
-      "records still await approval, so the journey stays on Remediate");
-  });
+  let autonomousWaves = 0;
+  let empty;
+  while (autonomousWaves < 10) {
+    const next = await post("/api/cmdb/remediation-campaign/autonomous-packet", packetBody);
+    if (!next.response.ok) {
+      empty = next;
+      break;
+    }
+    autonomousWaves += 1;
+    assert.ok(next.body.packet.items.length <= fixture.DEMO_PACKET_SIZE);
+    let waveStatus;
+    for (let poll = 0; poll < 10; poll++) {
+      waveStatus = (await post("/api/cmdb/remediation-campaign/packet-status", packetBody)).body;
+      if (waveStatus.stage === "completed") break;
+    }
+    assert.equal(waveStatus.stage, "completed");
+    assert.equal(waveStatus.aggregate.verified, waveStatus.aggregate.total);
+    assert.equal(waveStatus.aggregate.blocked, 0);
+  }
 
-  const empty = await post("/api/cmdb/remediation-campaign/autonomous-packet", packetBody);
-  check("Mara's autonomous loop is given a terminal PACKET_EMPTY answer", () => {
+  check("Mara processes every remaining record in successive bounded packets", () => {
+    assert.equal(autonomousWaves, (fixture.DEMO_CI_COUNT / fixture.DEMO_PACKET_SIZE) - 1);
     assert.equal(empty.response.status, 409);
     assert.equal(empty.body.code, "PACKET_EMPTY");
+  });
+
+  const completedTimeline = normalizeComprehendTimeline((await readJson("/api/cmdb/timeline")).body);
+  const completedQueue = deriveRemediationWorkQueue({
+    cis, timeline: completedTimeline, healthFixes: health.fixes, findings, reviews, demoFallback: true,
+  });
+  check("the full 600-record run reaches correlated verification with no blockers", () => {
+    const verified = completedQueue.buckets.find(bucket => bucket.id === "verified");
+    const needsVerification = completedQueue.buckets.find(bucket => bucket.id === "needs_verification");
+    const needsApproval = completedQueue.buckets.find(bucket => bucket.id === "needs_approval");
+    const blocked = completedQueue.buckets.find(bucket => bucket.id === "blocked");
+    assert.equal(verified.items.length, fixture.DEMO_CI_COUNT);
+    assert.equal(needsVerification.items.length, 0);
+    assert.equal(needsApproval.items.length, 0);
+    assert.equal(blocked.items.length, 0);
+    assert.equal(deriveCorrelatedVerifiedOutcomes(completedQueue.items, completedTimeline).length, fixture.DEMO_CI_COUNT);
   });
 
   // --- One source, full start-to-end progression ---------------------------

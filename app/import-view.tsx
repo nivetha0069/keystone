@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDemoMode } from "./components/DemoToggle";
-import { DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./lib/cmdb/demo-fixture";
+import { DEMO_CI_COUNT, DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./lib/cmdb/demo-fixture";
 import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
@@ -367,7 +367,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
           {mode === "url" && <div className="url-intake">
             <label><span>PUBLIC DATA URL</span><div><Icon name="link" size={16} /><input value={sourceUrl} readOnly={demoMode} onChange={event => setSourceUrl(event.target.value)} placeholder="https://company.example/api/inventory" /></div></label>
             {demoMode
-              ? <div className="gateway-note"><Icon name="shield" size={15} /><p>Demo mode always imports this one URL, answered from a frozen snapshot of the feed. Nothing leaves the browser and ServiceNow is never contacted.</p></div>
+              ? <div className="gateway-note"><Icon name="shield" size={15} /><p>{DEMO_CI_COUNT.toLocaleString()} synthetic staged records modeled on the official AWS feed schema, using documentation-only CIDRs. No live feed or ServiceNow request is made.</p></div>
               : <div className="gateway-note"><Icon name="shield" size={15} /><p>The browser never writes this response to CMDB. Your configured staging service fetches and stores the raw source.</p></div>}
           </div>}
 

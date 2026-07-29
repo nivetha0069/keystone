@@ -80,6 +80,16 @@ assert.equal(pendingApproval.liveBackedCount, 1);
 
 const verified = deriveRemediationWorkQueue({ cis: [ci], timeline: [simulationEvent, verifiedEvent] });
 assert.equal(verified.items[0]?.bucket, "verified");
+const demoIndexedVerified = deriveRemediationWorkQueue({
+  cis: [ci],
+  timeline: [simulationEvent, verifiedEvent],
+  demoFallback: true,
+});
+assert.deepEqual(
+  demoIndexedVerified,
+  verified,
+  "the demo-only timeline index must preserve the live queue result exactly",
+);
 
 const structuredVerification = deriveRemediationWorkQueue({ cis: [ci], timeline: [{
   ...verifiedEvent,

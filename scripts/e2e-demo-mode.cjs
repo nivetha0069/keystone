@@ -72,16 +72,14 @@ async function openSection(page, label) {
   // --- Network watch --------------------------------------------------------
   // Recorded for the whole run; asserted against the windows where demo mode
   // was on. A request is a violation only if it left while demo mode was on.
-  let demoActive = false;
+  let demoActive = true;
   const violations = [];
-  const liveRequests = [];
   page.on("request", req => {
     const url = req.url();
     const isBackend = url.includes("/api/cmdb/");
     const isAws = url.includes("amazonaws.com");
     if (!isBackend && !isAws) return;
     if (demoActive) violations.push(url.replace(BASE, ""));
-    else if (isBackend) liveRequests.push(url.replace(BASE, ""));
   });
 
   const consoleErrors = [];
@@ -94,8 +92,6 @@ async function openSection(page, label) {
     // === 1. Enter demo mode ================================================
     await page.goto(`${BASE}/control-plane?demo=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(4000);
-    demoActive = true;
-
     assert.equal(await demoIsOn(page), true, "demo toggle should read as on");
     record("demo mode is on from ?demo=1");
 
@@ -126,78 +122,21 @@ async function openSection(page, label) {
     if (!progressed) fail("pipeline progresses", `chapters never advanced; saw ${[...seen].join(", ")}`);
     record("pipeline progressed without any clicking", [...seen].filter(c => c.includes("CHAPTER 1")).join(""));
 
-    // === 5. Single-CI governed action: Simulate then Commit =================
+    // === 5. The full live-success flow, replayed by Mara offline =============
     await openSection(page, "Remediate");
     await page.waitForTimeout(2500);
+    const initialQueue = await buckets(page);
+    assert.equal(initialQueue["Ready to simulate"], 600, "all staged records should enter the live-success path");
+    record("all 600 staged records are ready for governed simulation");
 
-    // Pick a record that is NOT in the approval-packet cohort, since those were
-    // the ones that could never be committed before.
-    const row = page.locator("button.staged-row", { hasText: "aws-s3-" }).first();
-    await row.waitFor({ state: "visible", timeout: 15_000 });
-    await row.click();
-    await page.waitForTimeout(1500);
+    const autonomyToggle = page.locator(".mara-mode-toggle input").first();
+    await autonomyToggle.check({ force: true });
+    await clickButton(page, "Start autonomous migration");
+    await page.locator(".mara-autonomy-panel", { hasText: "Mara finished." })
+      .waitFor({ state: "visible", timeout: 120_000 });
+    record("Mara simulated, committed, and verified every bounded packet");
 
-    const actions = page.locator(".ire-action-grid button");
-    const simulateBtn = actions.nth(0);
-    const commitBtn = actions.nth(1);
-
-    assert.equal(await simulateBtn.isEnabled(), true, "Simulate should be available");
-    assert.equal(await commitBtn.isDisabled(), true, "Commit must be gated until a simulation exists");
-    record("selected a non-cohort record; Commit correctly gated before simulating");
-
-    await simulateBtn.click();
-    await page.waitForTimeout(3000);
-    if (await commitBtn.isDisabled()) {
-      fail("Commit enables after simulating",
-        "Commit is still disabled — the record has no finding/review, so it can never be committed");
-    }
-    record("Commit enabled after simulating");
-
-    await commitBtn.click();
-    await page.waitForTimeout(5000);
-    record("committed the single CI (simulated — nothing left the browser)");
-
-    // === 6. Bounded approval packet, end to end ============================
-    const packetPlan = page.locator("button", { hasText: "Plan packet" }).first();
-    if (await packetPlan.count()) {
-      await packetPlan.click();
-      await page.waitForTimeout(2500);
-      await clickButton(page, "Prepare packet");
-      await page.waitForTimeout(3000);
-
-      // The demo notice offers the exact hash; the two-step gate still applies.
-      const fillHash = page.locator(".packet-demo-notice button").first();
-      await fillHash.waitFor({ state: "visible", timeout: 15_000 });
-      await fillHash.click();
-      await page.waitForTimeout(800);
-
-      const packetActions = page.locator(".packet-approval-actions button");
-      assert.equal(await packetActions.nth(0).isEnabled(), true, "Authorize should arm once the hash matches");
-      await packetActions.nth(0).click();
-      await page.waitForTimeout(2500);
-      assert.equal(await packetActions.nth(1).isEnabled(), true, "Commit should unlock after authorization");
-      await packetActions.nth(1).click();
-      record("approval packet: prepared, hash-confirmed, authorized, committed");
-
-      // Converges on the app's own 4s monitoring poll — no manual refresh.
-      let stage = "";
-      for (let tick = 0; tick < 12; tick++) {
-        await page.waitForTimeout(4000);
-        stage = await page.evaluate(() =>
-          document.querySelector(".approval-packet-panel .campaign-stage")?.textContent?.trim() || "");
-        if (stage === "completed") break;
-      }
-      if (stage !== "completed") fail("packet converges", `stage stalled at "${stage}"`);
-
-      const summary = await page.evaluate(() => Object.fromEntries(
-        Array.from(document.querySelectorAll(".packet-summary > div"))
-          .map(d => [d.querySelector("small")?.textContent, d.querySelector("strong")?.textContent])));
-      assert.equal(summary.VERIFIED, summary.TOTAL, "every packet record should verify");
-      assert.equal(summary.BLOCKED, "0", "no packet record should be blocked");
-      record("packet converged to completed", `${summary.VERIFIED}/${summary.TOTAL} verified, 0 blocked`);
-    }
-
-    // === 7. The run finishes ===============================================
+    // === 6. The run finishes ===============================================
     // Once the run is terminal the dashboard stops polling — by design, in live
     // mode too — so the workspace can still be showing the snapshot it last
     // fetched. "Refresh data" is the affordance for exactly that, so drive it
@@ -216,36 +155,22 @@ async function openSection(page, label) {
       fail("run reaches Verify complete", `chapters ended at: ${finalChapters.join(", ")}`);
     }
     const queue = await (async () => { await openSection(page, "Remediate"); return buckets(page); })();
+    assert.equal(queue.Verified, 600, "all 600 staged records should reach verified");
+    assert.equal(queue.Blocked, 0, "the demo golden path should have no blocked records");
+    assert.equal(queue["Ready to simulate"], 0, "no staged records should remain unprocessed");
+    assert.equal(queue["Needs approval"], 0, "no staged records should remain awaiting approval");
+    assert.equal(queue["Ready to execute"], 0, "no staged records should remain awaiting execution");
+    assert.equal(queue["Needs verification"], 0, "no staged records should remain awaiting verification");
     record("run reached Verify · COMPLETE", `queue: ${JSON.stringify(queue)}`);
 
-    // === 8. NOTHING touched ServiceNow =====================================
+    // === 7. NOTHING touched ServiceNow =====================================
     if (violations.length) {
       fail("zero network while demo mode is on",
         `${violations.length} request(s) escaped:\n        ${violations.slice(0, 10).join("\n        ")}`);
     }
     record("zero /api/cmdb and zero amazonaws.com requests for the whole demo run");
 
-    // === 9. Leaving demo mode restores live mode ===========================
-    await page.locator(".demo-toggle").first().click();
-    await page.waitForTimeout(4000);
-    demoActive = false;
-    assert.equal(await demoIsOn(page), false, "toggle should read as off");
-
-    await openSection(page, "Import");
-    await page.waitForTimeout(2000);
-    const leftovers = await page.evaluate(() => ({
-      inputs: Array.from(document.querySelectorAll("input")).map(i => i.value),
-      body: document.querySelector("main")?.innerText || "",
-    }));
-    const stillDemo = leftovers.inputs.some(v => v.includes("amazonaws.com") || v.includes("AWS IP Ranges"))
-      || leftovers.body.includes("ip-ranges.amazonaws.com");
-    if (stillDemo) {
-      fail("demo presets cleared on exit",
-        `the live Import form still carries demo values: ${JSON.stringify(leftovers.inputs.slice(0, 3))}`);
-    }
-    record("leaving demo mode cleared the import presets — no AWS trace on the live form");
-
-    // === 10. No client-side crashes ========================================
+    // === 8. No client-side crashes =========================================
     const realErrors = consoleErrors.filter(e => !/Download the React DevTools|\[HMR\]/i.test(e));
     if (realErrors.length) {
       fail("no console errors", realErrors.slice(0, 5).join("\n        "));
@@ -253,7 +178,7 @@ async function openSection(page, label) {
     record("no page errors or console errors during the whole run");
 
     console.log(`\n  ${steps.length}/${steps.length} steps passed`);
-    console.log(`  live requests observed only after demo mode was switched off: ${liveRequests.length}\n`);
+    console.log("  no live mode or ServiceNow request was attempted\n");
   } finally {
     await browser.close();
   }

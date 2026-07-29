@@ -21,9 +21,9 @@
 //      still obviously fake at a glance.
 
 import { getSourceAdapter } from "./source-adapters";
-import { DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL, demoSourceSnapshot } from "./demo-source-snapshot";
+import { DEMO_RECORD_COUNT, DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL, demoSourceSnapshot } from "./demo-source-snapshot";
 
-export { DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./demo-source-snapshot";
+export { DEMO_RECORD_COUNT, DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./demo-source-snapshot";
 
 const HEX_NAMESPACE = "deadbeefcafef00d";
 
@@ -52,7 +52,7 @@ export function isDemoRunId(runId: string | undefined | null): boolean {
   return typeof runId === "string" && runId.toLowerCase() === DEMO_RUN_ID;
 }
 export const DEMO_RUN_NUMBER = "DWR-DEMO-0001";
-export const DEMO_RUN_LABEL = "AWS IP Ranges estate (demo)";
+export const DEMO_RUN_LABEL = `AWS IP range schema fixture (${DEMO_RECORD_COUNT} synthetic records)`;
 /** Terminal so pipeline polling stops, but outside RUN_STATES_BLOCKING_IRE so Remediate stays reachable. */
 export const DEMO_RUN_STATE = "simulated";
 
@@ -81,25 +81,6 @@ export const DEMO_CLASS_LABEL = "IP Network";
 export const DEMO_CLASS_TABLE = "cmdb_ci_ip_network";
 
 /**
- * The IRE outcome family each AWS service's prefixes reconcile to. Driving the
- * operation from the service rather than the row index is what makes an
- * approval packet possible: `planApprovalPacket` only accepts a homogeneous
- * class + operation-family cohort, so a per-index cycle would fragment the
- * cohort into groups of one or two. Order matches `DEMO_SERVICES` — the
- * snapshot cycles services, so `index % 8` is the service.
- */
-const SERVICE_FAMILIES: Array<"INSERT" | "UPDATE" | "NO_CHANGE"> = [
-  "UPDATE",    // EC2 — matched existing network CIs
-  "NO_CHANGE", // S3 — already current
-  "INSERT",    // CLOUDFRONT — new to the CMDB
-  "INSERT",    // API_GATEWAY
-  "UPDATE",    // DYNAMODB
-  "INSERT",    // ROUTE53_HEALTHCHECKS
-  "NO_CHANGE", // AMAZON
-  "UPDATE",    // GLOBALACCELERATOR
-];
-
-/**
  * The staged rows a real AWS import would produce: the actual repository
  * adapter run over the frozen snapshot. Names, source identities, and IPs all
  * come from here — nothing is invented in parallel to the real code path.
@@ -126,25 +107,12 @@ const adapterRows = (() => {
 export const DEMO_CI_COUNT = adapterRows.length;
 
 /**
- * The service whose whole clean cohort is homogeneous — this is what the
- * simulated approval packet is built from (EC2, index % 8 === 0).
+ * Demo mode is the golden path: every staged prefix is a healthy, unique new
+ * network CI. This keeps the source shape realistic while allowing the full
+ * 600-record run to converge through successive bounded approval packets.
  */
-const PACKET_ARCHETYPE_INDEX = 0;
-
-/**
- * A demo where every record sails through is a worse demo. These exceptions
- * deliberately keep the full outcome spread — held records, incomplete
- * identity, and one hard error — so the review queue, the Sankey, and the
- * blocked bucket all have something real to show. They land on services 3 and
- * 7 so the packet cohort (service 0, EC2) stays clean.
- */
-function operationFor(index: number): DemoOperation {
-  if (index === 43) return "ERROR";
-  if (index % 16 === 3) return "REVIEW";
-  if (index % 16 === 7) return "INSERT_AS_INCOMPLETE";
-  if (index % 16 === 11) return "REVIEW";
-  if (index % 16 === 15) return "INSERT_AS_INCOMPLETE";
-  return SERVICE_FAMILIES[index % SERVICE_FAMILIES.length];
+function operationFor(): DemoOperation {
+  return "INSERT";
 }
 
 function confidenceFor(index: number, operation: DemoOperation): number {
@@ -201,7 +169,7 @@ export type DemoCiSeed = {
 };
 
 export const demoCiSeeds: DemoCiSeed[] = adapterRows.map((row, index) => {
-  const operation = operationFor(index);
+  const operation = operationFor();
   const status = operation === "REVIEW" || operation === "ERROR"
     ? "review"
     : operation === "INSERT_AS_INCOMPLETE"
@@ -227,10 +195,7 @@ export const demoCiSeeds: DemoCiSeed[] = adapterRows.map((row, index) => {
 /** Counts derived once and reused by the ledger prose and the health payload. */
 const clearedCount = demoCiSeeds.filter(seed => seed.status === "live").length;
 const heldCount = DEMO_CI_COUNT - clearedCount;
-const incompleteCount = demoCiSeeds.filter(seed => seed.status === "incomplete").length;
-const duplicateCandidateCount = demoCiSeeds.filter(
-  seed => seed.status === "live" && seed.index % DEMO_SERVICES.length === PACKET_ARCHETYPE_INDEX,
-).length;
+const duplicateCandidateCount = 0;
 
 export function demoCisPayload() {
   return {
@@ -288,13 +253,13 @@ const EVENT_SEEDS: DemoEventSeed[] = [
   // viewer notices immediately.
   { eventType: "analyzed", detail: `Action: scan_classes | summary=Class scan proposed one CMDB class (${DEMO_CLASS_TABLE}); ${clearedCount} of ${DEMO_CI_COUNT} records validated.` },
   { eventType: "analyzed", detail: "Action: scan_attributes | summary=Attribute scan mapped region, service, and border group for every prefix." },
-  { eventType: "analyzed", detail: `Action: scan_duplicates | summary=Duplicate scan flagged ${duplicateCandidateCount} overlapping ranges on CIDR containment signals.` },
+  { eventType: "analyzed", detail: `Action: scan_duplicates | summary=Duplicate scan found ${duplicateCandidateCount} conflicting ranges; all ${DEMO_CI_COUNT} source identities are unique.` },
   { eventType: "analyzed", detail: `Action: scan_orphans | summary=Orphan scan found ORPHAN_COUNT staged CIs with no proposed relationship.` },
   { eventType: "analyzed", detail: `Action: apply_confidence_gate | summary=Confidence gate applied. ${clearedCount} records cleared the 50% deterministic threshold, ${DEMO_CI_COUNT - clearedCount} were held.` },
   { eventType: "analyzed", actor: "Mara", detail: "Observation: Mara reviewed the deterministic specialist output and accepted the confidence gate result without override." },
-  { eventType: "simulated", actor: "IRE", detail: "IRE simulation prepared for the cleared cohort. Identification and reconciliation ran in proposal mode only.", recordName: ciNameFor(0) },
-  { eventType: "approved", actor: "Mara", detail: "Approval review deferred pending human authorization of the bounded packet.", recordName: ciNameFor(3), status: "review" },
-  { eventType: "committed", actor: "IRE", detail: "CMDB published: governed attribute updates applied and the discovery source tagged as Migration Pipeline.", recordName: ciNameFor(0) },
+  { eventType: "simulated", actor: "IRE", detail: "IRE simulation prepared for the cleared cohort. Identification and reconciliation ran in proposal mode only." },
+  { eventType: "approved", actor: "Mara", detail: "Approval review deferred pending human authorization of successive bounded packets.", status: "review" },
+  { eventType: "committed", actor: "IRE", detail: "CMDB published: governed attribute updates applied and the discovery source tagged as Migration Pipeline." },
   { eventType: "analyzed", actor: "Prioritize", detail: "PriorityScorer ranked 4 health recommendations by projected score lift." },
   { eventType: "analyzed", detail: "Action: write_summary | summary=Executive summary written. Analysis completed and the decision trail is sealed." },
 ];
@@ -380,15 +345,12 @@ type DemoFindingSeed = {
  * views render empty — so the cross-referencing here is load-bearing.
  */
 /**
- * The homogeneous cohort the simulated approval packet is prepared from: every
- * clean record of the packet archetype, all sharing one class and one operation
- * family. Exported so the transport and the smoke test agree on it.
+ * Every row belongs to the same healthy INSERT family. The transport slices
+ * this cohort into policy-compliant packets of 100 and child campaigns of 20.
  */
-export const demoPacketCohort: DemoCiSeed[] = demoCiSeeds.filter(
-  seed => seed.status === "live" && seed.index % DEMO_SERVICES.length === PACKET_ARCHETYPE_INDEX,
-);
-
-const packetCohortIds = new Set(demoPacketCohort.map(seed => seed.index));
+export const demoPacketCohort: DemoCiSeed[] = demoCiSeeds;
+export const DEMO_PACKET_SIZE = 100;
+export const DEMO_CAMPAIGN_SIZE = 20;
 
 /**
  * Every staged CI gets a finding and a review decision — not just the held
@@ -403,34 +365,15 @@ const packetCohortIds = new Set(demoPacketCohort.map(seed => seed.index));
  * record it proposes an action on.
  */
 export const demoFindingSeeds: DemoFindingSeed[] = demoCiSeeds.map(seed => {
-  const duplicate = seed.status === "live" && packetCohortIds.has(seed.index);
-  // One approved and one rejected decision so `ready_to_execute` and
-  // `blocked` are both populated instead of every row landing in one bucket.
-  const decision: DemoFindingSeed["decision"] =
-    seed.index === 3 ? "rejected"
-    : seed.index === 24 ? "approved"
-    : "deferred";
-  const type = duplicate ? "duplicate_candidate"
-    : seed.status === "incomplete" ? "incomplete_identity"
-    : seed.status === "review" ? "class_mismatch"
-    : "reconciliation_candidate";
+  const decision: DemoFindingSeed["decision"] = "deferred";
+  const type = "reconciliation_candidate";
   return {
     ciIndex: seed.index,
     type,
     severity: seed.operation === "ERROR" ? "critical" : seed.status === "live" ? "medium" : "high",
-    recommendation: type === "duplicate_candidate"
-      ? `Collapse ${seed.name} against its overlapping range before publishing.`
-      : type === "incomplete_identity"
-        ? `Supply a network border group or VPC identifier for ${seed.name} so IRE can establish identity.`
-        : type === "class_mismatch"
-          ? `Confirm the proposed class ${seed.className} for ${seed.name} before IRE simulation.`
-          : `Reconcile ${seed.name} into the CMDB as ${seed.operation} once its simulation is approved.`,
+    recommendation: `Create ${seed.name} in the CMDB as a governed ${seed.operation} once its simulation is approved.`,
     decision,
-    rationale: decision === "approved"
-      ? "Identity evidence is sufficient; approved for governed execution."
-      : decision === "rejected"
-        ? "Proposed class conflicts with the authoritative source. Returned to the source owner."
-        : "Held for human authorization through the bounded approval packet.",
+    rationale: "Identity evidence is sufficient and awaits authorization through a bounded approval packet.",
   } satisfies DemoFindingSeed;
 });
 
@@ -466,9 +409,9 @@ export function demoReviewsPayload() {
 export function demoHealthPayload() {
   // Counts are derived from the actual arrays rather than hard-coded, so the
   // KPI tiles cannot contradict the table beneath them.
-  const baseline = 71;
-  const verified = 78;
-  const projected = 89;
+  const baseline = 91;
+  const verified = 96;
+  const projected = 99;
   return {
     result: {
       score: verified,
@@ -480,26 +423,26 @@ export function demoHealthPayload() {
       duplicates_detected: duplicateCandidateCount,
       review_count: heldCount,
       relationship_count: RELATIONSHIP_PAIRS.length,
-      completeness: 82,
-      correctness: 91,
-      compliance: 96,
+      completeness: 96,
+      correctness: 98,
+      compliance: 97,
       duplicate_rate: Number(((duplicateCandidateCount / demoCiSeeds.length) * 100).toFixed(1)),
       stale_records: 11,
       fixes: [
         {
-          id: "FIX-01", rank: 1, title: "Collapse overlapping duplicate ranges",
-          description: `${duplicateCandidateCount} CIDR ranges overlap on containment signals and are probable duplicates.`,
-          impact: 6, affected: duplicateCandidateCount * 2, tool: "Scout", severity: "critical",
+          id: "FIX-01", rank: 1, title: "Complete network ownership metadata",
+          description: "A small set of network CIs can gain support-group and business-owner metadata after migration.",
+          impact: 2, affected: 14, tool: "Guard", severity: "high",
         },
         {
-          id: "FIX-02", rank: 2, title: "Complete missing ownership",
-          description: "Network CIs with no support group or business owner cannot be routed on incident.",
-          impact: 4, affected: 14, tool: "Guard", severity: "high",
+          id: "FIX-02", rank: 2, title: "Increase relationship coverage",
+          description: "Add region and routing relationships after the network CIs are established.",
+          impact: 1, affected: DEMO_CI_COUNT - RELATIONSHIP_PAIRS.length, tool: "Atlas", severity: "medium",
         },
         {
-          id: "FIX-03", rank: 3, title: "Review incomplete IRE inserts",
-          description: `${incompleteCount} records could not be uniquely identified by IRE.`,
-          impact: 3, affected: incompleteCount, tool: "Guard", severity: "high",
+          id: "FIX-03", rank: 3, title: "Schedule source freshness checks",
+          description: "Continuously compare the staged networks with future source publications.",
+          impact: 0, affected: DEMO_CI_COUNT, tool: "Scout", severity: "medium",
         },
         {
           id: "FIX-04", rank: 4, title: "Refresh stale network records",
