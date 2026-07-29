@@ -591,6 +591,14 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
     appendLedgerEvent(seed, "approval_recorded", "completed",
       `Approval recorded for ${seed.name} against the exact simulation evidence.`,
       { finding_id: demoFindingId(seed.index), review_decision_id: demoReviewId(seed.index) });
+    // The workbench states it plainly: "Execute + Verify are automatic —
+    // ServiceNow execution and verification are monitored from Event Ledger
+    // evidence." The UI therefore never calls execute/verify for a single CI;
+    // it just watches the ledger. Without emitting that chain here the record
+    // would sit at "Approved for execution" forever, so approving one CI would
+    // dead-end exactly like the packet flow used to. The monitoring poll picks
+    // this up on its next pass and the row converges to Verified.
+    appendVerifiedChain(seed);
     state.ire.set(stagedCiId, { ...record, approval });
     return json(approval);
   }
