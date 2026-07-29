@@ -13,6 +13,8 @@
     "lint": "eslint app next.config.ts",
     "fixtures:stress": "node scripts/generate-company-stress-fixtures.mjs",
     "fixtures:migration-demo": "node scripts/prepare-migration-demo.cjs",
+    "demo:dataset": "python scripts/generate_demo_dataset.py",
+    "demo:dataset:check": "python scripts/generate_demo_dataset.py --check",
     "stage:migration-demo": "node scripts/stage-migration-demo.cjs",
     "export:servicenow": "node scripts/export-servicenow-scope.mjs",
     "acceptance:lifecycle": "node scripts/acceptance-autonomous-lifecycle.cjs",

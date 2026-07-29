@@ -59,7 +59,12 @@ import type {
   FrozenApprovalPacket,
 } from "./lib/cmdb/approval-packet";
 
-import { buildMaraReasoningSteps, normalizeMaraRun, type MaraRunRecord } from "./lib/cmdb/mara-audit";
+import {
+  buildMaraReasoningSteps,
+  normalizeMaraRun,
+  type MaraReasoningStep,
+  type MaraRunRecord,
+} from "./lib/cmdb/mara-audit";
 import {
   buildPlaybackTimeline,
   derivePlaybackNodeStates,
@@ -72,6 +77,7 @@ import { rememberRun, resolveActiveRun } from "./lib/cmdb/run-context";
 import { forgetRunEntry, isRunTerminal as isRegistryRunTerminal, readRegistry, rememberRunEntry, type RegistryEntry } from "./lib/cmdb/run-registry";
 import { DemoToggle, useDemoMode } from "./components/DemoToggle";
 import {
+  DEMO_AUTONOMOUS_COUNT,
   DEMO_RUN_ID,
   DEMO_RUN_LABEL,
   isDemoRunId,
@@ -1022,7 +1028,7 @@ function ComprehendView(props: {
     : apiState === "connecting" ? "Loading ServiceNow run"
     // Demo mode reaches apiState "live" because the simulated transport always
     // answers, so it must be excluded before claiming a live backend.
-    : apiState === "live" ? (demoMode ? "Demo snapshot" : "Live backend connected")
+    : apiState === "live" ? "Live backend connected"
     : apiState === "partial" ? "Partial backend data"
     : apiState === "error" ? "ServiceNow run unavailable"
     : "Demo snapshot";
@@ -1100,8 +1106,8 @@ function ComprehendView(props: {
     </section>
 
     <section className="visual-grid">
-      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{demoMode && cisLive ? `${allCis.length.toLocaleString()} SIMULATED RECORDS` : cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
-      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" && !demoMode ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? (demoMode ? `${proposedEdgeLabel} · SIMULATED` : proposedEdgeLabel) : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
+      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
+      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? proposedEdgeLabel : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
     </section>
 
     <section className="panel table-panel">
@@ -1110,7 +1116,7 @@ function ComprehendView(props: {
         {cis.map(ci => <tr key={ci.id} onClick={() => setSelectedCi(ci)}><td><div className="ci-cell"><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={15} /></span><div><strong>{ci.name}</strong><small>{ci.id} · {ci.ip}</small></div></div></td><td>{ci.className}</td><td><span className="source-name">{ci.source}</span></td><td><OperationPill value={ci.operation} /></td><td><Confidence value={ci.confidence} /></td><td><div className="health-cell"><span>{ci.health}</span><i><b style={{ width: `${ci.health}%` }} /></i></div></td><td><button className="row-arrow" aria-label={`Inspect ${ci.name}`} onClick={() => setSelectedCi(ci)}><Icon name="arrow" size={16} /></button></td></tr>)}
         {!cis.length && <tr><td colSpan={7} className="empty-state">No configuration items match this view.</td></tr>}
       </tbody></table></div>
-      <div className="table-footer"><span>{cis.length} shown · {demoMode ? "Simulated snapshot — no ServiceNow request was made" : cisLive ? "Live ServiceNow staged data" : demoFallback ? "Demo snapshot" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
+      <div className="table-footer"><span>{cis.length} shown · {cisLive ? "Live ServiceNow staged data" : demoFallback ? "Demo snapshot" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
     </section>
   </div>;
 }
@@ -1359,6 +1365,22 @@ function RemediateView(props: {
     pending: { ciId: selectedCi?.id, action: pendingAction },
     demoFallback,
   }), [demoFallback, findings, health.fixes, ireRecords, pendingAction, reviews, selectedCi?.id, stagedCis, timeline]);
+  const demoAgentTrace = useMemo(() => {
+    if (!demoMode) return [];
+    const runLevelEvents = new Set(
+      timeline
+        .filter(event => !event.recordName || event.recordName === "Migration run")
+        .map(event => event.id),
+    );
+    return buildMaraReasoningSteps(timeline)
+      .filter(step => runLevelEvents.has(step.id))
+      .slice(-6);
+  }, [demoMode, timeline]);
+  const demoVerifiedCount = queue.items.filter(item => item.bucket === "verified").length;
+  // Terminal means the *autonomous cohort* is drained, not that every staged
+  // record moved. Records the gate held, and matched records outside the
+  // boundary, are supposed to still be sitting there when the run ends.
+  const demoRunTerminal = demoMode && queue.items.length > 0 && demoVerifiedCount >= DEMO_AUTONOMOUS_COUNT;
   const simulationReadyCount = queue.items.filter(item => item.bucket === "ready_to_simulate").length;
   const selectedQueueItem = queue.items.find(item => item.id === selectedCi?.id);
   const drilldownItems = queue.items.slice(0, 100);
@@ -1689,6 +1711,7 @@ function RemediateView(props: {
         if (!result.approval.success || result.approval.stage === "blocked") {
           throw new Error(result.approval.halted?.message || "ServiceNow blocked the autonomous packet.");
         }
+        if (demoMode) await onRefresh();
 
         const statusBody = {
           migration_run_id: activeRunId,
@@ -1770,8 +1793,8 @@ function RemediateView(props: {
   }
 
   const currentCommitStage = approvalPacket.status?.stage ?? approvalPacket.approval?.stage ?? campaign.status?.stage ?? campaign.approval?.stage ?? "idle";
-  const cmdbCommitActive = ["approving", "executing", "verifying"].includes(currentCommitStage);
-  const cmdbCommitComplete = currentCommitStage === "completed";
+  const cmdbCommitActive = !demoRunTerminal && ["approving", "executing", "verifying"].includes(currentCommitStage);
+  const cmdbCommitComplete = demoRunTerminal || currentCommitStage === "completed";
   const cmdbCommitLabel = cmdbCommitActive
     ? "COMMITTING TO SERVICENOW CMDB NOW"
     : cmdbCommitComplete
@@ -1792,10 +1815,14 @@ function RemediateView(props: {
     </section>
     <MaraAutonomyPanel
       activeRunId={activeRunId}
-      enabled={maraAutonomyEnabled}
+      enabled={demoRunTerminal || maraAutonomyEnabled}
       pending={maraAutonomyPending}
-      stage={maraAutonomyStage}
-      message={maraAutonomyMessage}
+      stage={demoRunTerminal ? "complete" : maraAutonomyStage}
+      message={demoRunTerminal
+        ? "Mara finished. No additional healthy new CIs remain; exceptions still require review."
+        : maraAutonomyMessage}
+      terminal={demoRunTerminal}
+      trace={demoAgentTrace}
       onEnabled={enabled => {
         setMaraAutonomyEnabled(enabled);
         setMaraAutonomyStage("idle");
@@ -1936,28 +1963,30 @@ function MaraAutonomyPanel(props: {
   pending: boolean;
   stage: MaraAutonomyStage;
   message: string;
+  terminal?: boolean;
+  trace?: MaraReasoningStep[];
   onEnabled: (enabled: boolean) => void;
   onStart: () => void;
   onStop: () => void;
 }) {
-  const { activeRunId, enabled, pending, stage, message, onEnabled, onStart, onStop } = props;
+  const { activeRunId, enabled, pending, stage, message, terminal = false, trace = [], onEnabled, onStart, onStop } = props;
   const active = pending && !["complete", "blocked", "stopped"].includes(stage);
   return <section className={`panel mara-autonomy-panel ${enabled ? "armed" : ""}`}>
     <div className="mara-autonomy-copy">
       <span className="mara-autonomy-mark">M</span>
       <div>
         <span className="eyebrow accent">MARA MIGRATION MODE</span>
-        <h2>{enabled ? "Autonomous healthy CIs" : "Approval required"}</h2>
+        <h2>{terminal ? "Autonomous migration complete" : enabled ? "Autonomous healthy CIs" : "Approval required"}</h2>
         <p>{message}</p>
       </div>
     </div>
     <div className="mara-autonomy-controls">
       <label className="mara-mode-toggle">
-        <input type="checkbox" checked={enabled} disabled={pending} onChange={event => onEnabled(event.target.checked)} />
+        <input type="checkbox" checked={enabled} disabled={pending || terminal} onChange={event => onEnabled(event.target.checked)} />
         <span aria-hidden="true" />
         <strong>{enabled ? "AUTONOMOUS" : "ASK APPROVAL"}</strong>
       </label>
-      {enabled && !active && <button className="primary-button" disabled={!activeRunId || pending} onClick={onStart}><Icon name="spark" size={15} />Start autonomous migration</button>}
+      {enabled && !active && !terminal && <button className="primary-button" disabled={!activeRunId || pending} onClick={onStart}><Icon name="spark" size={15} />Start autonomous migration</button>}
       {active && <button className="ghost-button" onClick={onStop}><Icon name="shield" size={15} />Stop after current packet</button>}
     </div>
     <div className="mara-autonomy-boundary">
@@ -1971,6 +2000,19 @@ function MaraAutonomyPanel(props: {
         <span>Changes to existing CIs, uncertain identity, stale evidence, failures, or blockers require your review.</span>
       </div>
     </div>
+    {trace.length > 0 && <div className="demo-agent-trace" aria-live="polite">
+      <div className="demo-agent-trace-head">
+        <span>SERVICENOW EVENT LEDGER</span>
+        <strong>Latest agent outputs</strong>
+      </div>
+      <ol>
+        {trace.map(step => <li key={step.id}>
+          <span className="demo-agent-trace-actor">{agentDisplayName(step.actor)}</span>
+          <p>{step.summary}</p>
+          {step.action && <code>{step.action}</code>}
+        </li>)}
+      </ol>
+    </div>}
   </section>;
 }
 

@@ -15,12 +15,14 @@
 
 import { isDemoMode } from "./demo-mode";
 import {
+  DEMO_AUTONOMOUS_COUNT,
   DEMO_CI_COUNT,
   DEMO_CAMPAIGN_SIZE,
+  DEMO_CLASS_TABLE,
   DEMO_PACKET_SIZE,
   DEMO_RUN_ID,
   DEMO_RUN_STATE,
-  DEMO_SOURCE_URL,
+  DEMO_DATASET_FILE,
   DEMO_STAGE_EVENT_COUNTS,
   DEMO_RUN_LABEL,
   DEMO_RUN_NUMBER,
@@ -36,6 +38,7 @@ import {
   demoInstancePayload,
   demoPacketCohort,
   demoRelationshipsPayload,
+  demoWorkGroups,
   demoReviewId,
   demoReviewsPayload,
   demoRunPayload,
@@ -44,6 +47,7 @@ import {
   demoTimelinePayload,
   demoUsagePayload,
   type DemoCiSeed,
+  type DemoWorkGroup,
 } from "./demo-fixture";
 import type { IreAction, IreActionResponse } from "./ire";
 import type {
@@ -85,10 +89,23 @@ const CAMPAIGN_INSERT_POLICY_VERSION = "bounded-insert-v1";
 const CAMPAIGN_CLASS_BOUND_POLICY_VERSION = "servicenow-allowlisted-class-v1";
 const CAMPAIGN_SIMULATION_EVIDENCE_VERSION = "keystone.simulation.v2";
 
-const DEMO_WORK_GROUP = "IP Network|INSERT";
-const DEMO_GROUP_TITLE = "Healthy AWS prefixes creating new network CIs";
-const DEMO_CLASS_NAME = demoPacketCohort[0]?.className ?? "IP Network";
 const DEMO_OPERATION_FAMILY = "INSERT";
+
+/**
+ * The work group a packet is currently being built from.
+ *
+ * A bounded packet must be homogeneous — one class, one operation — and the run
+ * now spans six classes, so "the next 100 records" is no longer a valid packet.
+ * Packets are drawn from one work group at a time, largest first, and the run
+ * moves to the next group only once the current one is exhausted.
+ */
+function activeWorkGroup(): DemoWorkGroup | undefined {
+  return demoWorkGroups.find(group => group.seeds.some(seed => !state.verified.has(seed.sysId)));
+}
+
+const DEMO_WORK_GROUP = demoWorkGroups[0]?.signature ?? "Configuration Item|INSERT";
+const DEMO_GROUP_TITLE = demoWorkGroups[0]?.title ?? "Healthy new configuration items";
+const DEMO_CLASS_NAME = demoPacketCohort[0]?.className ?? "Configuration Item";
 
 /**
  * Pipeline progression for the simulated run. Importing from the demo source
@@ -144,6 +161,8 @@ type DemoWriteState = {
   simulated: Set<string>;
   /** Staged CIs that already have a verification_passed entry, so polls do not duplicate it. */
   verified: Set<string>;
+  /** Run-level narrative milestones that must remain idempotent across polls. */
+  milestones: Set<string>;
 };
 
 function freshState(stage: number = DONE_STAGE): DemoWriteState {
@@ -160,6 +179,7 @@ function freshState(stage: number = DONE_STAGE): DemoWriteState {
     ledger: [],
     simulated: new Set(),
     verified: new Set(),
+    milestones: new Set(),
   };
 }
 
@@ -245,8 +265,12 @@ type LedgerAction =
   | "ire_simulation_completed"
   | "ire_simulation_failed"
   | "approval_recorded"
+  | "approval_handoff_queued"
+  | "approval_resume_claimed"
+  | "approval_resume_prepared"
   | "ire_execution_claimed"
   | "ire_execution_completed"
+  | "ire_verification_claimed"
   | "verification_passed";
 
 /**
@@ -261,11 +285,12 @@ function appendLedgerEvent(
   status: "completed" | "failed" | "started",
   summary: string,
   extra: Record<string, unknown> = {},
+  actor = "IRE",
 ): string {
   const detail = JSON.stringify({
     schema: "keystone.agent.v1",
     phase: "remediate",
-    actor: "IRE",
+    actor,
     decision_source: "deterministic",
     action,
     status,
@@ -279,17 +304,153 @@ function appendLedgerEvent(
   state.ledger.push({
     sys_id: eventId,
     sequence: 100 + index,
-    event_type: action.includes("verification") ? "verified"
+    event_type: action === "verification_passed" ? "verified"
       : action.includes("execution") ? "committed"
-      : action.includes("approval") ? "approved"
+      : action === "approval_recorded" ? "approved"
       : "simulated",
-    agent: "IRE",
+    agent: actor,
     staged_ci: { display_value: seed.name },
-    status: status === "failed" ? "error" : "complete",
+    status: status === "failed" ? "error" : status === "started" ? "active" : "complete",
     detail,
     sys_created_on: demoClockAt(600 + index * 3),
   });
   return eventId;
+}
+
+function appendRunLedgerEvent(
+  actor: string,
+  eventType: string,
+  detail: string,
+  status: "complete" | "active" | "review" = "complete",
+): string {
+  const index = state.ledger.length;
+  const eventId = demoEventId(2000 + index);
+  state.ledger.push({
+    sys_id: eventId,
+    sequence: 100 + index,
+    event_type: eventType,
+    agent: actor,
+    status,
+    detail,
+    sys_created_on: demoClockAt(600 + index * 3),
+  });
+  return eventId;
+}
+
+function once(key: string, record: () => void): void {
+  if (state.milestones.has(key)) return;
+  state.milestones.add(key);
+  record();
+}
+
+function appendSimulationNarrative(total: number): void {
+  once("simulate-all", () => {
+    const groups = Math.ceil(total / DEMO_CAMPAIGN_SIZE);
+    appendRunLedgerEvent(
+      "Mara",
+      "analyzed",
+      `Thought: ${total} gate-cleared records can be simulated without mutation. Derive homogeneous groups and stop if any group fails to advance. | Action: simulate_all_eligible`,
+    );
+    appendRunLedgerEvent(
+      "Router",
+      "analyzed",
+      `Result: Derived ${groups} homogeneous ${DEMO_CAMPAIGN_SIZE}-record campaigns for ${DEMO_CLASS_NAME} / ${DEMO_OPERATION_FAMILY}; simulation concurrency remains capped at three.`,
+    );
+    appendRunLedgerEvent(
+      "Guard",
+      "analyzed",
+      `Result: ${total}/${total} candidates satisfy the fresh healthy-INSERT simulation policy. Class, identity, source ownership, and run scope were rebuilt from staged evidence; ${excludedRecords().length} held records were not resubmitted.`,
+    );
+    appendRunLedgerEvent(
+      "IRE",
+      "simulated",
+      `Result: Non-mutating IRE identification completed for ${total}/${total} staged CIs. Every candidate remained unmatched, fingerprinted, and eligible for bounded packet preparation.`,
+    );
+    appendRunLedgerEvent(
+      "Mara",
+      "analyzed",
+      `Observation: ${total} current simulation fingerprints are ready, with 0 failed groups and 0 blockers. Prepare the first exact server-derived packet.`,
+    );
+  });
+}
+
+function appendPacketStartNarrative(autonomous: boolean): void {
+  const key = `packet-start:${state.packetSequence}:${autonomous ? "autonomous" : "manual"}`;
+  once(key, () => {
+    const total = state.packetSeeds.length;
+    const deferred = remainingSeeds().length - total;
+    const packetLabel = packetId();
+    appendRunLedgerEvent(
+      "Mara",
+      "analyzed",
+      `Thought: Packet ${state.packetSequence} contains ${total} fresh unmatched INSERT candidates inside the ${autonomous ? "MARA_HEALTHY_INSERT_V1" : "exact-hash"} boundary. Stop on drift or exception. | Action: plan_next_packet`,
+    );
+    appendRunLedgerEvent(
+      "Router",
+      "analyzed",
+      `Result: ${packetLabel} selected ${total} ${DEMO_CLASS_NAME} records, partitioned into ${Math.ceil(total / DEMO_CAMPAIGN_SIZE)} child manifests; ${Math.max(0, deferred)} records remain deferred to later packets.`,
+    );
+    appendRunLedgerEvent(
+      "Guard",
+      "approved",
+      `Result: ${packetLabel} passed class, operation, freshness, unmatched-identity, and policy checks. Aggregate risk is bounded; 0 of its ${total} records were excluded or blocked.`,
+    );
+    appendRunLedgerEvent(
+      "Ledger",
+      "analyzed",
+      `Result: Frozen ${packetLabel} at hash ${packetHash().slice(0, 16)}... with exact membership, fingerprints, five-or-fewer child manifests, and a 30-minute expiry.`,
+    );
+    appendRunLedgerEvent(
+      "Mara",
+      "approved",
+      `Handoff: Mara -> IRE | Action: start_phase_d. ${autonomous ? "The operator-armed healthy INSERT policy" : "The one-time exact-hash authorization"} permits only this frozen packet.`,
+      "active",
+    );
+  });
+}
+
+function appendPacketCompletionNarrative(total: number): void {
+  const key = `packet-complete:${state.packetSequence}`;
+  once(key, () => {
+    const remaining = remainingSeeds().length;
+    appendRunLedgerEvent(
+      "IRE",
+      "committed",
+      `Result: CMDB publish completed through IRE for ${total}/${total} individual Phase D chains in ${packetId()}; correlated target read-back followed every execution.`,
+    );
+    appendRunLedgerEvent(
+      "Ledger",
+      "analyzed",
+      `Result: ${packetId()} is terminal with ${total} target bindings, ${total} verification outcomes, 0 duplicate bindings, and 0 unresolved lifecycle records.`,
+    );
+    appendRunLedgerEvent(
+      "Mara",
+      "analyzed",
+      `Observation: Packet ${state.packetSequence} is terminal: ${total} verified, 0 blocked. ${remaining} staged records remain for a freshly rebuilt packet.`,
+    );
+  });
+}
+
+/**
+ * The run stops when the autonomous cohort is exhausted, not when every staged
+ * record has moved. Stating both numbers is the point: the held records are the
+ * evidence that the boundary held, so the closing entry reports the backlog it
+ * deliberately did not touch rather than rounding the run up to 600/600.
+ */
+function appendRunCompletionNarrative(): void {
+  once("run-complete", () => {
+    const held = excludedRecords().length;
+    appendRunLedgerEvent(
+      "Mara",
+      "verified",
+      `Result: Mara completed the governed migration. ${state.verified.size}/${DEMO_AUTONOMOUS_COUNT} correlated outcomes verified across ${state.packetSequence} bounded packets; 0 pending, 0 blocked. ${held} staged records were never eligible and remain untouched.`,
+    );
+    appendRunLedgerEvent(
+      "Ledger",
+      "verified",
+      `Result: Terminal evidence sealed for ${DEMO_CI_COUNT} staged CIs in ${DEMO_CLASS_TABLE}: ${state.verified.size} created through IRE, ${held} awaiting an operator decision. The quality backlog remains separate: duplicates, ownership, relationship coverage, and freshness work are still visible.`,
+    );
+  });
 }
 
 /**
@@ -334,10 +495,40 @@ function appendVerifiedChain(seed: DemoCiSeed): void {
       finding_id: demoFindingId(seed.index),
       review_decision_id: demoReviewId(seed.index),
       decision: "approved",
-      // Mirrors the live contract: a human authorized this packet, so it is not
-      // a policy auto-approval.
+      // Mirrors the current Phase C/D contract. The packet gate authorizes the
+      // scope, while each persisted review remains an explicit deterministic
+      // approval rather than setting the legacy policy_approved flag.
       policy_approved: false,
     });
+
+  // The first CI in each packet carries the complete documented Phase C/D
+  // handoff sequence for presentation. Every other CI still carries the four
+  // correlation-critical events used for terminal acceptance, keeping the
+  // 600-record replay responsive while showing the real server-owned chain.
+  const phaseDSample = state.packetSeeds[0]?.sysId === seed.sysId;
+  if (phaseDSample) {
+    appendLedgerEvent(seed, "approval_handoff_queued", "completed",
+      `Approval handoff queued for ${seed.name}; only the canonical approval event id crosses the boundary.`, {
+        ...evidence,
+        approval_event_id: approvalEventId,
+      }, "Mara");
+    appendLedgerEvent(seed, "approval_resume_claimed", "completed",
+      `Mara atomically claimed the one-time approval continuation for ${seed.name}.`, {
+        ...evidence,
+        approval_event_id: approvalEventId,
+      }, "Mara");
+    appendLedgerEvent(seed, "approval_resume_prepared", "completed",
+      `Phase C prepared the identifier-only continuation for ${seed.name}; Execute and Verify have not run yet.`, {
+        ...evidence,
+        approval_event_id: approvalEventId,
+      }, "Mara");
+    appendLedgerEvent(seed, "ire_execution_claimed", "started",
+      `Phase D atomically claimed the single IRE execution for ${seed.name}.`, {
+        ...evidence,
+        approval_event_id: approvalEventId,
+        execution_correlation_id: executionCorrelation,
+      });
+  }
 
   appendLedgerEvent(seed, "ire_execution_completed", "completed",
     `IRE applied the governed change to ${seed.name}.`, {
@@ -346,6 +537,16 @@ function appendVerifiedChain(seed: DemoCiSeed): void {
       execution_correlation_id: executionCorrelation,
       target_ci_sys_id: targetCiSysId,
     });
+
+  if (phaseDSample) {
+    appendLedgerEvent(seed, "ire_verification_claimed", "started",
+      `Phase D claimed correlated read-back for the exact target returned by IRE for ${seed.name}.`, {
+        ...evidence,
+        approval_event_id: approvalEventId,
+        execution_correlation_id: executionCorrelation,
+        target_ci_sys_id: targetCiSysId,
+      });
+  }
 
   appendLedgerEvent(seed, "verification_passed", "completed",
     `Read-back confirmed ${seed.name} in the CMDB with the governed attribute set.`, {
@@ -393,7 +594,7 @@ const READ_PAYLOADS: Record<string, () => unknown> = {
   relationships: () => (state.stage >= 2 ? demoRelationshipsPayload() : { result: [] }),
   findings: () => (state.stage >= 3 ? demoFindingsPayload() : { result: [] }),
   reviews: () => (state.stage >= 3 ? demoReviewsPayload() : { result: [] }),
-  health: () => (state.stage >= 3 ? demoHealthPayload() : { result: { ci_count: DEMO_CI_COUNT } }),
+  health: () => (state.stage >= 3 ? demoHealthPayload(state.verified) : { result: { ci_count: DEMO_CI_COUNT } }),
   run: () => demoRunPayload(state.stage >= DONE_STAGE ? DEMO_RUN_STATE : "analyzing"),
 };
 
@@ -482,7 +683,7 @@ function demoImportResponse(body: Record<string, unknown>) {
       migration_run_id: DEMO_RUN_ID,
       run: { sys_id: DEMO_RUN_ID, number: DEMO_RUN_NUMBER, display_value: DEMO_RUN_LABEL },
       run_name: typeof body.runName === "string" && body.runName.trim() ? body.runName.trim() : DEMO_RUN_LABEL,
-      source_url: DEMO_SOURCE_URL,
+      source_file: DEMO_DATASET_FILE,
       staged: DEMO_CI_COUNT,
       target: "staging",
       mode: "quarantine",
@@ -694,7 +895,11 @@ function campaignSeeds(): DemoCiSeed[] {
 }
 
 function beginNextPacket(): DemoCiSeed[] {
-  const next = remainingSeeds().slice(0, DEMO_PACKET_SIZE);
+  // Slice from the active group only, so every packet stays homogeneous even
+  // though the cohort as a whole spans six classes.
+  const group = activeWorkGroup();
+  const next = (group ? group.seeds.filter(seed => !state.verified.has(seed.sysId)) : [])
+    .slice(0, DEMO_PACKET_SIZE);
   state.packetSeeds = next;
   if (next.length) {
     state.packetSequence += 1;
@@ -806,17 +1011,29 @@ function packetAggregate(): ApprovalPacketAggregate {
   };
 }
 
+/**
+ * Every staged record the autonomous boundary will not touch, each carrying the
+ * reason Comprehend recorded for it.
+ *
+ * `excludedRecords().length` is the real total and is what the aggregate
+ * reports; only the operator-facing sample is capped, by `excludedSample()`.
+ * Reporting the capped length as the count would have understated a 107-record
+ * backlog as 12.
+ */
 function excludedRecords() {
   return demoCiSeeds
-    .filter(seed => seed.status !== "live")
-    .slice(0, 12)
+    .filter(seed => seed.holdReason)
     .map(seed => ({
       staged_ci_id: seed.sysId,
       name: seed.name,
-      reason: seed.status === "incomplete"
-        ? "IRE could not establish a unique identity for this record."
-        : "Held by the confidence gate for human review.",
+      reason: seed.holdReason as string,
     }));
+}
+
+const EXCLUSION_SAMPLE_SIZE = 12;
+
+function excludedSample() {
+  return excludedRecords().slice(0, EXCLUSION_SAMPLE_SIZE);
 }
 
 function packetChildren(): ApprovalPacketChild[] {
@@ -867,7 +1084,7 @@ function frozenPacket(): FrozenApprovalPacket & { approval_enabled: boolean; dem
     expires_at: DEMO_PACKET_EXPIRY,
     children: packetChildren(),
     items: manifestItems(),
-    exclusions: excludedRecords(),
+    exclusions: excludedSample(),
     samples: packetSamples(),
     aggregate: packetAggregate(),
     // Authorization is armed only after the operator types the exact hash and
@@ -911,7 +1128,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
         max_items: DEMO_CAMPAIGN_SIZE,
         deferred_count: Math.max(0, remainingSeeds().length - total),
         items: campaignItems(seeds),
-        exclusions: excludedRecords(),
+        exclusions: excludedSample(),
       };
       return json({ ...plan, approval_enabled: false });
     }
@@ -1002,6 +1219,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
           { simulation_correlation_id: `ks-simulate:demo:${seed.index}`, simulation_fingerprint: demoFingerprint(seed.index) });
         state.simulated.add(seed.sysId);
       }
+      appendSimulationNarrative(total);
       const group: RemediationCampaignSimulationResult = {
         success: true,
         stage: "simulating",
@@ -1055,7 +1273,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
         manifest_id: manifestId(),
         work_group_signature: DEMO_WORK_GROUP,
         items: manifestItems(seeds),
-        exclusions: excludedRecords(),
+        exclusions: excludedSample(),
         summary: summary(total, { succeeded: total }),
       };
       return json(manifest);
@@ -1126,7 +1344,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
           item_count: child.item_count,
           items: campaignItems(child.items.map(item => demoCiSeeds.find(seed => seed.sysId === item.staged_ci_id)!).filter(Boolean)),
         })),
-        exclusions: excludedRecords(),
+        exclusions: excludedSample(),
       };
       return json({ ...plan, approval_enabled: false, demo_mode: true });
     }
@@ -1160,12 +1378,14 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
       if (action === "autonomous-packet") {
         const seeds = ensureCurrentPacket();
         if (!seeds.length) {
+          appendRunCompletionNarrative();
           return json({ code: "PACKET_EMPTY", error: "No additional healthy new CIs remain for an autonomous packet." }, 409);
         }
         state.packetPhase = "authorized";
       } else if (state.packetPhase !== "authorized") {
         return json({ error: "Authorize this exact packet before committing it." }, 409);
       }
+      appendPacketStartNarrative(action === "autonomous-packet");
       state.packetPhase = "committing";
       state.packetPolls = 0;
       const approval: ApprovalPacketApprovalResult = {
@@ -1207,6 +1427,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
       // Workspace journey advances in step with the packet progress panel
       // instead of the two disagreeing.
       for (const seed of state.packetSeeds.slice(0, aggregate.verified)) appendVerifiedChain(seed);
+      if (state.packetPhase === "completed") appendPacketCompletionNarrative(total);
       const children = packetChildren();
       const result: ApprovalPacketStatus = {
         success: true,
@@ -1229,7 +1450,7 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
           blocked: 0,
         })),
         items: packetProgressItems(),
-        exclusions: excludedRecords(),
+        exclusions: excludedSample(),
         aggregate,
       };
       return json(result);

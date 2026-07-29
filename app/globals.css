@@ -420,6 +420,16 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .mara-autonomy-boundary > div { display: grid; gap: 3px; }
 .mara-autonomy-boundary strong { color: var(--ink); font-size: 9.5px; }
 .mara-autonomy-boundary span { display: block; margin-top: 5px; color: var(--amber); }
+.demo-agent-trace { grid-column: 1 / -1; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.demo-agent-trace-head { display: grid; align-content: start; gap: 5px; }
+.demo-agent-trace-head span { color: var(--coral); font-size: 8px; font-weight: 800; letter-spacing: 0; }
+.demo-agent-trace-head strong { font: 17px var(--display); }
+.demo-agent-trace ol { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.demo-agent-trace li { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; min-height: 30px; padding: 7px 0; border-top: 1px solid rgba(239, 241, 233, .08); }
+.demo-agent-trace li:first-child { border-top: 0; }
+.demo-agent-trace-actor { color: var(--lime); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.demo-agent-trace p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.demo-agent-trace code { max-width: 150px; overflow: hidden; color: var(--ink); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .work-queue-panel { overflow: hidden; margin-bottom: 24px; }
 .agent-campaign-panel { overflow: hidden; margin-bottom: 24px; }
 .campaign-stage { padding: 5px 9px; color: var(--amber); border: 1px solid rgba(232, 178, 61, .32); background: rgba(232, 178, 61, .05); font: 8px var(--mono); letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
@@ -940,6 +950,9 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
   .mara-autonomy-controls { justify-content: flex-start; }
   .mara-autonomy-boundary { grid-template-columns: 18px 1fr; }
   .mara-autonomy-boundary > div { grid-column: 2; }
+  .demo-agent-trace { grid-template-columns: 1fr; }
+  .demo-agent-trace li { grid-template-columns: 56px minmax(0, 1fr); }
+  .demo-agent-trace code { grid-column: 2; }
   .agent-supervisor-node { width: 100%; min-width: 0; }
   .agent-specialist-grid { grid-template-columns: 1fr 1fr; }
   .agent-support-rail { grid-template-columns: 1fr; }
