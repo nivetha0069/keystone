@@ -48,7 +48,7 @@ export const DEMO_RUN_STATE = "simulated";
 export const demoStagedCiId = (index: number) => demoSysId("c", index);
 export const demoFindingId = (index: number) => demoSysId("f", index);
 export const demoReviewId = (index: number) => demoSysId("a", index);
-const demoEventId = (index: number) => demoSysId("e", index);
+export const demoEventId = (index: number) => demoSysId("e", index);
 export const demoTargetCiId = (index: number) => demoSysId("b", index);
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,14 @@ type DemoOperation = "INSERT" | "UPDATE" | "NO_CHANGE" | "INSERT_AS_INCOMPLETE" 
 
 type Archetype = {
   prefix: string;
+  /** Human-readable label shown in the UI. */
   className: string;
+  /**
+   * The real CMDB table. Structured ledger evidence carries table names, not
+   * display labels — `terminal-outcomes.ts` validates them against
+   * /^[a-z][a-z0-9_]{2,79}$/ before a verified outcome will correlate.
+   */
+  table: string;
   source: string;
   subnet: string;
   /**
@@ -75,14 +82,14 @@ type Archetype = {
 // Eight archetypes across six waves gives 48 records — six per class, enough
 // for a realistic bounded packet (max 100, but a handful reads better on screen).
 const ARCHETYPES: Archetype[] = [
-  { prefix: "pay-gw-lnx", className: "Linux Server", source: "Baxter Inventory", subnet: "10.42.18", family: "UPDATE" },
-  { prefix: "payments-db", className: "Oracle Database", source: "Legacy CMDB", subnet: "10.42.21", family: "NO_CHANGE" },
-  { prefix: "edge-lb-prod", className: "Load Balancer", source: "NetBox", subnet: "10.42.9", family: "INSERT" },
-  { prefix: "sap-app-eu", className: "Application Server", source: "Spreadsheet", subnet: "10.51.6", family: "INSERT" },
-  { prefix: "fileshare-nyc", className: "Windows Server", source: "SCCM", subnet: "10.60.2", family: "UPDATE" },
-  { prefix: "warehouse-esx", className: "ESX Server", source: "vCenter Export", subnet: "10.71.11", family: "INSERT" },
-  { prefix: "analytics-pg", className: "PostgreSQL Instance", source: "Spreadsheet", subnet: "10.51.19", family: "NO_CHANGE" },
-  { prefix: "core-switch", className: "Network Switch", source: "vCenter Export", subnet: "10.10.1", family: "UPDATE" },
+  { prefix: "pay-gw-lnx", className: "Linux Server", table: "cmdb_ci_linux_server", source: "Baxter Inventory", subnet: "10.42.18", family: "UPDATE" },
+  { prefix: "payments-db", className: "Oracle Database", table: "cmdb_ci_db_ora_instance", source: "Legacy CMDB", subnet: "10.42.21", family: "NO_CHANGE" },
+  { prefix: "edge-lb-prod", className: "Load Balancer", table: "cmdb_ci_lb", source: "NetBox", subnet: "10.42.9", family: "INSERT" },
+  { prefix: "sap-app-eu", className: "Application Server", table: "cmdb_ci_app_server", source: "Spreadsheet", subnet: "10.51.6", family: "INSERT" },
+  { prefix: "fileshare-nyc", className: "Windows Server", table: "cmdb_ci_win_server", source: "SCCM", subnet: "10.60.2", family: "UPDATE" },
+  { prefix: "warehouse-esx", className: "ESX Server", table: "cmdb_ci_esx_server", source: "vCenter Export", subnet: "10.71.11", family: "INSERT" },
+  { prefix: "analytics-pg", className: "PostgreSQL Instance", table: "cmdb_ci_db_postgresql_instance", source: "Spreadsheet", subnet: "10.51.19", family: "NO_CHANGE" },
+  { prefix: "core-switch", className: "Network Switch", table: "cmdb_ci_ip_switch", source: "vCenter Export", subnet: "10.10.1", family: "UPDATE" },
 ];
 
 export const DEMO_CI_COUNT = 48;
@@ -124,6 +131,9 @@ function ciNameFor(index: number): string {
 
 /** Fixed base clock keeps timestamps stable across reloads. */
 const BASE_DATE = "2026-07-28";
+export function demoClockAt(offsetSeconds: number): string {
+  return clockAt(offsetSeconds);
+}
 function clockAt(offsetSeconds: number): string {
   const total = 6 * 3600 + 8 * 60 + 41 + offsetSeconds;
   const hh = String(Math.floor(total / 3600) % 24).padStart(2, "0");
@@ -137,6 +147,7 @@ export type DemoCiSeed = {
   sysId: string;
   name: string;
   className: string;
+  table: string;
   source: string;
   ip: string;
   operation: DemoOperation;
@@ -158,6 +169,7 @@ export const demoCiSeeds: DemoCiSeed[] = Array.from({ length: DEMO_CI_COUNT }, (
     sysId: demoStagedCiId(index),
     name: ciNameFor(index),
     className: archetype.className,
+    table: archetype.table,
     source: archetype.source,
     ip: `${archetype.subnet}.${(index * 7) % 240 + 3}`,
     operation,

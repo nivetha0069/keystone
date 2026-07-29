@@ -55,6 +55,7 @@ const {
 const { normalizeMaraRun } = require("../app/lib/cmdb/mara-audit.ts");
 const { normalizeUsage } = require("../app/lib/cmdb/usage-adapter.ts");
 const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
+const { deriveCorrelatedVerifiedOutcomes } = require("../app/lib/cmdb/terminal-outcomes.ts");
 const { buildPlaybackTimeline, derivePlaybackNodeStates, PLAYBACK_NODES } = require("../app/lib/cmdb/playback.ts");
 const { isTerminalRunState } = require("../app/lib/cmdb/run-lifecycle.ts");
 
@@ -342,6 +343,48 @@ async function main() {
     assert.equal(status.stage, "completed");
     assert.equal(status.aggregate.verified, status.aggregate.total);
     assert.equal(status.aggregate.blocked, 0);
+  });
+
+  // The whole Agent Workspace journey is derived from the Event Ledger, so a
+  // simulated commit that leaves no ledger evidence looks to the rest of the UI
+  // like nothing happened — the run gets stuck on "awaiting decision" forever
+  // and "View completed results" stays disabled (verifiedCount === 0).
+  const finalTimeline = normalizeComprehendTimeline((await readJson("/api/cmdb/timeline")).body);
+  const finalQueue = deriveRemediationWorkQueue({
+    cis, timeline: finalTimeline, healthFixes: health.fixes, findings, reviews, demoFallback: true,
+  });
+  check("committing writes verification evidence back into the ledger", () => {
+    assert.ok(finalTimeline.length > timeline.length,
+      "the ledger gained no events from the simulated commit");
+    const verified = finalQueue.buckets.find(bucket => bucket.id === "verified");
+    assert.equal(verified.items.length, fixture.demoPacketCohort.length,
+      `expected all ${fixture.demoPacketCohort.length} committed records to read back as verified`);
+  });
+
+  check("verified records satisfy the strict correlated-outcome check", () => {
+    // deriveCorrelatedVerifiedOutcomes only counts a record when its whole
+    // simulation -> approval -> execution -> verification chain cross-references
+    // itself exactly. Without this the journey reports "no records reached
+    // verification" while the packet panel shows six verified.
+    const outcomes = deriveCorrelatedVerifiedOutcomes(finalQueue.items, finalTimeline);
+    assert.equal(outcomes.length, fixture.demoPacketCohort.length,
+      `only ${outcomes.length} of ${fixture.demoPacketCohort.length} records produced a correlated verified outcome`);
+    for (const outcome of outcomes) {
+      assert.ok(outcome.targetCiSysId, "outcome has no target CI");
+      assert.ok(["INSERT", "UPDATE"].includes(outcome.operation), `unexpected operation ${outcome.operation}`);
+    }
+  });
+
+  check("the run reaches a terminal end-to-end state", () => {
+    // deriveVerifyStatus completes only when something verified and nothing is
+    // still awaiting verification — this is the condition the demo used to be
+    // unable to reach.
+    const needsVerification = finalQueue.buckets.find(bucket => bucket.id === "needs_verification");
+    assert.equal(needsVerification.items.length, 0,
+      "records are still stuck awaiting verification, so Verify never completes");
+    const needsApproval = finalQueue.buckets.find(bucket => bucket.id === "needs_approval");
+    assert.equal(needsApproval.items.length, 0,
+      "records still await approval, so the journey stays on Remediate");
   });
 
   const empty = await post("/api/cmdb/remediation-campaign/autonomous-packet", packetBody);

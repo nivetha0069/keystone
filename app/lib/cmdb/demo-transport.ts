@@ -21,6 +21,8 @@ import {
   DEMO_RUN_NUMBER,
   demoCiSeeds,
   demoCisPayload,
+  demoClockAt,
+  demoEventId,
   demoFindingId,
   demoFindingSeeds,
   demoFindingsPayload,
@@ -109,6 +111,16 @@ type DemoWriteState = {
   campaignApproved: boolean;
   proposals: Set<string>;
   importedRows: number;
+  /**
+   * Ledger events produced by simulated writes, appended to what `/timeline`
+   * returns. This is what makes demo mode complete end to end: the Agent
+   * Workspace journey, the work queue, and the "View completed results" control
+   * are all derived from the Event Ledger, so a write that leaves no ledger
+   * evidence looks to the rest of the UI like nothing happened.
+   */
+  ledger: Array<Record<string, unknown>>;
+  /** Staged CIs that already have a verification_passed entry, so polls do not duplicate it. */
+  verified: Set<string>;
 };
 
 function freshState(): DemoWriteState {
@@ -120,6 +132,8 @@ function freshState(): DemoWriteState {
     campaignApproved: false,
     proposals: new Set(),
     importedRows: 0,
+    ledger: [],
+    verified: new Set(),
   };
 }
 
@@ -183,9 +197,141 @@ async function bodyOf(init?: RequestInit): Promise<Record<string, unknown>> {
   try { return JSON.parse(init.body) as Record<string, unknown>; } catch { return {}; }
 }
 
+/**
+ * Structured per-CI lifecycle actions the work queue recognises. Anything
+ * outside this set is treated as a run-level evidence dump and ignored, so the
+ * strings matter — see isStructuredCiLifecycleEvent in work-queue.ts.
+ */
+type LedgerAction =
+  | "ire_simulation_completed"
+  | "ire_simulation_failed"
+  | "approval_recorded"
+  | "ire_execution_claimed"
+  | "ire_execution_completed"
+  | "verification_passed";
+
+/**
+ * Append one keystone.agent.v1 ledger entry for a staged CI.
+ *
+ * The actor is deliberately never Mara: Mara's entries are classified as
+ * run-level observations and excluded from per-CI scoping.
+ */
+function appendLedgerEvent(
+  seed: DemoCiSeed,
+  action: LedgerAction,
+  status: "completed" | "failed" | "started",
+  summary: string,
+  extra: Record<string, unknown> = {},
+): string {
+  const detail = JSON.stringify({
+    schema: "keystone.agent.v1",
+    phase: "remediate",
+    actor: "IRE",
+    decision_source: "deterministic",
+    action,
+    status,
+    summary,
+    staged_ci_id: seed.sysId,
+    migration_run_id: DEMO_RUN_ID,
+    ...extra,
+  });
+  const index = state.ledger.length;
+  const eventId = demoEventId(2000 + index);
+  state.ledger.push({
+    sys_id: eventId,
+    sequence: 100 + index,
+    event_type: action.includes("verification") ? "verified"
+      : action.includes("execution") ? "committed"
+      : action.includes("approval") ? "approved"
+      : "simulated",
+    agent: "IRE",
+    staged_ci: { display_value: seed.name },
+    status: status === "failed" ? "error" : "complete",
+    detail,
+    sys_created_on: demoClockAt(600 + index * 3),
+  });
+  return eventId;
+}
+
+/**
+ * Emit the complete simulation → approval → execution → verification chain for
+ * one record.
+ *
+ * `deriveCorrelatedVerifiedOutcomes` will only count a record as a verified
+ * outcome when all four entries cross-reference each other exactly: the
+ * execution and verification must name the approval's own event sys_id, and the
+ * simulation correlation, fingerprint, target CI, and operation must match at
+ * every hop. That check is the product's integrity guarantee, so the demo
+ * satisfies it rather than working around it — otherwise the run reports
+ * "no records reached verification" while showing six verified.
+ */
+function appendVerifiedChain(seed: DemoCiSeed): void {
+  if (state.verified.has(seed.sysId)) return;
+  state.verified.add(seed.sysId);
+
+  const operation = seed.operation === "INSERT" ? "INSERT" : "UPDATE";
+  const simulationCorrelation = `ks-simulate:demo:${seed.index}`;
+  const executionCorrelation = `ks-exec:demo:${seed.index}`;
+  const fingerprint = demoFingerprint(seed.index);
+  const targetCiSysId = demoTargetCiId(seed.index);
+  const evidence = {
+    simulation_correlation_id: simulationCorrelation,
+    simulation_fingerprint: fingerprint,
+    proposed_class: seed.table,
+    operation,
+    evidence_version: CAMPAIGN_SIMULATION_EVIDENCE_VERSION,
+    class_policy_version: CAMPAIGN_CLASS_BOUND_POLICY_VERSION,
+  };
+
+  appendLedgerEvent(seed, "ire_simulation_completed", "completed",
+    `Simulation prepared for ${seed.name} in proposal mode.`, evidence);
+
+  const approvalEventId = appendLedgerEvent(seed, "approval_recorded", "completed",
+    `Approval recorded for ${seed.name} against the exact simulation evidence.`, {
+      ...evidence,
+      finding_id: demoFindingId(seed.index),
+      review_decision_id: demoReviewId(seed.index),
+      decision: "approved",
+      // Mirrors the live contract: a human authorized this packet, so it is not
+      // a policy auto-approval.
+      policy_approved: false,
+    });
+
+  appendLedgerEvent(seed, "ire_execution_completed", "completed",
+    `IRE applied the governed change to ${seed.name}.`, {
+      ...evidence,
+      approval_event_id: approvalEventId,
+      execution_correlation_id: executionCorrelation,
+      target_ci_sys_id: targetCiSysId,
+    });
+
+  appendLedgerEvent(seed, "verification_passed", "completed",
+    `Read-back confirmed ${seed.name} in the CMDB with the governed attribute set.`, {
+      ...evidence,
+      approval_event_id: approvalEventId,
+      execution_correlation_id: executionCorrelation,
+      target_ci_sys_id: targetCiSysId,
+    });
+}
+
+/**
+ * Record a read-back for one CI, once. This is the entry the work queue turns
+ * into a `verified` bucket item, which is in turn what completes the Verify
+ * chapter and enables "View completed results".
+ */
+function markVerified(seed: DemoCiSeed): void {
+  appendVerifiedChain(seed);
+}
+
+/** Base fixture ledger plus everything the simulated writes have produced. */
+function timelinePayloadWithWrites() {
+  const base = demoTimelinePayload().result;
+  return { result: [...base, ...state.ledger] };
+}
+
 const READ_PAYLOADS: Record<string, () => unknown> = {
   cis: demoCisPayload,
-  timeline: demoTimelinePayload,
+  timeline: timelinePayloadWithWrites,
   relationships: demoRelationshipsPayload,
   health: demoHealthPayload,
   findings: demoFindingsPayload,
@@ -347,6 +493,8 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
         ],
         error: { code: "IRE_FAILED", message: "Simulated IRE could not identify this record." },
       };
+      appendLedgerEvent(seed, "ire_simulation_failed", "failed",
+        `IRE could not establish a unique identity for ${seed.name}.`);
       state.ire.set(stagedCiId, { ...record, simulation: failed });
       return json(failed);
     }
@@ -375,6 +523,9 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
         "Proposal mode only — no CMDB write occurred.",
       ],
     };
+    appendLedgerEvent(seed, "ire_simulation_completed", "completed",
+      `Simulation prepared for ${seed.name} in proposal mode.`,
+      { simulation_correlation_id: correlationId, simulation_fingerprint: demoFingerprint(seed.index) });
     state.ire.set(stagedCiId, { ...record, simulation });
     return json(simulation);
   }
@@ -398,6 +549,9 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
       review_decision: { sys_id: demoReviewId(seed.index), display_value: "approved" },
       evidence: ["Simulated approval recorded against the exact simulation evidence."],
     };
+    appendLedgerEvent(seed, "approval_recorded", "completed",
+      `Approval recorded for ${seed.name} against the exact simulation evidence.`,
+      { finding_id: demoFindingId(seed.index), review_decision_id: demoReviewId(seed.index) });
     state.ire.set(stagedCiId, { ...record, approval });
     return json(approval);
   }
@@ -418,6 +572,10 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
       target_ci_sys_id: demoTargetCiId(seed.index),
       evidence: ["Simulated IRE execution. No ServiceNow or CMDB endpoint was contacted."],
     };
+    appendLedgerEvent(seed, "ire_execution_claimed", "started", `Execution chain claimed for ${seed.name}.`);
+    appendLedgerEvent(seed, "ire_execution_completed", "completed",
+      `IRE applied the governed change to ${seed.name}.`,
+      { execution_correlation_id: execution.execution_correlation_id, target_ci_sys_id: demoTargetCiId(seed.index) });
     state.ire.set(stagedCiId, { ...record, execution });
     return json(execution);
   }
@@ -440,6 +598,7 @@ function demoIre(action: IreAction, body: Record<string, unknown>): Response {
     verification_summary: `Read-back confirmed ${seed.name} in the CMDB with the governed attribute set.`,
     evidence: ["Simulated read-back verification passed."],
   };
+  markVerified(seed);
   state.ire.set(stagedCiId, { ...record, verification });
   return json(verification);
 }
@@ -683,6 +842,11 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
 
     case "simulate": {
       state.campaignSimulated = true;
+      for (const seed of demoPacketCohort) {
+        appendLedgerEvent(seed, "ire_simulation_completed", "completed",
+          `Campaign simulation prepared ${seed.name} in proposal mode.`,
+          { simulation_correlation_id: `ks-simulate:demo:${seed.index}`, simulation_fingerprint: demoFingerprint(seed.index) });
+      }
       const result: RemediationCampaignSimulationResult = {
         success: true,
         stage: "simulating",
@@ -698,6 +862,11 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
 
     case "simulate-all": {
       state.campaignSimulated = true;
+      for (const seed of demoPacketCohort) {
+        appendLedgerEvent(seed, "ire_simulation_completed", "completed",
+          `Campaign simulation prepared ${seed.name} in proposal mode.`,
+          { simulation_correlation_id: `ks-simulate:demo:${seed.index}`, simulation_fingerprint: demoFingerprint(seed.index) });
+      }
       const group: RemediationCampaignSimulationResult = {
         success: true,
         stage: "simulating",
@@ -850,6 +1019,12 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
       }
       state.packetPhase = "committing";
       state.packetPolls = 0;
+      // Claim evidence only: the workspace shows each chain starting, and the
+      // full correlated chain lands per record as packet-status converges.
+      for (const seed of demoPacketCohort) {
+        appendLedgerEvent(seed, "ire_execution_claimed", "started",
+          `ServiceNow started an individual IRE chain for ${seed.name} from packet ${DEMO_PACKET_ID}.`);
+      }
       const approval: ApprovalPacketApprovalResult = {
         success: true,
         stage: "executing",
@@ -881,6 +1056,10 @@ function demoCampaign(action: string, body: Record<string, unknown>): Response {
         if (packetAggregate().verified >= total) state.packetPhase = "completed";
       }
       const aggregate = packetAggregate();
+      // Convergence is mirrored into the ledger as it happens, so the Agent
+      // Workspace journey advances in step with the packet progress panel
+      // instead of the two disagreeing.
+      for (const seed of demoPacketCohort.slice(0, aggregate.verified)) appendVerifiedChain(seed);
       const result: ApprovalPacketStatus = {
         success: true,
         stage: state.packetPhase === "completed"
