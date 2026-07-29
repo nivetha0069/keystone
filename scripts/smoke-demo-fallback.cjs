@@ -52,7 +52,7 @@ const {
   normalizeRemediationFindings,
   normalizeRemediationReviews,
 } = require("../app/lib/cmdb/comprehend-adapter.ts");
-const { normalizeMaraRun } = require("../app/lib/cmdb/mara-audit.ts");
+const { normalizeMaraRun, runMaraAudit } = require("../app/lib/cmdb/mara-audit.ts");
 const { normalizeUsage } = require("../app/lib/cmdb/usage-adapter.ts");
 const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
 const { deriveCorrelatedVerifiedOutcomes } = require("../app/lib/cmdb/terminal-outcomes.ts");
@@ -60,7 +60,7 @@ const { buildPlaybackTimeline, derivePlaybackNodeStates, PLAYBACK_NODES } = requ
 const { isTerminalRunState } = require("../app/lib/cmdb/run-lifecycle.ts");
 // Lazy: demo-fixture re-exports from this module, so a top-level destructure
 // lands in the temporal dead zone while that chain is still initializing.
-const snapshot = () => require("../app/lib/cmdb/demo-source-snapshot.ts").demoSourceSnapshot;
+const dataset = () => require("../app/lib/cmdb/demo-dataset.json");
 
 const SYS_ID_RE = /^[0-9a-f]{32}$/;
 const FINGERPRINT_RE = /^[0-9A-F]{64}$/;
@@ -127,14 +127,34 @@ async function main() {
   check("a broken snapshot can never take the live app down with it", () => {
     // demo-fixture runs the adapter at module scope, and the live dashboard
     // imports that module — so a throw there would blank the whole app, not
-    // just demo mode. The adapter throws on a payload without `prefixes`.
+    // just demo mode.
     const source = fs.readFileSync(path.join(root, "app", "lib", "cmdb", "demo-fixture.ts"), "utf8");
-    const block = source.slice(source.indexOf("const adapterRows"), source.indexOf("export const DEMO_CI_COUNT"));
-    assert.ok(/try\s*\{/.test(block) && /catch/.test(block),
-      "the module-scope adapter run must be wrapped so a malformed snapshot cannot break live mode");
-    // And the happy path must still actually produce records.
-    assert.equal(fixture.demoCiSeeds.length, snapshot().prefixes.length,
-      "the adapter run produced no records — the fallback is masking a real failure");
+    assert.ok(/import dataset from "\.\/demo-dataset\.json"/.test(source),
+      "the fixture must load the generated dataset rather than fetching anything");
+    assert.equal(fixture.demoCiSeeds.length, dataset().cis.length,
+      "the fixture dropped records on the way in from the dataset");
+  });
+
+  // The whole point of generating the dataset is that ONE place computes the
+  // counts. This asserts the TypeScript fixture agrees with the Python
+  // generator on every published number, so ledger prose and KPI tiles cannot
+  // drift from the records beneath them.
+  check("every fixture count matches the generator's own summary", () => {
+    const summary = dataset().summary;
+    const ops = {};
+    for (const seed of fixture.demoCiSeeds) ops[seed.operation] = (ops[seed.operation] || 0) + 1;
+    assert.deepEqual(ops, summary.operations, "operation mix drifted from the generator");
+    assert.equal(fixture.DEMO_CI_COUNT, summary.record_count);
+    assert.equal(fixture.DEMO_AUTONOMOUS_COUNT, summary.autonomous_count);
+    assert.equal(fixture.DEMO_HELD_FOR_REVIEW_COUNT, summary.review_backlog_count);
+    const h = fixture.demoHealthPayload(new Set()).result;
+    assert.equal(h.baseline_score, summary.baseline_score);
+    assert.equal(h.projected_score, summary.projected_score);
+    assert.equal(h.completeness, summary.completeness);
+    assert.equal(h.correctness, summary.correctness);
+    assert.equal(h.compliance, summary.compliance);
+    assert.equal(h.duplicates_detected, summary.duplicate_count);
+    assert.equal(h.relationship_count, summary.relationship_count);
   });
 
   check("leaving demo mode clears the presets off the live import form", () => {
@@ -148,7 +168,7 @@ async function main() {
     const effect = view.slice(view.indexOf("const demoMode = useDemoMode()"), view.indexOf("const previewColumns"));
     assert.ok(!/if\s*\(!demoMode\)\s*return;/.test(effect),
       "the demo preset effect must not early-return on demoMode=false — it has to reset the form");
-    assert.ok(/setSourceUrl\(demoMode \? DEMO_SOURCE_URL : ""\)/.test(effect),
+    assert.ok(/setSourceUrl\(""\)/.test(effect),
       "leaving demo mode must clear the source URL back to empty");
     assert.ok(/demoModeApplied/.test(effect),
       "the effect must distinguish first mount from a real toggle so it does not clobber a live form on load");
@@ -185,16 +205,70 @@ async function main() {
     assert.ok(reviews.length > 0, "reviews are empty");
   });
 
-  check("all demo records belong to the healthy INSERT golden path", () => {
+  // A run where every record is a clean INSERT is not a run anybody
+  // recognises, and it leaves the Sankey a single flat band. The demo must
+  // carry the full spread of outcomes, across several sources and classes.
+  check("the run spans real sources, classes, and outcomes", () => {
     const ops = new Set(cis.map(ci => ci.operation));
-    assert.deepEqual([...ops], ["INSERT"]);
-    assert.equal(cis.filter(ci => ci.status === "live").length, fixture.DEMO_CI_COUNT);
+    for (const expected of ["INSERT", "UPDATE", "NO_CHANGE", "REVIEW", "INSERT_AS_INCOMPLETE", "ERROR"]) {
+      assert.ok(ops.has(expected), `no record has outcome ${expected}; the Sankey would lose that band`);
+    }
+    assert.ok(new Set(cis.map(ci => ci.source)).size >= 3, "too few source systems for a meaningful Sankey");
+    assert.ok(new Set(cis.map(ci => ci.className)).size >= 4, "too few proposed classes for a meaningful Sankey");
+  });
+
+  check("every held record explains itself and no eligible record does", () => {
+    for (const seed of fixture.demoCiSeeds) {
+      const eligible = seed.operation === "INSERT";
+      assert.equal(Boolean(seed.holdReason), !eligible,
+        `${seed.name} (${seed.operation}) has the wrong hold-reason state`);
+      if (seed.holdReason) assert.ok(seed.holdReason.length > 20, `${seed.name} has a uselessly vague hold reason`);
+    }
+  });
+
+  check("the gate cleanly separates cleared from held", () => {
+    const gate = fixture.DEMO_GATE_THRESHOLD;
+    for (const seed of fixture.demoCiSeeds) {
+      const defective = ["REVIEW", "INSERT_AS_INCOMPLETE", "ERROR"].includes(seed.operation);
+      assert.equal(seed.confidence < gate, defective,
+        `${seed.name} scores ${seed.confidence} but is ${seed.operation}`);
+    }
   });
 
   check("health counts agree with the records beneath them", () => {
     assert.equal(health.ciCount, cis.length);
-    assert.equal(health.reviewCount, cis.filter(ci => ci.status !== "live").length);
+    assert.equal(health.reviewCount, fixture.DEMO_HELD_FOR_REVIEW_COUNT);
     assert.equal(health.relationshipCount, relationships.length);
+    assert.equal(health.duplicateCandidates, cis.filter(ci => ci.operation === "REVIEW").length);
+  });
+
+  // A score that sat still through a whole migration was the bug that made the
+  // old demo unconvincing. It must move with verified work, and stop at
+  // projected rather than sailing past it.
+  check("health score rises with verified work and never exceeds projected", () => {
+    const ids = n => new Set(fixture.demoPacketCohort.slice(0, n).map(s => s.sysId));
+    const none = fixture.demoHealthPayload(new Set()).result;
+    const half = fixture.demoHealthPayload(ids(Math.floor(fixture.DEMO_AUTONOMOUS_COUNT / 2))).result;
+    const full = fixture.demoHealthPayload(ids(fixture.DEMO_AUTONOMOUS_COUNT)).result;
+    assert.equal(none.score, none.baseline_score, "score before any work should read the baseline");
+    assert.ok(half.score > none.score, "score did not move as records verified");
+    assert.ok(full.score > half.score, "score stopped moving part-way through");
+    assert.ok(full.score <= full.projected_score, "realized score overtook the projection");
+    assert.equal(full.projected_score, none.projected_score, "the projection drifted as work landed");
+  });
+
+  // Beat 4 of the showcase: which approvals buy the most health.
+  check("work groups are homogeneous and ranked by the health they return", () => {
+    const groups = fixture.demoWorkGroups;
+    assert.ok(groups.length >= 3, "too few work groups to make Prioritize meaningful");
+    for (const group of groups) {
+      assert.equal(new Set(group.seeds.map(s => s.table)).size, 1, `${group.signature} mixes classes`);
+      assert.equal(new Set(group.seeds.map(s => s.operation)).size, 1, `${group.signature} mixes operations`);
+    }
+    const sizes = groups.map(g => g.seeds.length);
+    assert.deepEqual(sizes, [...sizes].sort((a, b) => b - a), "groups are not ranked largest-first");
+    assert.equal(sizes.reduce((a, b) => a + b, 0), fixture.DEMO_AUTONOMOUS_COUNT,
+      "work groups do not account for the whole autonomous cohort");
   });
 
   check("health lift arithmetic is non-negative", () => {
@@ -251,14 +325,23 @@ async function main() {
     assert.ok(withReview.length > 0, "no review decision resolved to its finding");
   });
 
-  check("all staged records begin ready for simulation", () => {
+  check("the autonomous cohort begins ready for simulation", () => {
     const ready = queue.buckets.find(bucket => bucket.id === "ready_to_simulate");
-    assert.equal(ready.items.length, fixture.DEMO_CI_COUNT);
-    assert.equal(queue.buckets.find(bucket => bucket.id === "blocked").items.length, 0);
-    assert.equal(queue.buckets.find(bucket => bucket.id === "simulation_failed").items.length, 0);
+    assert.ok(ready.items.length >= fixture.DEMO_AUTONOMOUS_COUNT,
+      `only ${ready.items.length} ready; expected at least the ${fixture.DEMO_AUTONOMOUS_COUNT}-record cohort`);
+    // Held records land in `blocked` / `simulation_failed`, and should — an
+    // unreconcilable record is a real defect the operator needs to see. What
+    // must never happen is a *cohort* record sitting there before anything ran.
+    const cohort = new Set(fixture.demoPacketCohort.map(seed => seed.sysId));
+    for (const id of ["blocked", "simulation_failed"]) {
+      const stuck = queue.buckets.find(bucket => bucket.id === id).items
+        .filter(item => cohort.has(item.id));
+      assert.deepEqual(stuck.map(item => item.ci.name), [],
+        `an autonomous-cohort record started out in ${id}`);
+    }
   });
 
-  check("every staged record is committable, not just the packet cohort", () => {
+  check("every cohort record is committable, and no held record is", () => {
     // "Commit this CI to ServiceNow" is gated on `approvable`, which needs BOTH
     // finding.id and review.id on the selected queue item. A record without a
     // finding can be simulated but never committed, and the button gives no
@@ -266,6 +349,13 @@ async function main() {
     const missing = queue.items.filter(item => !item.finding?.id || !item.review?.id);
     assert.deepEqual(missing.map(item => item.ci.name), [],
       "these records could never enable the Commit button");
+    // The boundary is the point of the demo: held records carry full evidence
+    // so an operator can inspect them, but must never enter the cohort.
+    const cohort = new Set(fixture.demoPacketCohort.map(seed => seed.sysId));
+    for (const seed of fixture.demoCiSeeds) {
+      assert.equal(cohort.has(seed.sysId), !seed.holdReason,
+        `${seed.name} is on the wrong side of the autonomous boundary`);
+    }
     // `demo_fallback` means "no backing records at all". Now that every row has
     // a real finding and review decision, servicenow_records is the honest
     // source and fallbackCount is correctly zero.
@@ -280,7 +370,7 @@ async function main() {
   //   && simulationCorrelation && simulationFingerprint
   //   && finding.id && review.id
   // Any record failing one of those can be simulated but never committed, and
-  // the UI gives no hint why. This walks a real record of every AWS service
+  // the UI gives no hint why. This walks a real cohort record of every class
   // through simulate and asserts each clause independently.
   {
     resetDemoWriteState();
@@ -288,8 +378,8 @@ async function main() {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
     });
     const unreachable = [];
-    for (const service of fixture.DEMO_SERVICES) {
-      const seed = fixture.demoCiSeeds.find(s => s.service === service && s.status === "live");
+    for (const klass of [...new Set(fixture.demoPacketCohort.map(seed => seed.className))]) {
+      const seed = fixture.demoPacketCohort.find(s => s.className === klass);
       if (!seed) continue;
       const body = {
         migration_run_id: fixture.DEMO_RUN_ID,
@@ -307,25 +397,38 @@ async function main() {
         && Boolean(item.simulationCorrelation && item.simulationFingerprint
           && item.finding?.id && item.review?.id);
       if (!approvable) {
-        unreachable.push(`${seed.name} [${service}] lifecycle=${item.lifecycle} ` +
+        unreachable.push(`${seed.name} [${klass}] lifecycle=${item.lifecycle} ` +
           `corr=${Boolean(item.simulationCorrelation)} fp=${Boolean(item.simulationFingerprint)} ` +
           `finding=${Boolean(item.finding?.id)} review=${Boolean(item.review?.id)}`);
       }
     }
-    check("Commit is reachable for a record of every AWS service after simulating", () => {
+    check("Commit is reachable for a cohort record of every class after simulating", () => {
       assert.deepEqual(unreachable, [],
         "these records can be simulated but never committed");
     });
     resetDemoWriteState();
   }
 
-  // --- Playback coverage ----------------------------------------------------
-  check("playback reaches every one of the seven workflow nodes", () => {
+  // --- Agent evidence and truthful pre-execution playback -------------------
+  check("W-R-A-G-S and Mara all publish realistic analysis outputs", () => {
+    const audit = runMaraAudit({ timeline, cis, findings, reviews, run });
+    const coverage = audit.checks.find(item => item.id === "coverage");
+    const flow = audit.checks.find(item => item.id === "flow");
+    const errors = audit.checks.find(item => item.id === "errors");
+    assert.equal(coverage.status, "pass", coverage.summary);
+    assert.equal(flow.status, "pass", flow.summary);
+    assert.equal(errors.status, "pass", errors.summary);
+    for (const actor of ["Mara", "Weaver", "Router", "Atlas", "Sentry", "Scout", "Ledger"]) {
+      assert.ok(audit.actors.some(item => item.actor === actor), `${actor} has no ledger output`);
+    }
+  });
+
+  check("analysis playback does not fabricate a CMDB commit", () => {
     const frames = buildPlaybackTimeline({ timeline, stagedCiCount: cis.length });
     assert.ok(frames.length > 0, "no playback frames were built");
     const states = derivePlaybackNodeStates(frames, frames.length - 1).states;
-    const untouched = PLAYBACK_NODES.filter(node => states[node.id] === "untouched").map(node => node.id);
-    assert.deepEqual(untouched, [], `nodes never reached: ${untouched.join(", ")}`);
+    assert.equal(states.cmdb, "untouched", "CMDB lit up before any execution action ran");
+    assert.ok(PLAYBACK_NODES.some(node => states[node.id] !== "untouched"), "analysis produced no visible playback");
   });
 
   // --- Simulated IRE lifecycle ---------------------------------------------
@@ -471,40 +574,81 @@ async function main() {
     assert.equal(waveStatus.aggregate.blocked, 0);
   }
 
-  check("Mara processes every remaining record in successive bounded packets", () => {
-    assert.equal(autonomousWaves, (fixture.DEMO_CI_COUNT / fixture.DEMO_PACKET_SIZE) - 1);
+  check("Mara drains the autonomous cohort in successive bounded packets", () => {
+    // Packets are homogeneous — one class, one operation — so the count is the
+    // sum over work groups, not the cohort divided by the packet size.
+    const expected = fixture.demoWorkGroups
+      .reduce((sum, group) => sum + Math.ceil(group.seeds.length / fixture.DEMO_PACKET_SIZE), 0);
+    assert.equal(autonomousWaves + 1, expected,
+      `expected ${expected} packets across ${fixture.demoWorkGroups.length} work groups`);
     assert.equal(empty.response.status, 409);
     assert.equal(empty.body.code, "PACKET_EMPTY");
+  });
+
+  check("every committed packet stayed homogeneous", () => {
+    const byGroup = new Map();
+    for (const seed of fixture.demoPacketCohort) byGroup.set(seed.sysId, seed.workGroup);
+    // Any packet mixing classes would have been rejected by the real approval
+    // packet policy, so a demo that mixes them proves nothing.
+    for (const group of fixture.demoWorkGroups) {
+      assert.equal(new Set(group.seeds.map(seed => byGroup.get(seed.sysId))).size, 1);
+    }
+  });
+
+  check("playback reaches all seven workflow nodes only after execution", () => {
+    const frames = buildPlaybackTimeline({ timeline: finalTimeline, stagedCiCount: cis.length });
+    const states = derivePlaybackNodeStates(frames, frames.length - 1).states;
+    const untouched = PLAYBACK_NODES.filter(node => states[node.id] === "untouched").map(node => node.id);
+    assert.deepEqual(untouched, [], `nodes never reached after execution: ${untouched.join(", ")}`);
   });
 
   const completedTimeline = normalizeComprehendTimeline((await readJson("/api/cmdb/timeline")).body);
   const completedQueue = deriveRemediationWorkQueue({
     cis, timeline: completedTimeline, healthFixes: health.fixes, findings, reviews, demoFallback: true,
   });
-  check("the full 600-record run reaches correlated verification with no blockers", () => {
+  const finalHealth = normalizeComprehendHealth((await readJson("/api/cmdb/health")).body);
+  check("the run verifies the whole cohort and leaves the backlog untouched", () => {
     const verified = completedQueue.buckets.find(bucket => bucket.id === "verified");
     const needsVerification = completedQueue.buckets.find(bucket => bucket.id === "needs_verification");
-    const needsApproval = completedQueue.buckets.find(bucket => bucket.id === "needs_approval");
     const blocked = completedQueue.buckets.find(bucket => bucket.id === "blocked");
-    assert.equal(verified.items.length, fixture.DEMO_CI_COUNT);
+    assert.equal(verified.items.length, fixture.DEMO_AUTONOMOUS_COUNT);
     assert.equal(needsVerification.items.length, 0);
-    assert.equal(needsApproval.items.length, 0);
-    assert.equal(blocked.items.length, 0);
-    assert.equal(deriveCorrelatedVerifiedOutcomes(completedQueue.items, completedTimeline).length, fixture.DEMO_CI_COUNT);
+    assert.equal(blocked.items.length, 0, "nothing should end blocked; held records were never submitted");
+    assert.equal(deriveCorrelatedVerifiedOutcomes(completedQueue.items, completedTimeline).length,
+      fixture.DEMO_AUTONOMOUS_COUNT);
+    // The closing beat: health actually improved, and the backlog is still visible.
+    assert.ok(finalHealth.score > finalHealth.baselineScore,
+      `health did not move: still ${finalHealth.score}`);
+    assert.ok(finalHealth.score <= finalHealth.projectedScore);
+    assert.equal(finalHealth.reviewCount, fixture.DEMO_HELD_FOR_REVIEW_COUNT);
+  });
+
+  check("packet and Phase D outputs remain visible after the full run", () => {
+    const detail = completedTimeline.map(event => event.reasoning).join("\n");
+    assert.match(detail, /MARA_HEALTHY_INSERT_V1/);
+    assert.match(detail, /Frozen ks-packet:demo-0001/);
+    assert.match(detail, /approval continuation/);
+    assert.match(detail, /CMDB publish completed through IRE/);
+    // The closing entry must report BOTH numbers. Rounding the run up to
+    // "everything verified" is exactly the overclaim this demo must not make.
+    assert.match(detail, new RegExp(`${fixture.DEMO_AUTONOMOUS_COUNT}/${fixture.DEMO_AUTONOMOUS_COUNT} correlated outcomes verified`));
+    assert.match(detail, new RegExp(`${fixture.DEMO_HELD_FOR_REVIEW_COUNT} staged records were never eligible`));
   });
 
   // --- One source, full start-to-end progression ---------------------------
   const { getSourceAdapter } = require("../app/lib/cmdb/source-adapters.ts");
 
-  check("the demo source is the one AWS URL with a format-true snapshot", () => {
-    assert.equal(fixture.DEMO_SOURCE_URL, "https://ip-ranges.amazonaws.com/ip-ranges.json");
-    assert.equal(snapshot().prefixes.length, fixture.DEMO_CI_COUNT);
-    // The real repository adapter must recognise the snapshot as its own format
-    // and be the thing that produced every staged record's identity.
-    assert.equal(getSourceAdapter("aws-ip-ranges").detect(snapshot()), "high");
-    for (const seed of fixture.demoCiSeeds) {
-      assert.ok(seed.name.startsWith("aws-"), `name ${seed.name} is not adapter-derived`);
-    }
+  check("the demo source is a bundled dataset, never a fetch", () => {
+    const meta = dataset().dataset;
+    assert.equal(fixture.DEMO_SOURCE_NAME, meta.name);
+    assert.equal(fixture.DEMO_DATASET_FILE, meta.file);
+    assert.equal(dataset().cis.length, fixture.DEMO_CI_COUNT);
+    assert.ok(meta.generator.endsWith("generate_demo_dataset.py"),
+      "the dataset must record which generator produced it");
+    // No demo surface may name a URL to fetch: the records ship with the app.
+    const fixtureSource = fs.readFileSync(path.join(root, "app", "lib", "cmdb", "demo-fixture.ts"), "utf8");
+    assert.ok(!/https?:\/\//.test(fixtureSource.replace(/^\s*(\/\/|\*).*$/gm, "")),
+      "the fixture still references a URL");
   });
 
   const imported = await post("/api/cmdb/import", JSON.stringify({

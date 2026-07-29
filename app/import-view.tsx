@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDemoMode } from "./components/DemoToggle";
-import { DEMO_CI_COUNT, DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./lib/cmdb/demo-fixture";
+import { DEMO_CI_COUNT, DEMO_DATASET_FILE, DEMO_SOURCE_NAME, DEMO_SOURCE_SYSTEMS } from "./lib/cmdb/demo-fixture";
 import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
@@ -46,14 +46,15 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
   const demoMode = useDemoMode();
   const demoModeApplied = useRef<boolean | null>(null);
 
-  // Demo mode tells one story with one source: preset the import to the single
-  // demo URL so every demo run starts identically.
+  // Demo mode presets the import to the bundled dataset file so every demo run
+  // starts identically. It is a real file shipped with the app, not a URL: demo
+  // mode never fetches anything.
   //
   // Leaving demo mode MUST clear those values again. Without the reset the live
-  // form stays armed with the demo AWS URL — editable, and pointed at the real
+  // form stays armed with the demo dataset — editable, and pointed at the real
   // staging endpoint — so one click would POST a demo payload to ServiceNow.
   // The `referencesDemoRun` guard in the transport does not cover this: the
-  // body carries the source URL, not the demo run id.
+  // body carries the source name, not the demo run id.
   //
   // Deferred a tick to satisfy the set-state-in-effect lint rule, matching the
   // dashboard's restore pattern.
@@ -66,10 +67,10 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
     }
     const timer = window.setTimeout(() => {
       demoModeApplied.current = demoMode;
-      setMode(demoMode ? "url" : "file");
-      setSourceUrl(demoMode ? DEMO_SOURCE_URL : "");
+      setMode("file");
+      setSourceUrl("");
       setSourceName(demoMode ? DEMO_SOURCE_NAME : "External company dataset");
-      setRunName(demoMode ? "AWS-IPRANGES-DEMO" : `MIG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`);
+      setRunName(demoMode ? "CONTOSO-CONSOLIDATION" : `MIG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`);
       setFile(null);
       setPasteValue("");
       setPreviewRows([]);
@@ -284,9 +285,12 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
     }
   }
 
+  // Demo mode ships its dataset with the app, so the file door is already
+  // satisfied. Gated on demoMode: the live form still requires a real file.
+  const demoDatasetAttached = demoMode && mode === "file" && !file;
   const canStage =
     Boolean(sourceName.trim() && runName.trim()) &&
-    ((mode === "file" && Boolean(file) && !parseError) ||
+    ((mode === "file" && (Boolean(file) || demoDatasetAttached) && !parseError) ||
       (mode === "url" && Boolean(sourceUrl.trim())) ||
       (mode === "paste" && Boolean(pasteValue.trim()) && !parseError));
 
@@ -331,7 +335,14 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
             <label><span>RUN NAME</span><input value={runName} onChange={event => setRunName(event.target.value)} placeholder="Example: MIG-20260716" /></label>
           </div>
 
-          {mode === "file" && <div
+          {demoDatasetAttached && <div className="gateway-note dataset-attached">
+            <Icon name="database" size={15} />
+            <p><strong>{DEMO_SOURCE_NAME}</strong> · {DEMO_DATASET_FILE} · {DEMO_CI_COUNT.toLocaleString()} records
+              from {DEMO_SOURCE_SYSTEMS.length} source systems. Bundled with the app and read locally —
+              no feed is fetched and no ServiceNow request is made.</p>
+          </div>}
+
+          {mode === "file" && !demoDatasetAttached && <div
             className={`drop-zone ${dragging ? "dragging" : ""} ${file ? "has-file" : ""}`}
             onDragEnter={event => { event.preventDefault(); setDragging(true); }}
             onDragOver={event => event.preventDefault()}
