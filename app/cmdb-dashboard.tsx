@@ -1019,7 +1019,7 @@ function ComprehendView(props: {
     : apiState === "connecting" ? "Loading ServiceNow run"
     // Demo mode reaches apiState "live" because the simulated transport always
     // answers, so it must be excluded before claiming a live backend.
-    : apiState === "live" ? (demoFallback ? "Demo snapshot" : "Live backend connected")
+    : apiState === "live" ? (demoMode ? "Demo snapshot" : "Live backend connected")
     : apiState === "partial" ? "Partial backend data"
     : apiState === "error" ? "ServiceNow run unavailable"
     : "Demo snapshot";
@@ -1097,8 +1097,8 @@ function ComprehendView(props: {
     </section>
 
     <section className="visual-grid">
-      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{demoFallback ? (cisLive ? `${allCis.length.toLocaleString()} SIMULATED RECORDS` : "DEMO FLOW") : cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
-      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" && !demoFallback ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? (demoFallback ? `${proposedEdgeLabel} · SIMULATED` : proposedEdgeLabel) : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
+      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{demoMode && cisLive ? `${allCis.length.toLocaleString()} SIMULATED RECORDS` : cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
+      <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" && !demoMode ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? (demoMode ? `${proposedEdgeLabel} · SIMULATED` : proposedEdgeLabel) : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
     </section>
 
     <section className="panel table-panel">
@@ -1107,7 +1107,7 @@ function ComprehendView(props: {
         {cis.map(ci => <tr key={ci.id} onClick={() => setSelectedCi(ci)}><td><div className="ci-cell"><span className={`ci-icon status-${ci.status}`}><Icon name="database" size={15} /></span><div><strong>{ci.name}</strong><small>{ci.id} · {ci.ip}</small></div></div></td><td>{ci.className}</td><td><span className="source-name">{ci.source}</span></td><td><OperationPill value={ci.operation} /></td><td><Confidence value={ci.confidence} /></td><td><div className="health-cell"><span>{ci.health}</span><i><b style={{ width: `${ci.health}%` }} /></i></div></td><td><button className="row-arrow" aria-label={`Inspect ${ci.name}`} onClick={() => setSelectedCi(ci)}><Icon name="arrow" size={16} /></button></td></tr>)}
         {!cis.length && <tr><td colSpan={7} className="empty-state">No configuration items match this view.</td></tr>}
       </tbody></table></div>
-      <div className="table-footer"><span>{cis.length} shown · {demoFallback ? "Simulated snapshot — no ServiceNow request was made" : cisLive ? "Live ServiceNow staged data" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
+      <div className="table-footer"><span>{cis.length} shown · {demoMode ? "Simulated snapshot — no ServiceNow request was made" : cisLive ? "Live ServiceNow staged data" : demoFallback ? "Demo snapshot" : "ServiceNow staged data unavailable"}</span><span>No CMDB write occurs before <strong>IRE</strong></span></div>
     </section>
   </div>;
 }

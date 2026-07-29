@@ -8,10 +8,10 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mon
 
 export const metadata: Metadata = {
   title: {
-    default: "CMDB Modernization Control Plane",
-    template: "%s | CMDB Modernization Control Plane",
+    default: "Keystone",
+    template: "%s | Keystone",
   },
-  description: "Comprehend, prioritize, and remediate CMDB data through an IRE-governed pipeline.",
+  description: "A governed ServiceNow CMDB migration control plane powered by evidence, human approval and IRE verification.",
   icons: { icon: "/favicon.svg" },
 };
 
