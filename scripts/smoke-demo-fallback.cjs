@@ -261,9 +261,66 @@ async function main() {
     }
   });
 
-  check("queue rows carry the demo_fallback source marker", () => {
-    assert.ok(queue.fallbackCount > 0, "no queue item is marked demo_fallback");
+  check("every staged record is committable, not just the packet cohort", () => {
+    // "Commit this CI to ServiceNow" is gated on `approvable`, which needs BOTH
+    // finding.id and review.id on the selected queue item. A record without a
+    // finding can be simulated but never committed, and the button gives no
+    // hint why — so every record must carry both.
+    const missing = queue.items.filter(item => !item.finding?.id || !item.review?.id);
+    assert.deepEqual(missing.map(item => item.ci.name), [],
+      "these records could never enable the Commit button");
+    // `demo_fallback` means "no backing records at all". Now that every row has
+    // a real finding and review decision, servicenow_records is the honest
+    // source and fallbackCount is correctly zero.
+    assert.equal(queue.fallbackCount, 0);
+    assert.equal(queue.liveBackedCount, queue.items.length,
+      "every row should be backed by findings/reviews evidence");
   });
+
+  // --- "Commit this CI to ServiceNow" must actually be reachable ------------
+  // The button is gated on `approvable`:
+  //   lifecycle === "simulated_pending_approval"
+  //   && simulationCorrelation && simulationFingerprint
+  //   && finding.id && review.id
+  // Any record failing one of those can be simulated but never committed, and
+  // the UI gives no hint why. This walks a real record of every AWS service
+  // through simulate and asserts each clause independently.
+  {
+    resetDemoWriteState();
+    const postJson = (url, payload) => readJson(url, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const unreachable = [];
+    for (const service of fixture.DEMO_SERVICES) {
+      const seed = fixture.demoCiSeeds.find(s => s.service === service && s.status === "live");
+      if (!seed) continue;
+      const body = {
+        migration_run_id: fixture.DEMO_RUN_ID,
+        staged_ci_id: seed.sysId,
+        correlation_id: `ks-gate-${seed.index}`,
+        idempotency_key: `keystone:gate:${seed.index}`,
+      };
+      const simulated = (await postJson("/api/cmdb/ire/simulate", body)).body;
+      const workbenchQueue = deriveRemediationWorkQueue({
+        cis, timeline, findings, reviews,
+        ireRecords: { [seed.sysId]: { simulation: simulated } },
+      });
+      const item = workbenchQueue.items.find(entry => entry.id === seed.sysId);
+      const approvable = item.lifecycle === "simulated_pending_approval"
+        && Boolean(item.simulationCorrelation && item.simulationFingerprint
+          && item.finding?.id && item.review?.id);
+      if (!approvable) {
+        unreachable.push(`${seed.name} [${service}] lifecycle=${item.lifecycle} ` +
+          `corr=${Boolean(item.simulationCorrelation)} fp=${Boolean(item.simulationFingerprint)} ` +
+          `finding=${Boolean(item.finding?.id)} review=${Boolean(item.review?.id)}`);
+      }
+    }
+    check("Commit is reachable for a record of every AWS service after simulating", () => {
+      assert.deepEqual(unreachable, [],
+        "these records can be simulated but never committed");
+    });
+    resetDemoWriteState();
+  }
 
   // --- Playback coverage ----------------------------------------------------
   check("playback reaches every one of the seven workflow nodes", () => {

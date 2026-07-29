@@ -390,33 +390,49 @@ export const demoPacketCohort: DemoCiSeed[] = demoCiSeeds.filter(
 
 const packetCohortIds = new Set(demoPacketCohort.map(seed => seed.index));
 
-export const demoFindingSeeds: DemoFindingSeed[] = demoCiSeeds
-  .filter(seed => seed.status !== "live" || packetCohortIds.has(seed.index))
-  .map(seed => {
-    const duplicate = seed.status === "live";
-    // One approved and one rejected decision so `ready_to_execute` and
-    // `blocked` are both populated instead of every row landing in one bucket.
-    const decision: DemoFindingSeed["decision"] =
-      seed.index === 3 ? "rejected"
-      : seed.index === 24 ? "approved"
-      : "deferred";
-    return {
-      ciIndex: seed.index,
-      type: duplicate ? "duplicate_candidate" : seed.status === "incomplete" ? "incomplete_identity" : "class_mismatch",
-      severity: duplicate ? "high" : seed.operation === "ERROR" ? "critical" : "high",
-      recommendation: duplicate
-        ? `Collapse ${seed.name} against its probable duplicate before publishing.`
-        : seed.status === "incomplete"
-          ? `Supply a serial number or FQDN for ${seed.name} so IRE can establish identity.`
-          : `Confirm the proposed class ${seed.className} for ${seed.name} before IRE simulation.`,
-      decision,
-      rationale: decision === "approved"
-        ? "Identity evidence is sufficient; approved for governed execution."
-        : decision === "rejected"
-          ? "Proposed class conflicts with the authoritative source. Returned to the source owner."
-          : "Held for human authorization through the bounded approval packet.",
-    } satisfies DemoFindingSeed;
-  });
+/**
+ * Every staged CI gets a finding and a review decision — not just the held
+ * records and the packet cohort.
+ *
+ * This is load-bearing for the Remediate workbench, not cosmetic. "Commit this
+ * CI to ServiceNow" is gated on `approvable`, which requires BOTH
+ * `selectedQueueItem.finding?.id` and `.review?.id`. A record with no finding
+ * can be simulated but can never be committed, so the button sits permanently
+ * greyed out with no way for the operator to discover why. Covering every
+ * record is also the truthful shape: Comprehend raises a finding for each
+ * record it proposes an action on.
+ */
+export const demoFindingSeeds: DemoFindingSeed[] = demoCiSeeds.map(seed => {
+  const duplicate = seed.status === "live" && packetCohortIds.has(seed.index);
+  // One approved and one rejected decision so `ready_to_execute` and
+  // `blocked` are both populated instead of every row landing in one bucket.
+  const decision: DemoFindingSeed["decision"] =
+    seed.index === 3 ? "rejected"
+    : seed.index === 24 ? "approved"
+    : "deferred";
+  const type = duplicate ? "duplicate_candidate"
+    : seed.status === "incomplete" ? "incomplete_identity"
+    : seed.status === "review" ? "class_mismatch"
+    : "reconciliation_candidate";
+  return {
+    ciIndex: seed.index,
+    type,
+    severity: seed.operation === "ERROR" ? "critical" : seed.status === "live" ? "medium" : "high",
+    recommendation: type === "duplicate_candidate"
+      ? `Collapse ${seed.name} against its overlapping range before publishing.`
+      : type === "incomplete_identity"
+        ? `Supply a network border group or VPC identifier for ${seed.name} so IRE can establish identity.`
+        : type === "class_mismatch"
+          ? `Confirm the proposed class ${seed.className} for ${seed.name} before IRE simulation.`
+          : `Reconcile ${seed.name} into the CMDB as ${seed.operation} once its simulation is approved.`,
+    decision,
+    rationale: decision === "approved"
+      ? "Identity evidence is sufficient; approved for governed execution."
+      : decision === "rejected"
+        ? "Proposed class conflicts with the authoritative source. Returned to the source owner."
+        : "Held for human authorization through the bounded approval packet.",
+  } satisfies DemoFindingSeed;
+});
 
 export function demoFindingsPayload() {
   return {
