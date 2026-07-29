@@ -1,6 +1,13 @@
 // The simulated migration run served while demo mode is on.
 //
-// Everything here is emitted in the *raw* ServiceNow wire shape and then passed
+// The demo tells one story with one source: every demo import comes from the
+// single public URL in `demo-source-snapshot.ts` (AWS ip-ranges.json), resolved
+// from a frozen snapshot and transformed by the repository's *real*
+// `aws-ip-ranges` source adapter. The staged CIs below are therefore exactly
+// what a genuine AWS import would stage — same names, same class, same source
+// identity — with zero network dependency.
+//
+// Everything is then emitted in the *raw* ServiceNow wire shape and passed
 // through the real `normalizeComprehend*` adapters, so demo mode exercises the
 // production normalization path rather than bypassing it. If an adapter changes,
 // the demo changes with it.
@@ -10,9 +17,13 @@
 //      identically on every load, so screenshots and smoke assertions are stable.
 //   2. Structurally valid. The frontend validates its own identifiers before any
 //      governed action — 32-hex for run/staged-CI/finding ids, 64-hex uppercase
-//      for simulation fingerprints. The literal strings from `cmdb-data.ts`
-//      ("CI-00482") would fail every one of those guards, so ids are minted here
-//      as real hex that is still obviously fake at a glance.
+//      for simulation fingerprints — so ids are minted here as real hex that is
+//      still obviously fake at a glance.
+
+import { getSourceAdapter } from "./source-adapters";
+import { DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL, demoSourceSnapshot } from "./demo-source-snapshot";
+
+export { DEMO_SERVICES, DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./demo-source-snapshot";
 
 const HEX_NAMESPACE = "deadbeefcafef00d";
 
@@ -41,7 +52,7 @@ export function isDemoRunId(runId: string | undefined | null): boolean {
   return typeof runId === "string" && runId.toLowerCase() === DEMO_RUN_ID;
 }
 export const DEMO_RUN_NUMBER = "DWR-DEMO-0001";
-export const DEMO_RUN_LABEL = "Baxter estate consolidation (demo)";
+export const DEMO_RUN_LABEL = "AWS IP Ranges estate (demo)";
 /** Terminal so pipeline polling stops, but outside RUN_STATES_BLOCKING_IRE so Remediate stays reachable. */
 export const DEMO_RUN_STATE = "simulated";
 
@@ -57,46 +68,66 @@ export const demoTargetCiId = (index: number) => demoSysId("b", index);
 
 type DemoOperation = "INSERT" | "UPDATE" | "NO_CHANGE" | "INSERT_AS_INCOMPLETE" | "REVIEW" | "ERROR";
 
-type Archetype = {
-  prefix: string;
-  /** Human-readable label shown in the UI. */
-  className: string;
-  /**
-   * The real CMDB table. Structured ledger evidence carries table names, not
-   * display labels — `terminal-outcomes.ts` validates them against
-   * /^[a-z][a-z0-9_]{2,79}$/ before a verified outcome will correlate.
-   */
-  table: string;
-  source: string;
-  subnet: string;
-  /**
-   * The outcome family this class reconciles to. Driving the operation from the
-   * archetype rather than the row index is what makes an approval packet
-   * possible: `planApprovalPacket` only accepts a *homogeneous* class +
-   * operation-family cohort, so a per-index operation cycle would fragment
-   * every class into groups of one or two.
-   */
-  family: "INSERT" | "UPDATE" | "NO_CHANGE";
-};
-
-// Eight archetypes across six waves gives 48 records — six per class, enough
-// for a realistic bounded packet (max 100, but a handful reads better on screen).
-const ARCHETYPES: Archetype[] = [
-  { prefix: "pay-gw-lnx", className: "Linux Server", table: "cmdb_ci_linux_server", source: "Baxter Inventory", subnet: "10.42.18", family: "UPDATE" },
-  { prefix: "payments-db", className: "Oracle Database", table: "cmdb_ci_db_ora_instance", source: "Legacy CMDB", subnet: "10.42.21", family: "NO_CHANGE" },
-  { prefix: "edge-lb-prod", className: "Load Balancer", table: "cmdb_ci_lb", source: "NetBox", subnet: "10.42.9", family: "INSERT" },
-  { prefix: "sap-app-eu", className: "Application Server", table: "cmdb_ci_app_server", source: "Spreadsheet", subnet: "10.51.6", family: "INSERT" },
-  { prefix: "fileshare-nyc", className: "Windows Server", table: "cmdb_ci_win_server", source: "SCCM", subnet: "10.60.2", family: "UPDATE" },
-  { prefix: "warehouse-esx", className: "ESX Server", table: "cmdb_ci_esx_server", source: "vCenter Export", subnet: "10.71.11", family: "INSERT" },
-  { prefix: "analytics-pg", className: "PostgreSQL Instance", table: "cmdb_ci_db_postgresql_instance", source: "Spreadsheet", subnet: "10.51.19", family: "NO_CHANGE" },
-  { prefix: "core-switch", className: "Network Switch", table: "cmdb_ci_ip_switch", source: "vCenter Export", subnet: "10.10.1", family: "UPDATE" },
-];
-
-export const DEMO_CI_COUNT = 48;
+/**
+ * Human-readable class label and the real CMDB table for every demo record.
+ * The `aws-ip-ranges` adapter proposes `cmdb_ci_ip_network` for each prefix,
+ * so the whole run is one class — which also makes the bounded-approval-packet
+ * homogeneity requirement trivial to satisfy. Structured ledger evidence must
+ * carry the *table* name, not the display label — `terminal-outcomes.ts`
+ * validates it against /^[a-z][a-z0-9_]{2,79}$/ before a verified outcome will
+ * correlate.
+ */
+export const DEMO_CLASS_LABEL = "IP Network";
+export const DEMO_CLASS_TABLE = "cmdb_ci_ip_network";
 
 /**
- * The archetype whose whole cohort is clean and homogeneous — this is what the
- * simulated approval packet is built from.
+ * The IRE outcome family each AWS service's prefixes reconcile to. Driving the
+ * operation from the service rather than the row index is what makes an
+ * approval packet possible: `planApprovalPacket` only accepts a homogeneous
+ * class + operation-family cohort, so a per-index cycle would fragment the
+ * cohort into groups of one or two. Order matches `DEMO_SERVICES` — the
+ * snapshot cycles services, so `index % 8` is the service.
+ */
+const SERVICE_FAMILIES: Array<"INSERT" | "UPDATE" | "NO_CHANGE"> = [
+  "UPDATE",    // EC2 — matched existing network CIs
+  "NO_CHANGE", // S3 — already current
+  "INSERT",    // CLOUDFRONT — new to the CMDB
+  "INSERT",    // API_GATEWAY
+  "UPDATE",    // DYNAMODB
+  "INSERT",    // ROUTE53_HEALTHCHECKS
+  "NO_CHANGE", // AMAZON
+  "UPDATE",    // GLOBALACCELERATOR
+];
+
+/**
+ * The staged rows a real AWS import would produce: the actual repository
+ * adapter run over the frozen snapshot. Names, source identities, and IPs all
+ * come from here — nothing is invented in parallel to the real code path.
+ *
+ * This runs at module scope, and this module is imported by the live dashboard,
+ * so a throw here would blank the whole app rather than just demo mode. The
+ * adapter *does* throw (SourceAdapterError) on a payload without a `prefixes`
+ * array, so an edit to the snapshot must never be able to take live mode down
+ * with it. Contained deliberately: a broken snapshot degrades demo mode to an
+ * empty run, which `smoke:demo-fallback` fails loudly on, while live mode is
+ * completely unaffected.
+ */
+const adapterRows = (() => {
+  try {
+    return getSourceAdapter("aws-ip-ranges")
+      .transform(demoSourceSnapshot, { sourceName: DEMO_SOURCE_NAME })
+      .cis;
+  } catch (error) {
+    console.error("Demo source snapshot failed the aws-ip-ranges adapter; demo mode will be empty.", error);
+    return [];
+  }
+})();
+
+export const DEMO_CI_COUNT = adapterRows.length;
+
+/**
+ * The service whose whole clean cohort is homogeneous — this is what the
+ * simulated approval packet is built from (EC2, index % 8 === 0).
  */
 const PACKET_ARCHETYPE_INDEX = 0;
 
@@ -104,8 +135,8 @@ const PACKET_ARCHETYPE_INDEX = 0;
  * A demo where every record sails through is a worse demo. These exceptions
  * deliberately keep the full outcome spread — held records, incomplete
  * identity, and one hard error — so the review queue, the Sankey, and the
- * blocked bucket all have something real to show. They are placed on
- * archetypes 3 and 7 so the packet cohort (archetype 0) stays clean.
+ * blocked bucket all have something real to show. They land on services 3 and
+ * 7 so the packet cohort (service 0, EC2) stays clean.
  */
 function operationFor(index: number): DemoOperation {
   if (index === 43) return "ERROR";
@@ -113,7 +144,7 @@ function operationFor(index: number): DemoOperation {
   if (index % 16 === 7) return "INSERT_AS_INCOMPLETE";
   if (index % 16 === 11) return "REVIEW";
   if (index % 16 === 15) return "INSERT_AS_INCOMPLETE";
-  return ARCHETYPES[index % ARCHETYPES.length].family;
+  return SERVICE_FAMILIES[index % SERVICE_FAMILIES.length];
 }
 
 function confidenceFor(index: number, operation: DemoOperation): number {
@@ -123,10 +154,17 @@ function confidenceFor(index: number, operation: DemoOperation): number {
   return 0.91 + (index % 9) / 100;
 }
 
+/**
+ * Adapter-derived name, e.g. "aws-ec2-us-east-1-3.80.0.0/12".
+ *
+ * Index-safe on purpose: this is called at module scope while building the
+ * event seeds, so if `adapterRows` ever came back empty (a malformed snapshot,
+ * contained above) an unguarded lookup would throw right back out of module
+ * evaluation and blank the live app — defeating that containment entirely.
+ */
 function ciNameFor(index: number): string {
-  const archetype = ARCHETYPES[index % ARCHETYPES.length];
-  const ordinal = Math.floor(index / ARCHETYPES.length) + 1;
-  return `${archetype.prefix}-${String(ordinal).padStart(2, "0")}`;
+  const row = adapterRows[index];
+  return row?.name ?? row?.source_identifier ?? `aws-prefix-${index + 1}`;
 }
 
 /** Fixed base clock keeps timestamps stable across reloads. */
@@ -150,14 +188,19 @@ export type DemoCiSeed = {
   table: string;
   source: string;
   ip: string;
+  /** AWS service the prefix belongs to (EC2, S3, …). */
+  service: string;
+  /** AWS region the prefix is advertised from. */
+  region: string;
+  /** The adapter's native source record key, used as the source identity. */
+  sourceRecordId: string;
   operation: DemoOperation;
   confidence: number;
   /** live | review | incomplete, mirroring what the adapter will derive. */
   status: "live" | "review" | "incomplete";
 };
 
-export const demoCiSeeds: DemoCiSeed[] = Array.from({ length: DEMO_CI_COUNT }, (_unused, index) => {
-  const archetype = ARCHETYPES[index % ARCHETYPES.length];
+export const demoCiSeeds: DemoCiSeed[] = adapterRows.map((row, index) => {
   const operation = operationFor(index);
   const status = operation === "REVIEW" || operation === "ERROR"
     ? "review"
@@ -168,10 +211,13 @@ export const demoCiSeeds: DemoCiSeed[] = Array.from({ length: DEMO_CI_COUNT }, (
     index,
     sysId: demoStagedCiId(index),
     name: ciNameFor(index),
-    className: archetype.className,
-    table: archetype.table,
-    source: archetype.source,
-    ip: `${archetype.subnet}.${(index * 7) % 240 + 3}`,
+    className: DEMO_CLASS_LABEL,
+    table: DEMO_CLASS_TABLE,
+    source: DEMO_SOURCE_NAME,
+    ip: row.ip_address ?? ciNameFor(index),
+    service: DEMO_SERVICES[index % DEMO_SERVICES.length],
+    region: row.environment ?? "unknown",
+    sourceRecordId: row.source_record_id ?? row.source_identifier ?? `aws-prefix-${index + 1}`,
     operation,
     confidence: Number(confidenceFor(index, operation).toFixed(2)),
     status,
@@ -183,7 +229,7 @@ const clearedCount = demoCiSeeds.filter(seed => seed.status === "live").length;
 const heldCount = DEMO_CI_COUNT - clearedCount;
 const incompleteCount = demoCiSeeds.filter(seed => seed.status === "incomplete").length;
 const duplicateCandidateCount = demoCiSeeds.filter(
-  seed => seed.status === "live" && seed.index % ARCHETYPES.length === PACKET_ARCHETYPE_INDEX,
+  seed => seed.status === "live" && seed.index % DEMO_SERVICES.length === PACKET_ARCHETYPE_INDEX,
 ).length;
 
 export function demoCisPayload() {
@@ -205,7 +251,7 @@ export function demoCisPayload() {
         : {}),
       source_identity: {
         source_name: seed.source,
-        source_record_id: `SRC-${String(4800 + seed.index)}`,
+        source_record_id: seed.sourceRecordId,
       },
       sys_updated_on: clockAt(seed.index * 3),
     })),
@@ -229,17 +275,21 @@ type DemoEventSeed = {
  * keys off explicit `Action: <name>` tokens and event-type milestone keywords —
  * these details are written to hit those, not to read prettily.
  */
+// Orphan count is derived from the actual relationship pairs so the prose can
+// never contradict the graph beneath it.
+const relationshipTouched = new Set<number>();
+
 const EVENT_SEEDS: DemoEventSeed[] = [
-  { eventType: "ingested", actor: "Comprehend", detail: `Analysis session started for the Baxter estate consolidation batch. Seed data created from ${DEMO_CI_COUNT} fingerprinted source rows.` },
+  { eventType: "ingested", actor: "Comprehend", detail: `Analysis session started for the ${DEMO_SOURCE_NAME} batch imported from ${DEMO_SOURCE_URL}. Seed data created from ${DEMO_CI_COUNT} fingerprinted prefixes.` },
   { eventType: "record_staged", actor: "Router", detail: `Staged safely: ${DEMO_CI_COUNT} rows quarantined in the staging table. No CMDB access occurred.` },
-  { eventType: "analyzed", detail: `Action: get_run_stats | summary=Run stats collected for ${DEMO_CI_COUNT} staged CIs across ${new Set(ARCHETYPES.map(a => a.source)).size} source systems.` },
+  { eventType: "analyzed", detail: `Action: get_run_stats | summary=Run stats collected for ${DEMO_CI_COUNT} staged CIs from one source feed (${DEMO_SOURCE_NAME}).` },
   // Counts in ledger prose are interpolated from the actual seeds. Hard-coding
   // them lets the narrative drift out of step with the table beneath it, which a
   // viewer notices immediately.
-  { eventType: "analyzed", detail: `Action: scan_classes | summary=Class scan proposed ${new Set(ARCHETYPES.map(a => a.className)).size} distinct CMDB classes; ${clearedCount} of ${DEMO_CI_COUNT} records validated.` },
-  { eventType: "analyzed", detail: "Action: scan_attributes | summary=Attribute scan mapped 9 of 10 required attributes on average." },
-  { eventType: "analyzed", detail: `Action: scan_duplicates | summary=Duplicate scan flagged ${duplicateCandidateCount} probable pairs on serial and FQDN signals.` },
-  { eventType: "analyzed", detail: "Action: scan_orphans | summary=Orphan scan found 5 staged CIs with no proposed relationship." },
+  { eventType: "analyzed", detail: `Action: scan_classes | summary=Class scan proposed one CMDB class (${DEMO_CLASS_TABLE}); ${clearedCount} of ${DEMO_CI_COUNT} records validated.` },
+  { eventType: "analyzed", detail: "Action: scan_attributes | summary=Attribute scan mapped region, service, and border group for every prefix." },
+  { eventType: "analyzed", detail: `Action: scan_duplicates | summary=Duplicate scan flagged ${duplicateCandidateCount} overlapping ranges on CIDR containment signals.` },
+  { eventType: "analyzed", detail: `Action: scan_orphans | summary=Orphan scan found ORPHAN_COUNT staged CIs with no proposed relationship.` },
   { eventType: "analyzed", detail: `Action: apply_confidence_gate | summary=Confidence gate applied. ${clearedCount} records cleared the 50% deterministic threshold, ${DEMO_CI_COUNT - clearedCount} were held.` },
   { eventType: "analyzed", actor: "Mara", detail: "Observation: Mara reviewed the deterministic specialist output and accepted the confidence gate result without override." },
   { eventType: "simulated", actor: "IRE", detail: "IRE simulation prepared for the cleared cohort. Identification and reconciliation ran in proposal mode only.", recordName: ciNameFor(0) },
@@ -249,16 +299,26 @@ const EVENT_SEEDS: DemoEventSeed[] = [
   { eventType: "analyzed", detail: "Action: write_summary | summary=Executive summary written. Analysis completed and the decision trail is sealed." },
 ];
 
-export function demoTimelinePayload() {
+/**
+ * How much of the ledger each pipeline stage exposes while the simulated run
+ * progresses after an import:
+ *   stage 0 — intake + staging      (events 0-1)
+ *   stage 1 — deterministic scans   (events 0-6)
+ *   stage 2 — gate + Mara review    (events 0-8)
+ *   stage 3 — IRE, Prioritize, seal (all events; run turns terminal)
+ */
+export const DEMO_STAGE_EVENT_COUNTS = [2, 7, 9, EVENT_SEEDS.length] as const;
+
+export function demoTimelinePayload(limit = EVENT_SEEDS.length) {
   return {
-    result: EVENT_SEEDS.map((seed, index) => ({
+    result: EVENT_SEEDS.slice(0, Math.max(0, limit)).map((seed, index) => ({
       sys_id: demoEventId(index + 1),
       sequence: index + 1,
       event_type: seed.eventType,
       ...(seed.actor ? { agent: seed.actor } : {}),
       ...(seed.recordName ? { staged_ci: { display_value: seed.recordName } } : {}),
       ...(seed.status ? { status: seed.status } : {}),
-      detail: seed.detail,
+      detail: seed.detail.replace("ORPHAN_COUNT", String(DEMO_CI_COUNT - relationshipTouched.size)),
       sys_created_on: clockAt(index * 4),
     })),
   };
@@ -270,18 +330,23 @@ export function demoTimelinePayload() {
 
 // The relationship graph only lays out the first seven CIs, so the edges are
 // concentrated there — otherwise the panel renders nodes with no lines.
+// Network-flavoured edge types: region membership, CIDR containment, routing.
 const RELATIONSHIP_PAIRS: Array<[number, number, string, number]> = [
-  [0, 1, "Depends on::Used by", 0.96],
+  [0, 1, "Peers with::Peers with", 0.96],
   [2, 0, "Routes to::Routed by", 0.92],
-  [3, 1, "Reads from::Read by", 0.78],
-  [5, 0, "Exchanges with::Exchanges with", 0.73],
-  [4, 3, "Supports::Supported by", 0.88],
-  [6, 1, "Depends on::Used by", 0.9],
-  [2, 6, "Routes to::Routed by", 0.85],
-  [8, 1, "Depends on::Used by", 0.81],
-  [9, 12, "Hosted on::Hosts", 0.77],
-  [7, 11, "Hosted on::Hosts", 0.83],
+  [3, 1, "Routes to::Routed by", 0.78],
+  [5, 0, "Monitors::Monitored by", 0.73],
+  [4, 3, "Peers with::Peers with", 0.88],
+  [6, 1, "Contains::Member of", 0.9],
+  [2, 6, "Member of::Contains", 0.85],
+  [8, 1, "Peers with::Peers with", 0.81],
+  [9, 12, "Contains::Member of", 0.77],
+  [7, 11, "Routes to::Routed by", 0.83],
 ];
+for (const [parent, child] of RELATIONSHIP_PAIRS) {
+  relationshipTouched.add(parent);
+  relationshipTouched.add(child);
+}
 
 export function demoRelationshipsPayload() {
   return {
@@ -320,7 +385,7 @@ type DemoFindingSeed = {
  * family. Exported so the transport and the smoke test agree on it.
  */
 export const demoPacketCohort: DemoCiSeed[] = demoCiSeeds.filter(
-  seed => seed.status === "live" && seed.index % ARCHETYPES.length === PACKET_ARCHETYPE_INDEX,
+  seed => seed.status === "live" && seed.index % DEMO_SERVICES.length === PACKET_ARCHETYPE_INDEX,
 );
 
 const packetCohortIds = new Set(demoPacketCohort.map(seed => seed.index));
@@ -406,13 +471,13 @@ export function demoHealthPayload() {
       stale_records: 11,
       fixes: [
         {
-          id: "FIX-01", rank: 1, title: "Collapse probable server duplicates",
-          description: `${duplicateCandidateCount} CI pairs share serial, FQDN, or cloud identity signals.`,
+          id: "FIX-01", rank: 1, title: "Collapse overlapping duplicate ranges",
+          description: `${duplicateCandidateCount} CIDR ranges overlap on containment signals and are probable duplicates.`,
           impact: 6, affected: duplicateCandidateCount * 2, tool: "Scout", severity: "critical",
         },
         {
           id: "FIX-02", rank: 2, title: "Complete missing ownership",
-          description: "Production CIs with no support group or business owner cannot be routed on incident.",
+          description: "Network CIs with no support group or business owner cannot be routed on incident.",
           impact: 4, affected: 14, tool: "Guard", severity: "high",
         },
         {
@@ -421,8 +486,8 @@ export function demoHealthPayload() {
           impact: 3, affected: incompleteCount, tool: "Guard", severity: "high",
         },
         {
-          id: "FIX-04", rank: 4, title: "Refresh stale infrastructure",
-          description: "Some CIs have not been observed in more than 90 days.",
+          id: "FIX-04", rank: 4, title: "Refresh stale network records",
+          description: "Some prefixes have not been observed in the source feed for more than 90 days.",
           impact: 2, affected: 11, tool: "Scout", severity: "medium",
         },
       ],
@@ -434,13 +499,13 @@ export function demoHealthPayload() {
 // Run record, instance, and AI usage
 // ---------------------------------------------------------------------------
 
-export function demoRunPayload() {
+export function demoRunPayload(state: string = DEMO_RUN_STATE) {
   return {
     result: {
       sys_id: DEMO_RUN_ID,
       number: DEMO_RUN_NUMBER,
-      state: DEMO_RUN_STATE,
-      source_system: "Baxter Inventory",
+      state,
+      source_system: "ip-ranges.amazonaws.com",
       started: clockAt(0),
       summary: DEMO_RUN_LABEL,
     },

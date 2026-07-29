@@ -382,7 +382,10 @@ export function CmdbDashboard() {
         setActiveRunId(DEMO_RUN_ID);
         setActiveRunLabel(DEMO_RUN_LABEL);
         setRunDraft(DEMO_RUN_ID);
-        setSection(current => current === "import" ? "workspace" : current);
+        // The demo story starts at its one import source: land on the Import
+        // page with the demo URL preset, so staging it replays the whole
+        // pipeline start to end. Every other page is already populated.
+        setSection("import");
         return;
       }
       const restored = runBeforeDemo.current;

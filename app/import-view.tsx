@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useDemoMode } from "./components/DemoToggle";
+import { DEMO_SOURCE_NAME, DEMO_SOURCE_URL } from "./lib/cmdb/demo-fixture";
 import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
@@ -41,6 +43,43 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
   const [statusMessage, setStatusMessage] = useState("");
   const [stagedRun, setStagedRun] = useState<ImportedRun | undefined>();
   const [adapterChoice, setAdapterChoice] = useState<SourceAdapterId | "auto">("auto");
+  const demoMode = useDemoMode();
+  const demoModeApplied = useRef<boolean | null>(null);
+
+  // Demo mode tells one story with one source: preset the import to the single
+  // demo URL so every demo run starts identically.
+  //
+  // Leaving demo mode MUST clear those values again. Without the reset the live
+  // form stays armed with the demo AWS URL — editable, and pointed at the real
+  // staging endpoint — so one click would POST a demo payload to ServiceNow.
+  // The `referencesDemoRun` guard in the transport does not cover this: the
+  // body carries the source URL, not the demo run id.
+  //
+  // Deferred a tick to satisfy the set-state-in-effect lint rule, matching the
+  // dashboard's restore pattern.
+  useEffect(() => {
+    if (demoModeApplied.current === demoMode) return;
+    const first = demoModeApplied.current === null;
+    if (!demoMode && first) {
+      demoModeApplied.current = demoMode;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      demoModeApplied.current = demoMode;
+      setMode(demoMode ? "url" : "file");
+      setSourceUrl(demoMode ? DEMO_SOURCE_URL : "");
+      setSourceName(demoMode ? DEMO_SOURCE_NAME : "External company dataset");
+      setRunName(demoMode ? "AWS-IPRANGES-DEMO" : `MIG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`);
+      setFile(null);
+      setPasteValue("");
+      setPreviewRows([]);
+      setParseError("");
+      setStatus("idle");
+      setStatusMessage("");
+      setStagedRun(undefined);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [demoMode]);
 
   // Auto-detect adapter from pasted payload — never guess without user consent
   // (they can still override the dropdown). Only meaningful for JSON pastes.
@@ -326,8 +365,10 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
           </div>}
 
           {mode === "url" && <div className="url-intake">
-            <label><span>PUBLIC DATA URL</span><div><Icon name="link" size={16} /><input value={sourceUrl} onChange={event => setSourceUrl(event.target.value)} placeholder="https://company.example/api/inventory" /></div></label>
-            <div className="gateway-note"><Icon name="shield" size={15} /><p>The browser never writes this response to CMDB. Your configured staging service fetches and stores the raw source.</p></div>
+            <label><span>PUBLIC DATA URL</span><div><Icon name="link" size={16} /><input value={sourceUrl} readOnly={demoMode} onChange={event => setSourceUrl(event.target.value)} placeholder="https://company.example/api/inventory" /></div></label>
+            {demoMode
+              ? <div className="gateway-note"><Icon name="shield" size={15} /><p>Demo mode always imports this one URL, answered from a frozen snapshot of the feed. Nothing leaves the browser and ServiceNow is never contacted.</p></div>
+              : <div className="gateway-note"><Icon name="shield" size={15} /><p>The browser never writes this response to CMDB. Your configured staging service fetches and stores the raw source.</p></div>}
           </div>}
 
           {mode === "paste" && <div className="paste-intake">

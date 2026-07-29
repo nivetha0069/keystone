@@ -17,6 +17,9 @@ import { isDemoMode } from "./demo-mode";
 import {
   DEMO_CI_COUNT,
   DEMO_RUN_ID,
+  DEMO_RUN_STATE,
+  DEMO_SOURCE_URL,
+  DEMO_STAGE_EVENT_COUNTS,
   DEMO_RUN_LABEL,
   DEMO_RUN_NUMBER,
   demoCiSeeds,
@@ -84,10 +87,22 @@ const DEMO_PACKET_ID = "ks-packet:demo-0001";
 const DEMO_PACKET_HASH = "DEADBEEFCAFEF00D".repeat(4);
 const DEMO_CAMPAIGN_ID = "ks-campaign:demo-0001";
 const DEMO_MANIFEST_ID = "ks-manifest:demo-0001";
-const DEMO_WORK_GROUP = "Linux Server|UPDATE";
-const DEMO_GROUP_TITLE = "Linux servers reconciling to an existing CI";
-const DEMO_CLASS_NAME = demoPacketCohort[0]?.className ?? "Linux Server";
+const DEMO_WORK_GROUP = "IP Network|UPDATE";
+const DEMO_GROUP_TITLE = "EC2 prefixes reconciling to existing network CIs";
+const DEMO_CLASS_NAME = demoPacketCohort[0]?.className ?? "IP Network";
 const DEMO_OPERATION_FAMILY = "UPDATE";
+
+/**
+ * Pipeline progression for the simulated run. Importing from the demo source
+ * URL resets the run to stage 0; every subsequent `/timeline` read serves the
+ * current stage's slice of the ledger and then advances one stage, so the
+ * app's own 8-second polling walks the run through intake → scans → gate →
+ * IRE/seal without any UI change. `DONE_STAGE` is one past the last content
+ * stage: the run only reports its terminal state after the *full* ledger has
+ * been served, otherwise polling would stop with a half-told story.
+ */
+const DONE_STAGE = DEMO_STAGE_EVENT_COUNTS.length; // 4
+const contentStageOf = (stage: number) => Math.min(stage, DEMO_STAGE_EVENT_COUNTS.length - 1);
 
 // ---------------------------------------------------------------------------
 // In-memory simulated write state
@@ -110,7 +125,13 @@ type DemoWriteState = {
   campaignSimulated: boolean;
   campaignApproved: boolean;
   proposals: Set<string>;
-  importedRows: number;
+  /**
+   * Pipeline progression stage, 0..DONE_STAGE. Entering demo mode starts at
+   * DONE_STAGE (fully analyzed) so no surface ever looks stuck; importing from
+   * the demo source URL rewinds to 0 so the operator can watch the whole
+   * pipeline run start to end on the app's own polling.
+   */
+  stage: number;
   /**
    * Ledger events produced by simulated writes, appended to what `/timeline`
    * returns. This is what makes demo mode complete end to end: the Agent
@@ -123,7 +144,7 @@ type DemoWriteState = {
   verified: Set<string>;
 };
 
-function freshState(): DemoWriteState {
+function freshState(stage: number = DONE_STAGE): DemoWriteState {
   return {
     ire: new Map(),
     packetPhase: "none",
@@ -131,7 +152,7 @@ function freshState(): DemoWriteState {
     campaignSimulated: false,
     campaignApproved: false,
     proposals: new Set(),
-    importedRows: 0,
+    stage,
     ledger: [],
     verified: new Set(),
   };
@@ -156,6 +177,7 @@ export function demoWriteSnapshot() {
     campaignSimulated: state.campaignSimulated,
     campaignApproved: state.campaignApproved,
     proposalCount: state.proposals.size,
+    stage: state.stage,
   };
 }
 
@@ -323,20 +345,36 @@ function markVerified(seed: DemoCiSeed): void {
   appendVerifiedChain(seed);
 }
 
-/** Base fixture ledger plus everything the simulated writes have produced. */
+/**
+ * The current stage's slice of the fixture ledger, plus everything the
+ * simulated writes have produced. Write evidence only ever exists once the run
+ * is terminal (the UI locks IRE until then), so appending it at DONE_STAGE
+ * cannot leak post-run events into an in-progress replay.
+ */
 function timelinePayloadWithWrites() {
-  const base = demoTimelinePayload().result;
-  return { result: [...base, ...state.ledger] };
+  const base = demoTimelinePayload(DEMO_STAGE_EVENT_COUNTS[contentStageOf(state.stage)]).result;
+  return { result: state.stage >= DONE_STAGE ? [...base, ...state.ledger] : base };
 }
 
+/**
+ * Stage-gated reads. `/cis` is always full (records exist from the moment they
+ * are staged); scan output, gate output, and the terminal run state appear in
+ * pipeline order as `/timeline` reads advance the stage. Gates compare against
+ * the post-advance stage because within one polling batch the timeline handler
+ * runs before these do.
+ */
 const READ_PAYLOADS: Record<string, () => unknown> = {
   cis: demoCisPayload,
-  timeline: timelinePayloadWithWrites,
-  relationships: demoRelationshipsPayload,
-  health: demoHealthPayload,
-  findings: demoFindingsPayload,
-  reviews: demoReviewsPayload,
-  run: demoRunPayload,
+  timeline: () => {
+    const payload = timelinePayloadWithWrites();
+    if (state.stage < DONE_STAGE) state.stage += 1;
+    return payload;
+  },
+  relationships: () => (state.stage >= 2 ? demoRelationshipsPayload() : { result: [] }),
+  findings: () => (state.stage >= 3 ? demoFindingsPayload() : { result: [] }),
+  reviews: () => (state.stage >= 3 ? demoReviewsPayload() : { result: [] }),
+  health: () => (state.stage >= 3 ? demoHealthPayload() : { result: { ci_count: DEMO_CI_COUNT } }),
+  run: () => demoRunPayload(state.stage >= DONE_STAGE ? DEMO_RUN_STATE : "analyzing"),
 };
 
 /**
@@ -378,9 +416,15 @@ export async function cmdbFetch(input: RequestInfo | URL, init?: RequestInit): P
   }
 
   if (segments[0] === "comprehend") {
-    // The demo run is already analyzed, so mirror ServiceNow's "nothing to do"
-    // answer rather than pretending a fresh pipeline started.
-    return json({ result: { success: true, already_completed: true, migration_run_id: DEMO_RUN_ID } });
+    // While the simulated pipeline is progressing, mirror ServiceNow's
+    // "already queued" answer; once terminal, its "nothing to do" answer.
+    return json({
+      result: {
+        success: true,
+        ...(state.stage >= DONE_STAGE ? { already_completed: true } : { already_running: true }),
+        migration_run_id: DEMO_RUN_ID,
+      },
+    });
   }
   if (segments[0] === "import") return json(demoImportResponse(body));
   if (segments[0] === "remediate") return demoRemediate(body);
@@ -395,18 +439,12 @@ export async function cmdbFetch(input: RequestInfo | URL, init?: RequestInit): P
 // ---------------------------------------------------------------------------
 
 function demoImportResponse(body: Record<string, unknown>) {
-  // Prefer the real row count from the pasted/uploaded payload so the demo
-  // reflects what the operator actually supplied; fall back to the fixture size.
-  const payload = body.payload;
-  let rows = 0;
-  if (Array.isArray(payload)) rows = payload.length;
-  else if (payload && typeof payload === "object") {
-    const records = (payload as Record<string, unknown>).records;
-    if (Array.isArray(records)) rows = records.length;
-  } else if (typeof payload === "string") {
-    rows = payload.split(/\r?\n/).filter(line => line.trim()).length - 1;
-  }
-  state.importedRows = rows > 0 ? rows : DEMO_CI_COUNT;
+  // One source, one outcome: whatever the operator supplied, the demo stages
+  // the frozen AWS IP Ranges snapshot — the same count every single time —
+  // and rewinds the simulated pipeline to stage 0 so the run can be watched
+  // progressing start to end. The rewind also discards any prior simulated
+  // IRE/packet evidence, exactly as a fresh run would.
+  state = freshState(0);
 
   return {
     result: {
@@ -414,7 +452,8 @@ function demoImportResponse(body: Record<string, unknown>) {
       migration_run_id: DEMO_RUN_ID,
       run: { sys_id: DEMO_RUN_ID, number: DEMO_RUN_NUMBER, display_value: DEMO_RUN_LABEL },
       run_name: typeof body.runName === "string" && body.runName.trim() ? body.runName.trim() : DEMO_RUN_LABEL,
-      staged: state.importedRows,
+      source_url: DEMO_SOURCE_URL,
+      staged: DEMO_CI_COUNT,
       target: "staging",
       mode: "quarantine",
     },

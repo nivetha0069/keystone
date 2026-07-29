@@ -58,6 +58,9 @@ const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
 const { deriveCorrelatedVerifiedOutcomes } = require("../app/lib/cmdb/terminal-outcomes.ts");
 const { buildPlaybackTimeline, derivePlaybackNodeStates, PLAYBACK_NODES } = require("../app/lib/cmdb/playback.ts");
 const { isTerminalRunState } = require("../app/lib/cmdb/run-lifecycle.ts");
+// Lazy: demo-fixture re-exports from this module, so a top-level destructure
+// lands in the temporal dead zone while that chain is still initializing.
+const snapshot = () => require("../app/lib/cmdb/demo-source-snapshot.ts").demoSourceSnapshot;
 
 const SYS_ID_RE = /^[0-9a-f]{32}$/;
 const FINGERPRINT_RE = /^[0-9A-F]{64}$/;
@@ -119,6 +122,36 @@ async function main() {
     assert.equal(fixture.isDemoRunId("e0ac4df32b82871060aefba6b891bf5b"), false);
     assert.equal(fixture.isDemoRunId(""), false);
     assert.equal(fixture.isDemoRunId(undefined), false);
+  });
+
+  check("a broken snapshot can never take the live app down with it", () => {
+    // demo-fixture runs the adapter at module scope, and the live dashboard
+    // imports that module — so a throw there would blank the whole app, not
+    // just demo mode. The adapter throws on a payload without `prefixes`.
+    const source = fs.readFileSync(path.join(root, "app", "lib", "cmdb", "demo-fixture.ts"), "utf8");
+    const block = source.slice(source.indexOf("const adapterRows"), source.indexOf("export const DEMO_CI_COUNT"));
+    assert.ok(/try\s*\{/.test(block) && /catch/.test(block),
+      "the module-scope adapter run must be wrapped so a malformed snapshot cannot break live mode");
+    // And the happy path must still actually produce records.
+    assert.equal(fixture.demoCiSeeds.length, snapshot().prefixes.length,
+      "the adapter run produced no records — the fallback is masking a real failure");
+  });
+
+  check("leaving demo mode clears the presets off the live import form", () => {
+    // The demo preset fills the Import form with its one source URL. If the
+    // effect only ran when demoMode was true, toggling off would leave the LIVE
+    // form armed with that URL — editable, pointed at the real staging
+    // endpoint — and one click would POST a demo payload to ServiceNow. The
+    // transport's referencesDemoRun guard does not cover this case, because the
+    // body carries the source URL rather than the demo run id.
+    const view = fs.readFileSync(path.join(root, "app", "import-view.tsx"), "utf8");
+    const effect = view.slice(view.indexOf("const demoMode = useDemoMode()"), view.indexOf("const previewColumns"));
+    assert.ok(!/if\s*\(!demoMode\)\s*return;/.test(effect),
+      "the demo preset effect must not early-return on demoMode=false — it has to reset the form");
+    assert.ok(/setSourceUrl\(demoMode \? DEMO_SOURCE_URL : ""\)/.test(effect),
+      "leaving demo mode must clear the source URL back to empty");
+    assert.ok(/demoModeApplied/.test(effect),
+      "the effect must distinguish first mount from a real toggle so it does not clobber a live form on load");
   });
 
   check("every persistence site is guarded by run id, not the mode flag", () => {
@@ -393,14 +426,63 @@ async function main() {
     assert.equal(empty.body.code, "PACKET_EMPTY");
   });
 
-  // --- Import and proposal ------------------------------------------------
+  // --- One source, full start-to-end progression ---------------------------
+  const { getSourceAdapter } = require("../app/lib/cmdb/source-adapters.ts");
+
+  check("the demo source is the one AWS URL with a format-true snapshot", () => {
+    assert.equal(fixture.DEMO_SOURCE_URL, "https://ip-ranges.amazonaws.com/ip-ranges.json");
+    assert.equal(snapshot().prefixes.length, fixture.DEMO_CI_COUNT);
+    // The real repository adapter must recognise the snapshot as its own format
+    // and be the thing that produced every staged record's identity.
+    assert.equal(getSourceAdapter("aws-ip-ranges").detect(snapshot()), "high");
+    for (const seed of fixture.demoCiSeeds) {
+      assert.ok(seed.name.startsWith("aws-"), `name ${seed.name} is not adapter-derived`);
+    }
+  });
+
   const imported = await post("/api/cmdb/import", JSON.stringify({
-    sourceType: "paste", sourceName: "smoke", runName: "smoke run",
-    payload: { records: [{ name: "a" }, { name: "b" }, { name: "c" }] },
+    sourceType: "url", sourceName: "AWS IP Ranges", runName: "smoke run",
+    sourceUrl: fixture.DEMO_SOURCE_URL,
   }));
-  check("import returns a valid run sys_id and a non-zero staged count", () => {
+  check("import always stages the one frozen snapshot, identically every time", () => {
     assert.match(imported.body.result.migration_run_id, SYS_ID_RE);
-    assert.equal(imported.body.result.staged, 3);
+    assert.equal(imported.body.result.staged, fixture.DEMO_CI_COUNT);
+    assert.equal(imported.body.result.source_url, fixture.DEMO_SOURCE_URL);
+  });
+
+  // Import rewinds the simulated pipeline; timeline reads then advance it one
+  // stage at a time, exactly as the app's own polling would.
+  const timelineLength = async () =>
+    normalizeComprehendTimeline((await readJson("/api/cmdb/timeline")).body).length;
+  const runState = async () => normalizeMaraRun((await readJson("/api/cmdb/run")).body).state;
+  const findingsCount = async () =>
+    normalizeRemediationFindings((await readJson("/api/cmdb/findings")).body).length;
+
+  const preState = await runState();
+  const observedLengths = [];
+  for (let step = 0; step < fixture.DEMO_STAGE_EVENT_COUNTS.length; step++) {
+    observedLengths.push(await timelineLength());
+  }
+  const postState = await runState();
+
+  check("the pipeline visibly progresses start to end after an import", () => {
+    assert.equal(preState, "analyzing", "a fresh import must start with the run analyzing");
+    assert.deepEqual(observedLengths, [...fixture.DEMO_STAGE_EVENT_COUNTS],
+      "timeline reads must advance through the staged ledger slices");
+    assert.equal(postState, "simulated", "the run must turn terminal only after the full ledger was served");
+  });
+
+  await post("/api/cmdb/import", JSON.stringify({ sourceType: "url", sourceUrl: fixture.DEMO_SOURCE_URL }));
+  const earlyFindings = await findingsCount();
+  const replayLengths = [];
+  for (let step = 0; step < fixture.DEMO_STAGE_EVENT_COUNTS.length; step++) {
+    replayLengths.push(await timelineLength());
+  }
+  const replayFindings = await findingsCount();
+  check("early stages hide downstream evidence; the replay is byte-stable", () => {
+    assert.equal(earlyFindings, 0, "findings must not exist before the gate stage");
+    assert.deepEqual(replayLengths, observedLengths, "a second import must replay identically");
+    assert.ok(replayFindings > 0, "findings must appear once the gate stage is reached");
   });
 
   const proposal = await post("/api/cmdb/remediate", JSON.stringify({
