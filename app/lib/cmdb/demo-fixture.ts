@@ -103,10 +103,25 @@ const SERVICE_FAMILIES: Array<"INSERT" | "UPDATE" | "NO_CHANGE"> = [
  * The staged rows a real AWS import would produce: the actual repository
  * adapter run over the frozen snapshot. Names, source identities, and IPs all
  * come from here — nothing is invented in parallel to the real code path.
+ *
+ * This runs at module scope, and this module is imported by the live dashboard,
+ * so a throw here would blank the whole app rather than just demo mode. The
+ * adapter *does* throw (SourceAdapterError) on a payload without a `prefixes`
+ * array, so an edit to the snapshot must never be able to take live mode down
+ * with it. Contained deliberately: a broken snapshot degrades demo mode to an
+ * empty run, which `smoke:demo-fallback` fails loudly on, while live mode is
+ * completely unaffected.
  */
-const adapterRows = getSourceAdapter("aws-ip-ranges")
-  .transform(demoSourceSnapshot, { sourceName: DEMO_SOURCE_NAME })
-  .cis;
+const adapterRows = (() => {
+  try {
+    return getSourceAdapter("aws-ip-ranges")
+      .transform(demoSourceSnapshot, { sourceName: DEMO_SOURCE_NAME })
+      .cis;
+  } catch (error) {
+    console.error("Demo source snapshot failed the aws-ip-ranges adapter; demo mode will be empty.", error);
+    return [];
+  }
+})();
 
 export const DEMO_CI_COUNT = adapterRows.length;
 
@@ -139,9 +154,17 @@ function confidenceFor(index: number, operation: DemoOperation): number {
   return 0.91 + (index % 9) / 100;
 }
 
-/** Adapter-derived name, e.g. "aws-ec2-us-east-1-3.80.0.0/12". */
+/**
+ * Adapter-derived name, e.g. "aws-ec2-us-east-1-3.80.0.0/12".
+ *
+ * Index-safe on purpose: this is called at module scope while building the
+ * event seeds, so if `adapterRows` ever came back empty (a malformed snapshot,
+ * contained above) an unguarded lookup would throw right back out of module
+ * evaluation and blank the live app — defeating that containment entirely.
+ */
 function ciNameFor(index: number): string {
-  return adapterRows[index].name ?? adapterRows[index].source_identifier ?? `aws-prefix-${index + 1}`;
+  const row = adapterRows[index];
+  return row?.name ?? row?.source_identifier ?? `aws-prefix-${index + 1}`;
 }
 
 /** Fixed base clock keeps timestamps stable across reloads. */

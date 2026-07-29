@@ -58,6 +58,9 @@ const { deriveRemediationWorkQueue } = require("../app/lib/cmdb/work-queue.ts");
 const { deriveCorrelatedVerifiedOutcomes } = require("../app/lib/cmdb/terminal-outcomes.ts");
 const { buildPlaybackTimeline, derivePlaybackNodeStates, PLAYBACK_NODES } = require("../app/lib/cmdb/playback.ts");
 const { isTerminalRunState } = require("../app/lib/cmdb/run-lifecycle.ts");
+// Lazy: demo-fixture re-exports from this module, so a top-level destructure
+// lands in the temporal dead zone while that chain is still initializing.
+const snapshot = () => require("../app/lib/cmdb/demo-source-snapshot.ts").demoSourceSnapshot;
 
 const SYS_ID_RE = /^[0-9a-f]{32}$/;
 const FINGERPRINT_RE = /^[0-9A-F]{64}$/;
@@ -119,6 +122,19 @@ async function main() {
     assert.equal(fixture.isDemoRunId("e0ac4df32b82871060aefba6b891bf5b"), false);
     assert.equal(fixture.isDemoRunId(""), false);
     assert.equal(fixture.isDemoRunId(undefined), false);
+  });
+
+  check("a broken snapshot can never take the live app down with it", () => {
+    // demo-fixture runs the adapter at module scope, and the live dashboard
+    // imports that module — so a throw there would blank the whole app, not
+    // just demo mode. The adapter throws on a payload without `prefixes`.
+    const source = fs.readFileSync(path.join(root, "app", "lib", "cmdb", "demo-fixture.ts"), "utf8");
+    const block = source.slice(source.indexOf("const adapterRows"), source.indexOf("export const DEMO_CI_COUNT"));
+    assert.ok(/try\s*\{/.test(block) && /catch/.test(block),
+      "the module-scope adapter run must be wrapped so a malformed snapshot cannot break live mode");
+    // And the happy path must still actually produce records.
+    assert.equal(fixture.demoCiSeeds.length, snapshot().prefixes.length,
+      "the adapter run produced no records — the fallback is masking a real failure");
   });
 
   check("leaving demo mode clears the presets off the live import form", () => {
@@ -411,15 +427,14 @@ async function main() {
   });
 
   // --- One source, full start-to-end progression ---------------------------
-  const { demoSourceSnapshot } = require("../app/lib/cmdb/demo-source-snapshot.ts");
   const { getSourceAdapter } = require("../app/lib/cmdb/source-adapters.ts");
 
   check("the demo source is the one AWS URL with a format-true snapshot", () => {
     assert.equal(fixture.DEMO_SOURCE_URL, "https://ip-ranges.amazonaws.com/ip-ranges.json");
-    assert.equal(demoSourceSnapshot.prefixes.length, fixture.DEMO_CI_COUNT);
+    assert.equal(snapshot().prefixes.length, fixture.DEMO_CI_COUNT);
     // The real repository adapter must recognise the snapshot as its own format
     // and be the thing that produced every staged record's identity.
-    assert.equal(getSourceAdapter("aws-ip-ranges").detect(demoSourceSnapshot), "high");
+    assert.equal(getSourceAdapter("aws-ip-ranges").detect(snapshot()), "high");
     for (const seed of fixture.demoCiSeeds) {
       assert.ok(seed.name.startsWith("aws-"), `name ${seed.name} is not adapter-derived`);
     }
