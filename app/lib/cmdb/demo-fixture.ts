@@ -223,6 +223,28 @@ const clearedScoreRange = clearedConfidences.length
   : "n/a";
 const heldScoreCeiling = pct(Math.max(...demoCiSeeds.map(s => s.confidence).filter(value => value < DEMO_GATE_THRESHOLD), 0));
 
+/**
+ * The dataset as flat rows, in the shape the Import gateway parses from an
+ * uploaded file.
+ *
+ * Demo mode ships the dataset rather than making the presenter pick a file, but
+ * the Import screen must still behave like a real import: the raw preview shows
+ * genuine rows and staging posts a genuine payload. Reusing the seeds keeps
+ * that preview honest — it is the same data the run goes on to analyze, not a
+ * decorative sample.
+ */
+export function demoDatasetRows(): Array<Record<string, string>> {
+  return demoCiSeeds.map(seed => ({
+    name: seed.name,
+    ci_class: seed.table,
+    ip_address: seed.ip,
+    environment: seed.region,
+    support_group: seed.service,
+    source_system: seed.source,
+    source_record_id: seed.sourceRecordId,
+  }));
+}
+
 export function demoCisPayload() {
   return {
     result: demoCiSeeds.map(seed => ({
