@@ -1106,7 +1106,7 @@ function ComprehendView(props: {
     </section>
 
     <section className="visual-grid">
-      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} /></div>
+      <div className="panel sankey-panel"><div className="panel-heading compact"><div><span className="section-index">02</span><div><h2>Record flow</h2><p>Source to proposed class to Comprehend outcome</p></div></div><span className="panel-stat">{cisLive ? `${allCis.length.toLocaleString()} STAGED RECORDS` : demoFallback ? "DEMO FLOW" : "DATA UNAVAILABLE"}</span></div><SankeyVisual cis={allCis} live={cisLive} demo={demoFallback} demoMode={demoMode} /></div>
       <div className="panel graph-panel"><div className="panel-heading compact"><div><span className="section-index">03</span><div><h2>Relationship graph</h2><p>Proposed staged-CI relationships</p></div></div><span className="panel-stat"><i className={resourceState.relationships === "live" ? "live-dot" : "live-dot demo"} /> {resourceState.relationships === "live" ? proposedEdgeLabel : demoFallback ? "DEMO" : "DATA UNAVAILABLE"}</span></div><RelationshipGraph cis={allCis} relationships={relationships} /></div>
     </section>
 
@@ -1174,7 +1174,20 @@ function sankeyRibbons(from: SankeyNode[], to: SankeyNode[], pairs: [string, str
   return ribbons;
 }
 
-function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
+/**
+ * `demoMode` only affects the viewBox origin.
+ *
+ * Source labels are anchored at x=64 and run leftward, so a long system name
+ * starts at a negative x and bleeds off the left edge. The demo dataset's
+ * "ServiceNow Discovery" and "vCenter inventory export" both start at x=-21.
+ * Shifting the origin to -28 gives them room without moving a single node,
+ * ribbon, or label coordinate.
+ *
+ * Scoped to demo mode deliberately: this is the one place the chart is fed
+ * source names long enough to overrun, and live runs must keep the exact
+ * geometry they render today.
+ */
+function LiveSankey({ cis, demoMode = false }: { cis: ConfigurationItem[]; demoMode?: boolean }) {
   const total = cis.length;
   const sourceNodes = layoutSankeyNodes(rankSankeyEntries(cis.map(ci => ci.source), 3), total);
   const classNodes = layoutSankeyNodes(rankSankeyEntries(cis.map(ci => ci.className), 3), total);
@@ -1190,7 +1203,7 @@ function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
   const stage1 = sankeyRibbons(sourceNodes, classNodes, cis.map(ci => [sourceLabel(ci), classLabel(ci)]), total, 88, 292, src => sankeySourceColors[sourceNodes.indexOf(src) % sankeySourceColors.length]);
   const stage2 = sankeyRibbons(classNodes, outcomeNodes, cis.map(ci => [classLabel(ci), outcomeLabel(ci)]), total, 310, 506, (_src, dst) => sankeyMetaFor(dst.label).color);
 
-  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 648 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
+  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox={demoMode ? "-28 0 676 250" : "0 0 648 250"} role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
     {stage1.map((ribbon, i) => <path key={`s1-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     {stage2.map((ribbon, i) => <path key={`s2-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     <g className="sankey-nodes source">{sourceNodes.map(node => <g key={node.label}><rect x="70" y={node.y} width="18" height={node.h} /><text x="64" y={node.y + 12} textAnchor="end">{trimSankeyLabel(node.label)}</text></g>)}</g>
@@ -1199,8 +1212,8 @@ function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
   </svg><div className="sankey-legend">{outcomeNodes.map(node => <span key={node.label}><i className={sankeyMetaFor(node.label).bg} /> {node.label} {node.count.toLocaleString()}</span>)}</div></div>;
 }
 
-function SankeyVisual({ cis, live, demo }: { cis: ConfigurationItem[]; live: boolean; demo: boolean }) {
-  if (live && cis.length) return <LiveSankey cis={cis} />;
+function SankeyVisual({ cis, live, demo, demoMode = false }: { cis: ConfigurationItem[]; live: boolean; demo: boolean; demoMode?: boolean }) {
+  if (live && cis.length) return <LiveSankey cis={cis} demoMode={demoMode} />;
   if (live) return <div className="sankey-empty"><Icon name="graph" size={24} /><strong>No CI records for this run</strong><p>The Sankey is synchronized; ServiceNow returned an empty CI collection.</p></div>;
   if (!demo) return <div className="sankey-empty"><Icon name="graph" size={24} /><strong>CI data unavailable</strong><p>No demo records are substituted for a selected ServiceNow run.</p></div>;
   const paths = [
