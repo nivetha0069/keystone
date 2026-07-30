@@ -260,7 +260,12 @@ button { color: inherit; }
 .sankey path { transition: opacity .25s ease; }
 .sankey svg:hover path { opacity: .65; }
 .sankey-nodes rect { fill: #7d8378; }
+/* Outcome labels sit to the right of the last node column and are the widest
+   text in the chart ("IRE-eligible match" runs ~103 units from x=530). The
+   viewBox carries room for them; this keeps them from being the thing that
+   forces a horizontal scrollbar on narrow panels. */
 .sankey-nodes text { fill: #a6ad9f; font: 9.5px var(--mono); }
+.sankey-nodes.outcomes text { font-size: 9px; }
 .sankey-nodes .lime-node { fill: var(--lime); }
 .sankey-nodes .green-node { fill: var(--green); }
 .sankey-nodes .amber-node { fill: var(--amber); }
