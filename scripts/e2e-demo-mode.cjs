@@ -116,9 +116,23 @@ async function openSection(page, label) {
     record("lands on Import preset to the bundled dataset", DATASET.dataset.name);
 
     // === 3. Stage it ========================================================
+    // The raw preview must show real rows before anything is clicked: demo mode
+    // ships the dataset, so "AWAITING DATA" here means it never loaded.
+    const previewStat = await page.locator(".panel-stat", { hasText: /ROWS DETECTED|AWAITING DATA/ }).first().innerText();
+    assert.match(previewStat, /ROWS DETECTED/,
+      `raw preview should show the bundled rows, saw "${previewStat}"`);
+
     await clickButton(page, "Land in staging");
     await page.waitForTimeout(3000);
-    record("staged the demo import");
+    // Assert staging SUCCEEDED. Previously this step only clicked and moved on,
+    // so a staging error sat visible on screen while the run still advanced —
+    // demo mode pre-populates its records, which hid the failure completely.
+    const gatewayStatus = await page.locator(".gateway-status").first().innerText().catch(() => "");
+    assert.ok(!/Choose a CSV|Enter a public|Paste JSON|first\./i.test(gatewayStatus),
+      `staging reported an input error: ${gatewayStatus}`);
+    assert.equal(await page.locator(".gateway-status.status-error").count(), 0,
+      `staging ended in an error state: ${gatewayStatus}`);
+    record("staged the demo import", gatewayStatus.replace(/\s+/g, " ").slice(0, 90));
 
     // === 4. The pipeline progresses on the app's own polling ================
     // No clicking: the 8s poll walks intake -> scans -> gate -> IRE/seal.

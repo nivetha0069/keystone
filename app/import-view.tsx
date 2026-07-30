@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDemoMode } from "./components/DemoToggle";
-import { DEMO_CI_COUNT, DEMO_DATASET_FILE, DEMO_SOURCE_NAME, DEMO_SOURCE_SYSTEMS } from "./lib/cmdb/demo-fixture";
+import { DEMO_CI_COUNT, DEMO_DATASET_FILE, DEMO_SOURCE_NAME, DEMO_SOURCE_SYSTEMS, demoDatasetRows } from "./lib/cmdb/demo-fixture";
 import { cmdbFetch } from "./lib/cmdb/demo-transport";
 import { Icon } from "./icons";
 import { PreviewRow, buildStructuredStagingPayloadFromText, previewFromText } from "./lib/cmdb/import-staging";
@@ -73,7 +73,9 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
       setRunName(demoMode ? "CONTOSO-CONSOLIDATION" : `MIG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}`);
       setFile(null);
       setPasteValue("");
-      setPreviewRows([]);
+      // Demo mode arrives with its dataset, so the raw preview has something
+      // true to show immediately instead of sitting on "AWAITING DATA".
+      setPreviewRows(demoMode ? demoDatasetRows() : []);
       setParseError("");
       setStatus("idle");
       setStatusMessage("");
@@ -169,7 +171,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
       setStatusMessage("Add a source name and run name before staging.");
       return;
     }
-    if (mode === "file" && !file) {
+    if (mode === "file" && !file && !demoDatasetAttached) {
       setStatus("error");
       setStatusMessage("Choose a CSV, JSON or TXT file first.");
       return;
@@ -189,9 +191,13 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
     setStatusMessage("Creating a quarantined staging batch…");
     try {
       let response: Response;
-      if (mode === "file" && file) {
-        const extension = file.name.split(".").pop()?.toLowerCase() || "file";
-        const text = await file.text();
+      if (mode === "file" && (file || demoDatasetAttached)) {
+        // The bundled dataset takes the same path as an uploaded file — same
+        // request shape, same staging contract — so demo mode exercises the
+        // real import route rather than a shortcut around it.
+        const fileName = file ? file.name : DEMO_DATASET_FILE;
+        const extension = fileName.split(".").pop()?.toLowerCase() || "file";
+        const text = file ? await file.text() : JSON.stringify(demoDatasetRows());
         const payload = buildStructuredStagingPayloadFromText(text, extension, sourceName.trim()) || text;
         response = await cmdbFetch("/api/cmdb/import", {
           method: "POST",
@@ -201,7 +207,7 @@ export function ImportGatewayView({ onOpenRun }: { onOpenRun: (run?: ImportedRun
             sourceName: sourceName.trim(),
             runName: runName.trim(),
             format: extension,
-            sourceFileName: file.name,
+            sourceFileName: fileName,
             payload,
           }),
         });
