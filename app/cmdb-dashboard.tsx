@@ -1190,7 +1190,7 @@ function LiveSankey({ cis }: { cis: ConfigurationItem[] }) {
   const stage1 = sankeyRibbons(sourceNodes, classNodes, cis.map(ci => [sourceLabel(ci), classLabel(ci)]), total, 88, 292, src => sankeySourceColors[sourceNodes.indexOf(src) % sankeySourceColors.length]);
   const stage2 = sankeyRibbons(classNodes, outcomeNodes, cis.map(ci => [classLabel(ci), outcomeLabel(ci)]), total, 310, 506, (_src, dst) => sankeyMetaFor(dst.label).color);
 
-  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
+  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 648 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
     {stage1.map((ribbon, i) => <path key={`s1-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     {stage2.map((ribbon, i) => <path key={`s2-${i}`} d={ribbon.d} stroke={ribbon.c} strokeWidth={ribbon.w} opacity=".42" fill="none" />)}
     <g className="sankey-nodes source">{sourceNodes.map(node => <g key={node.label}><rect x="70" y={node.y} width="18" height={node.h} /><text x="64" y={node.y + 12} textAnchor="end">{trimSankeyLabel(node.label)}</text></g>)}</g>
@@ -1211,7 +1211,7 @@ function SankeyVisual({ cis, live, demo }: { cis: ConfigurationItem[]; live: boo
     ["M310 98 C390 93 426 64 506 62", 15, "var(--lime)"], ["M310 112 C400 116 428 117 506 118", 12, "#50b58a"],
     ["M310 141 C398 141 430 167 506 168", 10, "var(--amber)"], ["M310 176 C398 180 424 211 506 213", 8, "var(--coral)"],
   ] as const;
-  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 590 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
+  return <div className="sankey"><div className="sankey-head"><span>SOURCE</span><span>PROPOSED CLASS</span><span>COMPREHEND GATE</span></div><svg viewBox="0 0 648 250" role="img" aria-label="Staged records flowing from source systems to proposed classes and Comprehend outcomes">
     {paths.map((path, i) => <path key={i} d={path[0]} stroke={path[2]} strokeWidth={path[1]} opacity=".42" fill="none" />)}
     <g className="sankey-nodes source"><rect x="70" y="38" width="18" height="30"/><rect x="70" y="114" width="18" height="30"/><rect x="70" y="190" width="18" height="28"/><text x="64" y="50" textAnchor="end">Baxter</text><text x="64" y="126" textAnchor="end">Legacy</text><text x="64" y="202" textAnchor="end">Other</text></g>
     <g className="sankey-nodes classes"><rect x="292" y="40" width="18" height="42"/><rect x="292" y="91" width="18" height="34"/><rect x="292" y="135" width="18" height="22"/><rect x="292" y="169" width="18" height="18"/><text x="286" y="55" textAnchor="end">Linux</text><text x="286" y="103" textAnchor="end">Windows</text><text x="286" y="147" textAnchor="end">Database</text><text x="286" y="181" textAnchor="end">Other</text></g>
