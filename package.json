@@ -34,6 +34,7 @@
     "smoke:run-context": "node scripts/smoke-run-context.cjs",
     "smoke:usage-adapter": "node scripts/smoke-usage-adapter.cjs",
     "smoke:mara-companion": "node scripts/smoke-mara-companion.cjs",
+    "smoke:mara-chat": "node scripts/smoke-mara-chat.cjs",
     "smoke:agent-workspace": "node scripts/smoke-agent-workspace.cjs",
     "smoke:servicenow-phase-a": "node scripts/smoke-servicenow-phase-a-paste.cjs",
     "smoke:servicenow-phase-b3": "node scripts/smoke-servicenow-phase-b3.cjs",

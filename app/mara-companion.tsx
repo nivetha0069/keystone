@@ -1,8 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useDemoMode } from "./components/DemoToggle";
+import { objectFromPayload, text as textOf } from "./lib/cmdb/comprehend-adapter";
+import { cmdbFetch } from "./lib/cmdb/demo-transport";
+import {
+  answerFromRunEvidence,
+  buildMaraChatContext,
+  suggestedQuestions,
+  type MaraChatTurn,
+} from "./lib/cmdb/mara-chat";
 import type { MaraSection } from "./lib/cmdb/mara-companion-state";
 import type {
+  ApiState,
   MaraActionKey,
   MaraLive,
   MaraVisualState,
@@ -12,12 +22,15 @@ import { useDraggableMascot } from "./lib/ui/use-draggable-mascot";
 
 const MUTE_STORAGE_KEY = "keystone.mara.muted";
 // The bubble opens only when the user clicks Mara, and auto-collapses after
-// this idle interval unless it is hovered or holds focus.
+// this idle interval unless it is hovered, holds focus, or a conversation has
+// started — once the operator has asked something, the transcript stays put.
 const AUTO_COLLAPSE_MS = 12000;
+const MAX_QUESTION_LENGTH = 400;
 
 export type MaraCompanionProps = {
   activeRunId: string;
   activeRunLabel: string;
+  apiState: ApiState;
   view: WorkspaceViewState;
   onNavigate: (section: MaraSection) => void;
   onOpenLedger: () => void;
@@ -28,9 +41,13 @@ export type MaraCompanionProps = {
 
 type MaraAction = { key: MaraActionKey; label: string; onSelect: () => void };
 
+/** The conversation, tagged with the run it is about. */
+type ChatState = { runId: string; turns: MaraChatTurn[]; draft: string };
+const EMPTY_CHAT: ChatState = { runId: "", turns: [], draft: "" };
+
 export function MaraCompanion(props: MaraCompanionProps) {
   const {
-    activeRunId, activeRunLabel, view,
+    activeRunId, activeRunLabel, apiState, view,
     onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue,
   } = props;
 
@@ -38,7 +55,7 @@ export function MaraCompanion(props: MaraCompanionProps) {
   // so the mascot cannot show stale or divergent ("false") state.
   const live: MaraLive = view.mara;
 
-  const actions = useMemo<MaraAction[]>(() => {
+  const buildAction = useCallback((key: MaraActionKey): MaraAction | null => {
     const aiUsageHref = activeRunId
       ? `/ai-usage?run=${encodeURIComponent(activeRunId)}`
       : "/ai-usage";
@@ -46,25 +63,24 @@ export function MaraCompanion(props: MaraCompanionProps) {
     const openApprovals = () => (onOpenApprovals ? onOpenApprovals() : onNavigate("remediate"));
     const openRemediation = () => (onOpenRemediation ? onOpenRemediation() : onNavigate("remediate"));
 
-    const build = (key: MaraActionKey): MaraAction | null => {
-      switch (key) {
-        case "start_rescue":
-          return activeRunId ? null : { key, label: "Start a rescue", onSelect: () => onNavigate("import") };
-        case "watch_activity":
-          return { key, label: "Watch activity", onSelect: () => onNavigate("live") };
-        case "review_findings": return { key, label: "Review findings", onSelect: () => onShowReviewQueue() };
-        case "open_approvals": return { key, label: "Open approvals", onSelect: openApprovals };
-        case "open_remediation": return { key, label: "Open remediation", onSelect: openRemediation };
-        case "open_evidence": return { key, label: "View evidence", onSelect: () => onOpenLedger() };
-        case "open_ai_usage": return { key, label: "AI usage", onSelect: goAiUsage };
-        case "inspect_run": return { key, label: "Inspect the run", onSelect: () => onNavigate("comprehend") };
-      }
-    };
+    switch (key) {
+      case "start_rescue":
+        return activeRunId ? null : { key, label: "Start a rescue", onSelect: () => onNavigate("import") };
+      case "watch_activity":
+        return { key, label: "Watch activity", onSelect: () => onNavigate("live") };
+      case "review_findings": return { key, label: "Review findings", onSelect: () => onShowReviewQueue() };
+      case "open_approvals": return { key, label: "Open approvals", onSelect: openApprovals };
+      case "open_remediation": return { key, label: "Open remediation", onSelect: openRemediation };
+      case "open_evidence": return { key, label: "View evidence", onSelect: () => onOpenLedger() };
+      case "open_ai_usage": return { key, label: "AI usage", onSelect: goAiUsage };
+      case "inspect_run": return { key, label: "Inspect the run", onSelect: () => onNavigate("comprehend") };
+    }
+  }, [activeRunId, onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue]);
 
-    return live.actions
-      .map(build)
-      .filter((a): a is MaraAction => Boolean(a));
-  }, [live.actions, activeRunId, onNavigate, onOpenLedger, onOpenApprovals, onOpenRemediation, onShowReviewQueue]);
+  const actions = useMemo<MaraAction[]>(
+    () => live.actions.map(buildAction).filter((a): a is MaraAction => Boolean(a)),
+    [live.actions, buildAction],
+  );
 
   const [muted, setMuted] = useState<boolean>(() => {
     try {
@@ -76,6 +92,113 @@ export function MaraCompanion(props: MaraCompanionProps) {
   const [openedAt, setOpenedAt] = useState(0);
   const autoCloseTimerRef = useRef<number | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+
+  // --- Conversation ------------------------------------------------------
+  const demoMode = useDemoMode();
+  // A transcript belongs to the run it was asked about, so the run id is stored
+  // alongside it. Switching runs discards the conversation during render rather
+  // than letting answers about one estate sit above another.
+  const [chat, setChat] = useState<ChatState>({ runId: activeRunId, turns: [], draft: "" });
+  const [pending, setPending] = useState(false);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const turnSeq = useRef(0);
+
+  const scoped = chat.runId === activeRunId ? chat : EMPTY_CHAT;
+  const turns = scoped.turns;
+  const draft = scoped.draft;
+
+  const updateChat = useCallback((update: (previous: ChatState) => Partial<ChatState>) => {
+    setChat(previous => {
+      const base = previous.runId === activeRunId ? previous : { ...EMPTY_CHAT, runId: activeRunId };
+      return { ...base, ...update(base), runId: activeRunId };
+    });
+  }, [activeRunId]);
+
+  const setDraft = useCallback((value: string) => updateChat(() => ({ draft: value })), [updateChat]);
+
+  const chatContext = useMemo(
+    () => buildMaraChatContext(view, { apiState, demoMode }),
+    [view, apiState, demoMode],
+  );
+
+  useEffect(() => {
+    const node = transcriptRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [turns, pending]);
+
+  const ask = useCallback((rawQuestion: string) => {
+    const question = rawQuestion.replace(/\s+/g, " ").trim().slice(0, MAX_QUESTION_LENGTH);
+    if (!question || pending) return;
+
+    // The grounded answer is computed first and shown immediately. It is derived
+    // from the same evidence the dashboard is rendering, so it is correct on its
+    // own; a ServiceNow reply can replace it with better prose but is never
+    // required for Mara to answer.
+    const grounded = answerFromRunEvidence(question, chatContext);
+    const askServiceNow = Boolean(activeRunId) && !demoMode && apiState !== "demo";
+    const answerId = `mara-${++turnSeq.current}`;
+
+    updateChat(previous => ({
+      draft: "",
+      turns: [
+        ...previous.turns,
+        { id: `you-${turnSeq.current}`, role: "user", text: question },
+        {
+          id: answerId,
+          role: "mara",
+          text: grounded.text,
+          evidence: grounded.evidence,
+          actions: grounded.actions,
+          intent: grounded.intent,
+          source: askServiceNow ? "pending" : "run_evidence",
+        },
+      ],
+    }));
+    setOpenedAt(value => value + 1);
+
+    if (!askServiceNow) return;
+
+    const history = turns.slice(-6).map(turn => ({ role: turn.role, text: turn.text }));
+    setPending(true);
+    void (async () => {
+      let answer = "";
+      try {
+        const response = await cmdbFetch("/api/cmdb/mara/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            migration_run_id: activeRunId,
+            question,
+            history,
+            context: {
+              run_state: chatContext.runState,
+              api_state: chatContext.apiState,
+              active_phase: chatContext.activePhase,
+              counts: chatContext.counts,
+            },
+          }),
+        });
+        if (response.ok) {
+          const payload = objectFromPayload(await response.json(), ["result", "data"]);
+          answer = textOf(payload.answer ?? payload.message).trim();
+        }
+      } catch {
+        // Unreachable advisory endpoint is not an error the operator needs to
+        // see: the grounded answer already on screen stands on its own.
+      } finally {
+        updateChat(previous => ({
+          turns: previous.turns.map(turn => (
+            turn.id === answerId
+              ? { ...turn, text: answer || turn.text, source: answer ? "servicenow" as const : "run_evidence" as const }
+              : turn
+          )),
+        }));
+        setPending(false);
+      }
+    })();
+  }, [activeRunId, apiState, chatContext, demoMode, pending, turns, updateChat]);
+
+  const suggestions = useMemo(() => suggestedQuestions(chatContext), [chatContext]);
 
   useEffect(() => {
     try {
@@ -95,7 +218,9 @@ export function MaraCompanion(props: MaraCompanionProps) {
   }, []);
 
   useEffect(() => {
-    if (!open || openedAt === 0) return;
+    // A started conversation pins the bubble open. Collapsing a transcript out
+    // from under someone mid-question would lose what they just read.
+    if (!open || openedAt === 0 || turns.length > 0 || pending) return;
     if (autoCloseTimerRef.current !== null) window.clearTimeout(autoCloseTimerRef.current);
     autoCloseTimerRef.current = window.setTimeout(() => {
       const node = bubbleRef.current;
@@ -111,7 +236,7 @@ export function MaraCompanion(props: MaraCompanionProps) {
     return () => {
       if (autoCloseTimerRef.current !== null) window.clearTimeout(autoCloseTimerRef.current);
     };
-  }, [open, openedAt]);
+  }, [open, openedAt, turns.length, pending]);
 
   const { containerRef, style, onPointerDown, onKeyDown, resetPosition, wasDragged, isMobile, debug } = useDraggableMascot();
   const debugOn = typeof process !== "undefined" && process.env?.NODE_ENV !== "production"
@@ -152,19 +277,20 @@ export function MaraCompanion(props: MaraCompanionProps) {
     nudge();
     window.addEventListener("resize", nudge);
     return () => { window.removeEventListener("resize", nudge); };
-  }, [open, live.message, live.secondary, anchorLeft, anchorTop, anchorRight, anchorBottom]);
+  }, [open, live.message, live.secondary, turns.length, pending, anchorLeft, anchorTop, anchorRight, anchorBottom]);
 
   const visualState: MaraVisualState = live.visualState;
   const stateSlug = visualState.replace("_", "-");
   const emphasis = !muted && open ? " mara-emphasis" : "";
   const openClass = open ? " mara-open" : "";
   const mobileClass = isMobile ? " mara-mobile" : "";
+  const conversingClass = turns.length > 0 ? " mara-conversing" : "";
   const label = live.headline;
 
   return (
     <div
       ref={containerRef}
-      className={`mara-companion mara-${stateSlug}${emphasis}${muted ? " mara-muted" : ""}${openClass}${mobileClass}`}
+      className={`mara-companion mara-${stateSlug}${emphasis}${muted ? " mara-muted" : ""}${openClass}${mobileClass}${conversingClass}`}
       data-state={live.state}
       data-visual-state={visualState}
       style={style}
@@ -233,6 +359,60 @@ export function MaraCompanion(props: MaraCompanionProps) {
               ))}
             </div>
           )}
+
+          <div className="mara-chat" data-mara-no-drag="">
+            {turns.length > 0 && (
+              <div className="mara-transcript" ref={transcriptRef} role="log" aria-label="Conversation with Mara">
+                {turns.map(turn => (
+                  <MaraTurn key={turn.id} turn={turn} buildAction={buildAction} />
+                ))}
+                {pending && (
+                  <p className="mara-turn-note" aria-live="polite">Checking with ServiceNow…</p>
+                )}
+              </div>
+            )}
+
+            {turns.length === 0 && suggestions.length > 0 && (
+              <div className="mara-suggestions">
+                {suggestions.map(suggestion => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    className="mara-suggestion"
+                    onClick={() => ask(suggestion)}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <form
+              className="mara-composer"
+              onSubmit={event => { event.preventDefault(); ask(draft); }}
+            >
+              <label className="sr-only" htmlFor="mara-question">Ask Mara about this run</label>
+              <input
+                id="mara-question"
+                className="mara-input"
+                type="text"
+                autoComplete="off"
+                maxLength={MAX_QUESTION_LENGTH}
+                placeholder={activeRunId ? "Ask about this run…" : "Ask Mara…"}
+                value={draft}
+                onChange={event => setDraft(event.target.value)}
+                onFocus={scheduleAutoClose}
+              />
+              <button
+                type="submit"
+                className="mara-send"
+                disabled={!draft.trim() || pending}
+                aria-label="Send question to Mara"
+              >
+                {pending ? "…" : "Ask"}
+              </button>
+            </form>
+          </div>
         </div>
       )}
       <button
@@ -260,6 +440,51 @@ export function MaraCompanion(props: MaraCompanionProps) {
           <div>mounted {debug.mounted ? "yes" : "no"} · state {live.state}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One line of the conversation.
+ *
+ * Mara's answers carry a provenance badge because it matters which one the
+ * operator is reading: "Run evidence" is derived in the browser from what the
+ * dashboard already loaded, "ServiceNow" came back from the instance. Both are
+ * grounded in the same counts; the badge says which produced the wording.
+ */
+function MaraTurn({ turn, buildAction }: { turn: MaraChatTurn; buildAction: (key: MaraActionKey) => MaraAction | null }) {
+  if (turn.role === "user") {
+    return <p className="mara-turn mara-turn-user">{turn.text}</p>;
+  }
+
+  const actions = (turn.actions ?? []).map(buildAction).filter((a): a is MaraAction => Boolean(a)).slice(0, 2);
+  const badge = turn.source === "servicenow" ? "ServiceNow"
+    : turn.source === "pending" ? "Run evidence · checking"
+      : "Run evidence";
+
+  return (
+    <div className="mara-turn mara-turn-mara">
+      {turn.text.split("\n").map((line, index) => (
+        <p key={index} className="mara-turn-line">{line}</p>
+      ))}
+      {turn.evidence && turn.evidence.length > 0 && (
+        <ul className="mara-turn-evidence">
+          {turn.evidence.map(item => <li key={item}>{item}</li>)}
+        </ul>
+      )}
+      <div className="mara-turn-foot">
+        <span className="mara-turn-badge">{badge}</span>
+        {actions.map(action => (
+          <button
+            key={action.key}
+            type="button"
+            className="mara-turn-action"
+            onClick={() => { action.onSelect(); }}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

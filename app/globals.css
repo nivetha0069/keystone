@@ -1068,6 +1068,38 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 .mara-action:hover { color: var(--lime); border-color: rgba(199, 243, 77, .45); background: rgba(199, 243, 77, .06); }
 .mara-action:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 
+/* Mara conversation */
+.mara-chat { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.mara-transcript { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+.mara-turn { margin: 0; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; word-break: break-word; }
+.mara-turn-user { align-self: flex-end; max-width: 88%; padding: 6px 9px; border: 1px solid var(--line-strong); background: rgba(239, 241, 233, .05); color: var(--muted); border-radius: 3px; }
+.mara-turn-mara { align-self: stretch; padding: 8px 10px; border: 1px solid rgba(199, 243, 77, .22); background: rgba(199, 243, 77, .05); border-radius: 3px; display: flex; flex-direction: column; gap: 5px; }
+.mara-turn-line { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink); }
+.mara-turn-line:empty { display: none; }
+.mara-turn-evidence { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mara-turn-evidence li { font: 9.5px var(--mono); letter-spacing: .06em; color: var(--faint); }
+.mara-turn-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 2px; }
+.mara-turn-badge { font: 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--line); padding: 2px 5px; }
+.mara-turn-action { height: 22px; padding: 0 8px; border: 1px solid var(--line-strong); background: transparent; color: var(--muted); font-size: 10.5px; cursor: pointer; transition: .18s ease; }
+.mara-turn-action:hover { color: var(--lime); border-color: rgba(199, 243, 77, .45); background: rgba(199, 243, 77, .06); }
+.mara-turn-action:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.mara-turn-note { margin: 0; font: 9.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.mara-suggestions { display: flex; flex-wrap: wrap; gap: 5px; }
+.mara-suggestion { padding: 4px 8px; border: 1px dashed var(--line-strong); background: transparent; color: var(--muted); font-size: 10.5px; cursor: pointer; transition: .18s ease; text-align: left; }
+.mara-suggestion:hover { color: var(--lime); border-color: rgba(199, 243, 77, .45); border-style: solid; background: rgba(199, 243, 77, .06); }
+.mara-suggestion:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.mara-composer { display: flex; gap: 6px; align-items: center; }
+.mara-input { flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line-strong); background: rgba(10, 12, 11, .7); color: var(--ink); font-size: 12px; font-family: inherit; }
+.mara-input::placeholder { color: var(--faint); }
+.mara-input:focus { outline: none; border-color: rgba(199, 243, 77, .5); }
+.mara-send { flex: 0 0 auto; height: 30px; padding: 0 11px; border: 1px solid rgba(199, 243, 77, .4); background: rgba(199, 243, 77, .08); color: var(--lime); font-size: 11px; letter-spacing: .06em; cursor: pointer; transition: .18s ease; }
+.mara-send:hover:not(:disabled) { background: rgba(199, 243, 77, .16); }
+.mara-send:disabled { opacity: .45; cursor: default; }
+.mara-send:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+
+/* A live transcript needs more room than a status bubble. */
+.mara-companion.mara-conversing .mara-bubble { width: min(372px, calc(100vw - 32px)); max-width: min(372px, calc(100vw - 32px)); }
+
 @keyframes mara-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 @keyframes mara-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
 @keyframes mara-spin { to { transform: rotate(360deg); } }
@@ -1285,10 +1317,16 @@ tbody tr:hover .row-arrow { color: var(--lime); transform: translateX(2px); }
 /* Mara shrinks while bubble is open so it doesn't cover content */
 .mara-companion.mara-open .mara-toggle { width: 54px; height: 54px; }
 .mara-companion .mara-bubble { max-width: min(300px, calc(100vw - 32px)); }
+.mara-companion.mara-conversing .mara-bubble { max-width: min(372px, calc(100vw - 32px)); }
 @media (max-width: 1200px) {
   .mara-companion { right: 16px; bottom: 16px; }
   .mara-companion .mara-bubble { max-width: min(280px, calc(100vw - 32px)); font-size: 12px; }
+  .mara-companion.mara-conversing .mara-bubble { width: min(340px, calc(100vw - 32px)); max-width: min(340px, calc(100vw - 32px)); }
   .mara-toggle { width: 72px; height: 72px; }
+}
+@media (max-width: 700px) {
+  .mara-companion.mara-conversing .mara-bubble { width: min(292px, calc(100vw - 24px)); max-width: min(292px, calc(100vw - 24px)); }
+  .mara-transcript { max-height: 180px; }
 }
 
 /* ---------- Sidebar rail + drawer + page navigation ---------- */
