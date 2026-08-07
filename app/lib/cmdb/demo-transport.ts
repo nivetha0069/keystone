@@ -650,6 +650,19 @@ export async function cmdbFetch(input: RequestInfo | URL, init?: RequestInit): P
       },
     });
   }
+  if (segments[0] === "mara") {
+    // Mara's advisory endpoint is a ServiceNow model call. Demo mode has no
+    // model and must never reach the network, so it declines explicitly and the
+    // companion keeps the answer it derived from the simulated run's own
+    // evidence rather than inventing a "ServiceNow said" reply.
+    return json({
+      result: {
+        success: false,
+        advisory_unavailable: true,
+        message: "Demo mode answers from the simulated run's evidence. No ServiceNow model was contacted.",
+      },
+    }, 503);
+  }
   if (segments[0] === "import") return json(demoImportResponse(body));
   if (segments[0] === "remediate") return demoRemediate(body);
   if (segments[0] === "ire") return demoIre(segments[1] as IreAction, body);

@@ -982,6 +982,7 @@ export function CmdbDashboard() {
     <MaraCompanion
       activeRunId={activeRunId}
       activeRunLabel={activeRunLabel}
+      apiState={apiState}
       view={workspaceView}
       onNavigate={next => setSection(next)}
       onOpenLedger={openEventLedger}
